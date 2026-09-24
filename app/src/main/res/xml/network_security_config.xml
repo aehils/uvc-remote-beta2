@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Plain http is blocked for everything EXCEPT the robot's navigation computer,
+  which only speaks http. If the robot's address ever changes, update the
+  domain below (and ask IT to reserve the address on the router).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">192.168.1.228</domain>
+    </domain-config>
+</network-security-config>
