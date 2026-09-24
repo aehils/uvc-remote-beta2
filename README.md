@@ -1,9 +1,16 @@
-# Reeman Remote — beta 0.1
+# Reeman Remote — beta 2
 
 Android remote for the Reeman Spark robot. Fixed-step driving only: every button
 sends one pre-planned step (`/cmd/move` or `/cmd/turn`), so the robot plans its own
 gentle braking. The app never streams velocity (`/cmd/speed`), which is the path
-that produced the hard stops (see `../REEMAN_HANDOFF.txt`, sections 5–7).
+that produced the hard stops (see `REEMAN_HANDOFF.txt`, sections 5–7).
+
+Beta 2 starts from beta 0.1 (which drove the real robot successfully) and adds
+**demo mode**, so the app can be developed and shown with the robot switched off.
+
+> The engineering handoffs (`REEMAN_HANDOFF.txt`, `REEMAN_HANDOFF_v2.txt`) are kept
+> outside this repository on purpose: they describe unpatched weaknesses in the
+> robot's network setup, and this repository is public.
 
 ## What it does
 
@@ -24,9 +31,46 @@ Safety behaviour:
 - STOP is a hard stop. Use it for emergencies, not for routine stopping (steps end on their own).
 - The physical e-stop remains the real backstop.
 
+## Demo mode
+
+Flip the **Demo** switch at the top right. The app then talks to a simulated robot
+built into the app instead of the real one:
+
+- A purple **DEMO MODE** strip stays pinned to the top of the screen, the status line
+  reads *Connected to DEMO robot (simulated)*, and every log line starts with `[DEMO]`.
+- **Nothing is sent over the network.** Demo requests are answered inside the app
+  (`FakeRobot.java`), so demo mode is safe to use while on the robot's Wi-Fi.
+- All the real app logic runs unchanged: polling, the drive interlocks, the step lock,
+  STOP. Only the robot at the other end is replaced.
+- The emulator starts in demo mode until you choose a mode yourself, because the
+  emulator shares the Mac's network and could otherwise reach the real robot.
+- You can't switch mode while a step is running, and switching always turns
+  **Drive enabled** off.
+
+The simulated robot mimics the real firmware: the same paths and JSON, the same
+error codes (`009`, `004`), ~200 ms command latency, and the measured acceleration
+profile. It sits in a 5 m × 4 m room with a box obstacle, and stops short at walls.
+
+The **Demo controls** panel (shown only in demo mode) simulates events that are hard
+to set up on the real robot:
+
+| Button | Simulates | What the app should do |
+|---|---|---|
+| Press / Release e-stop | physical e-stop | red E-stop tile, driving blocked; pressing mid-step stops the robot |
+| Drop / Restore Wi-Fi | lost connection | *Not connected* after ~3 failed polls, driving blocked |
+| Block next step | obstacle in the way | step accepted but never starts → "no motion seen" |
+| Battery −10% | draining battery | battery tile drops (wraps back to 100%) |
+| Reset robot | — | robot back to the room centre, faults cleared |
+
+Things the simulator does **not** know about the real robot (marked `GUESS` in
+`FakeRobot.java`): turn acceleration, what happens to a command sent with the e-stop
+pressed, how a new step pre-empts a running one, the success response body, and
+whether `/reeman/laser` points are in map or robot frame. Confirm these on the real
+robot before relying on them.
+
 ## Build and install (Android Studio)
 
-1. **Open the project:** Android Studio → *Open* → select the `ReemanRemote` folder (this folder) → *Trust Project*.
+1. **Open the project:** Android Studio → *Open* → select this repository's folder (the one containing `settings.gradle`) → *Trust Project*.
 2. **Wait for sync.** The first sync downloads Gradle and the Android build tools (several minutes; bottom status bar shows progress).
    - If it offers to install a missing SDK platform (Android 15 / API 35), accept.
    - If it offers to upgrade the Android Gradle Plugin, you can skip it for now.
@@ -39,6 +83,14 @@ Safety behaviour:
 To get an installable file instead: *Build → Build App Bundle(s) / APK(s) → Build APK(s)* → click **locate** in the notification.
 The file is `app/build/outputs/apk/debug/app-debug.apk`. Send it to any Android phone and open it (allow "install unknown apps").
 
+From a terminal (needs a JDK 17–21, e.g. `export JAVA_HOME=~/Library/Java/JavaVirtualMachines/jbr-21.0.11/Contents/Home`):
+
+```bash
+./gradlew testDebugUnitTest assembleDebug
+```
+
+The unit tests drive the simulated robot on a fake clock (`app/src/test/`).
+
 ## Network
 
 - Phone must be on the same Wi-Fi as the robot (192.168.1.x). Turn **mobile data off** while testing.
@@ -46,7 +98,7 @@ The file is `app/build/outputs/apk/debug/app-debug.apk`. Send it to any Android 
 - Plain http is allowed **only** for `192.168.1.228` (`app/src/main/res/xml/network_security_config.xml`).
   If the robot's address changes, edit that file and rebuild; better, have IT reserve the address on the router.
 
-## First drive test
+## First drive test (real robot)
 
 1. Robot off the charging dock, clear floor ~1 m on every side, you can reach the physical e-stop.
 2. Open the app → status should read *Connected*, battery shown, E-stop *Released*.
@@ -56,9 +108,16 @@ The file is `app/build/outputs/apk/debug/app-debug.apk`. Send it to any Android 
 
 Note anything odd from the **Activity** log at the bottom of the screen (long-press to select and copy).
 
+### Still to confirm on the real robot (from beta 0.1)
+
+STOP pressed mid-step, the e-stop-pressed banner, behaviour when Wi-Fi drops, and
+low battery. These can now be rehearsed in demo mode first.
+
 ## Files
 
-- `app/src/main/java/com/expiation/reemanremote/MainActivity.java`: screen, safety rules, step lock
-- `app/src/main/java/com/expiation/reemanremote/RobotApi.java`: HTTP calls to the robot
+- `app/src/main/java/com/expiation/reemanremote/MainActivity.java`: screen, safety rules, step lock, demo switch
+- `app/src/main/java/com/expiation/reemanremote/RobotApi.java`: HTTP calls to the robot (or to the simulator in demo mode)
+- `app/src/main/java/com/expiation/reemanremote/FakeRobot.java`: the simulated robot used by demo mode
+- `app/src/test/java/com/expiation/reemanremote/`: unit tests for the simulator
 - `app/src/main/res/layout/activity_main.xml`: screen layout
 - `app/src/main/res/xml/network_security_config.xml`: the http exception for the robot's address

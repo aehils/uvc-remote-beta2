@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -32,6 +33,9 @@ import java.util.concurrent.Executors;
  * pre-planned step (/cmd/move or /cmd/turn). The robot's firmware plans the
  * whole trajectory, including its own gentle braking, so this app never
  * streams velocity (/cmd/speed) and cannot produce the jog hard-stop.
+ *
+ * Demo mode swaps the robot for an in-app simulator (FakeRobot) behind the same
+ * RobotApi, so everything below runs unchanged and nothing leaves the phone.
  */
 public class MainActivity extends Activity {
 
@@ -47,6 +51,7 @@ public class MainActivity extends Activity {
     private static final String DEFAULT_HOST = "192.168.1.228";
     private static final String PREFS = "reeman_remote";
     private static final String KEY_HOST = "host";
+    private static final String KEY_DEMO = "demo";
     private static final long POLL_MS = 300;           // /reeman/speed
     private static final int BASE_EVERY = 5;           // /reeman/base_encode every 5th poll (~1.5 s)
     private static final int FAILS_BEFORE_DISCONNECT = 3;
@@ -65,15 +70,23 @@ public class MainActivity extends Activity {
     private final ExecutorService cmdExec = Executors.newSingleThreadExecutor();
     private final ExecutorService stopExec = Executors.newSingleThreadExecutor();
 
-    private RobotApi api;
+    // api is whichever of liveApi / demoApi is selected. Background work captures it
+    // at the moment it is queued, so a queued request can never switch robots.
+    private RobotApi api, liveApi, demoApi;
+    private FakeRobot fakeRobot;
+    private boolean demo = false;
+    // Bumped whenever the target robot changes; poll results from an older one are dropped.
+    private int session = 0;
     private SharedPreferences prefs;
 
     // Views
     private EditText hostInput;
-    private TextView connText, batteryText, estopText, speedText, banner, busyText, logText;
-    private Switch armSwitch;
-    private Button btnForward, btnBack, btnLeft, btnRight, btnAround, stopBtn;
+    private TextView connText, batteryText, estopText, speedText, banner, busyText, logText, demoStrip;
+    private Switch armSwitch, demoSwitch;
+    private Button testBtn, btnForward, btnBack, btnLeft, btnRight, btnAround, stopBtn;
     private Button[] driveButtons;
+    private View demoPanel;
+    private Button demoEstopBtn, demoWifiBtn, demoBlockBtn, demoBatteryBtn;
 
     // Robot state (main thread only)
     private boolean connected = false;
@@ -111,7 +124,14 @@ public class MainActivity extends Activity {
 
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         String host = prefs.getString(KEY_HOST, DEFAULT_HOST);
-        api = new RobotApi(host);
+        liveApi = new RobotApi(host);
+        fakeRobot = new FakeRobot();
+        demoApi = RobotApi.demo(fakeRobot);
+        // Until a mode has been chosen, an emulator starts in demo: it shares the Mac's
+        // network, so on the robot's Wi-Fi it could otherwise drive the real robot.
+        boolean emulatorDefault = !prefs.contains(KEY_DEMO) && isEmulator();
+        demo = prefs.getBoolean(KEY_DEMO, emulatorDefault);
+        api = demo ? demoApi : liveApi;
 
         hostInput = findViewById(R.id.hostInput);
         connText = findViewById(R.id.connText);
@@ -129,10 +149,53 @@ public class MainActivity extends Activity {
         btnAround = findViewById(R.id.btnAround);
         stopBtn = findViewById(R.id.stopBtn);
         driveButtons = new Button[]{btnForward, btnBack, btnLeft, btnRight, btnAround};
+        testBtn = findViewById(R.id.testBtn);
+        demoSwitch = findViewById(R.id.demoSwitch);
+        demoStrip = findViewById(R.id.demoStrip);
+        demoPanel = findViewById(R.id.demoPanel);
+        demoEstopBtn = findViewById(R.id.demoEstopBtn);
+        demoWifiBtn = findViewById(R.id.demoWifiBtn);
+        demoBlockBtn = findViewById(R.id.demoBlockBtn);
+        demoBatteryBtn = findViewById(R.id.demoBatteryBtn);
 
         hostInput.setText(host);
 
-        findViewById(R.id.testBtn).setOnClickListener(v -> testConnection());
+        testBtn.setOnClickListener(v -> testConnection());
+
+        demoSwitch.setChecked(demo);
+        demoSwitch.setOnCheckedChangeListener((b, isChecked) -> setDemo(isChecked));
+
+        demoEstopBtn.setOnClickListener(v -> {
+            boolean press = !fakeRobot.isEstopPressed();
+            fakeRobot.setEstopPressed(press);
+            log("Simulated e-stop " + (press ? "pressed" : "released"));
+            refreshUi();
+        });
+        demoWifiBtn.setOnClickListener(v -> {
+            boolean drop = !fakeRobot.isOffline();
+            fakeRobot.setOffline(drop);
+            log(drop ? "Simulated Wi-Fi drop" : "Simulated Wi-Fi restored");
+            refreshUi();
+        });
+        demoBlockBtn.setOnClickListener(v -> {
+            fakeRobot.blockNextStep();
+            log("Simulated obstacle: the next step will not start");
+            refreshUi();
+        });
+        demoBatteryBtn.setOnClickListener(v -> {
+            fakeRobot.drainBattery();
+            log("Simulated battery now " + fakeRobot.batteryPercent() + "%");
+            refreshUi();
+        });
+        findViewById(R.id.demoResetBtn).setOnClickListener(v -> {
+            if (busy) {
+                log("Wait for the current step to finish before resetting the demo robot.");
+                return;
+            }
+            fakeRobot.reset();
+            log("Demo robot reset: centre of the room, no faults");
+            refreshUi();
+        });
 
         armSwitch.setOnCheckedChangeListener((b, isChecked) -> {
             if (armed == isChecked) return;
@@ -148,9 +211,48 @@ public class MainActivity extends Activity {
         btnAround.setOnClickListener(v -> turn(true, 180, "Turn 180°"));
         stopBtn.setOnClickListener(v -> sendStop());
 
-        log("App started. Robot address " + host);
+        if (emulatorDefault) log("Emulator detected: starting in demo mode");
+        log(demo ? "App started in DEMO MODE (simulated robot)" : "App started. Robot address " + host);
         refreshUi();
         testConnection();
+    }
+
+    private static boolean isEmulator() {
+        return Build.FINGERPRINT.startsWith("generic") || Build.FINGERPRINT.contains("emulator")
+                || Build.HARDWARE.contains("ranchu") || Build.HARDWARE.contains("goldfish")
+                || Build.PRODUCT.contains("sdk");
+    }
+
+    // ------------------------------------------------------------------ demo mode
+
+    private void setDemo(boolean on) {
+        if (on == demo) return;
+        if (busy) {
+            // STOP goes to the selected robot, so never switch away from one that is moving.
+            demoSwitch.setChecked(demo); // re-enters with on == demo and returns
+            log("Wait for the current step to finish before switching mode.");
+            return;
+        }
+        armSwitch.setChecked(false); // a mode change always disarms
+        demo = on;
+        prefs.edit().putBoolean(KEY_DEMO, on).apply();
+        api = on ? demoApi : liveApi;
+        session++;
+        resetRobotState();
+        log(on ? "DEMO MODE ON: simulated robot, nothing is sent to the real robot"
+                : "Demo mode OFF: live robot at " + liveApi.getHost());
+        refreshUi();
+        testConnection();
+    }
+
+    private void resetRobotState() {
+        connected = false;
+        failCount = 0;
+        lastError = null;
+        version = null;
+        battery = null;
+        emergencyButton = null;
+        vx = vth = 0;
     }
 
     @Override
@@ -187,18 +289,21 @@ public class MainActivity extends Activity {
             if (!pollInFlight) {
                 pollInFlight = true;
                 final boolean withBase = (tick++ % BASE_EVERY) == 0;
+                final RobotApi a = api;
+                final int sess = session;
                 pollExec.execute(() -> {
-                    RobotApi.Result s = api.get("/reeman/speed");
-                    RobotApi.Result b = withBase ? api.get("/reeman/base_encode") : null;
-                    ui.post(() -> onPoll(s, b));
+                    RobotApi.Result s = a.get("/reeman/speed");
+                    RobotApi.Result b = withBase ? a.get("/reeman/base_encode") : null;
+                    ui.post(() -> onPoll(sess, s, b));
                 });
             }
             ui.postDelayed(this, POLL_MS);
         }
     };
 
-    private void onPoll(RobotApi.Result s, RobotApi.Result b) {
+    private void onPoll(int sess, RobotApi.Result s, RobotApi.Result b) {
         pollInFlight = false;
+        if (sess != session) return; // answered by the robot we just switched away from
         boolean speedValid = false;
 
         if (s.ok) {
@@ -284,8 +389,9 @@ public class MainActivity extends Activity {
         log(label + ": sending " + path + " " + json);
         refreshUi();
 
+        final RobotApi a = api;
         cmdExec.execute(() -> {
-            RobotApi.Result r = api.post(path, json);
+            RobotApi.Result r = a.post(path, json);
             ui.post(() -> {
                 if (!r.ok) {
                     log(label + ": FAILED " + r.error);
@@ -324,9 +430,10 @@ public class MainActivity extends Activity {
             busyNoMotionDeadline = Math.min(busyNoMotionDeadline, now + 4000);
             busyHardCap = Math.min(busyHardCap, now + 6000);
         }
+        final RobotApi target = api;
         stopExec.execute(() -> {
-            RobotApi.Result a = turnFirst ? api.post("/cmd/turn", TURN_STOP) : api.post("/cmd/move", MOVE_STOP);
-            RobotApi.Result b = turnFirst ? api.post("/cmd/move", MOVE_STOP) : api.post("/cmd/turn", TURN_STOP);
+            RobotApi.Result a = turnFirst ? target.post("/cmd/turn", TURN_STOP) : target.post("/cmd/move", MOVE_STOP);
+            RobotApi.Result b = turnFirst ? target.post("/cmd/move", MOVE_STOP) : target.post("/cmd/turn", TURN_STOP);
             ui.post(() -> log("STOP: " + ((a.ok || b.ok) ? "sent" : "FAILED " + a.error
                     + ". USE THE PHYSICAL E-STOP")));
         });
@@ -366,25 +473,27 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------ connection test
 
     private void testConnection() {
-        String host = hostInput.getText().toString().trim();
-        if (host.isEmpty()) host = DEFAULT_HOST;
-        host = host.replaceFirst("^https?://", "").replaceAll("/+$", "");
-        hostInput.setText(host);
-        prefs.edit().putString(KEY_HOST, host).apply();
-        if (!host.equals(api.getHost())) {
-            connected = false;
-            version = null;
-            battery = null;
-            emergencyButton = null;
+        if (!demo) {
+            String host = hostInput.getText().toString().trim();
+            if (host.isEmpty()) host = DEFAULT_HOST;
+            host = host.replaceFirst("^https?://", "").replaceAll("/+$", "");
+            hostInput.setText(host);
+            prefs.edit().putString(KEY_HOST, host).apply();
+            if (!host.equals(liveApi.getHost())) {
+                session++;
+                resetRobotState();
+            }
+            liveApi.setHost(host);
         }
-        api.setHost(host);
         hideKeyboard();
 
-        final String h = host;
-        log("Testing " + h + " …");
+        final RobotApi a = api;
+        final int sess = session;
+        log("Testing " + (demo ? "demo robot" : a.getHost()) + " …");
         pollExec.execute(() -> {
-            RobotApi.Result r = api.get("/reeman/current_version");
+            RobotApi.Result r = a.get("/reeman/current_version");
             ui.post(() -> {
+                if (sess != session) return;
                 if (r.ok) {
                     try {
                         version = new JSONObject(r.body).optString("version", r.body);
@@ -410,9 +519,20 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------ UI
 
     private void refreshUi() {
+        demoStrip.setVisibility(demo ? View.VISIBLE : View.GONE);
+        demoPanel.setVisibility(demo ? View.VISIBLE : View.GONE);
+        hostInput.setEnabled(!demo);
+        hostInput.setAlpha(demo ? 0.4f : 1f);
+        demoSwitch.setEnabled(!busy);
+        if (demo) {
+            demoEstopBtn.setText(fakeRobot.isEstopPressed() ? "Release e-stop" : "Press e-stop");
+            demoWifiBtn.setText(fakeRobot.isOffline() ? "Restore Wi-Fi" : "Drop Wi-Fi");
+            demoBlockBtn.setText(fakeRobot.isBlockNextPending() ? "Obstacle set ✓" : "Block next step");
+        }
+
         if (connected) {
-            connText.setText("● Connected to " + api.getHost()
-                    + (version != null ? "  ·  " + version : ""));
+            connText.setText((demo ? "● Connected to DEMO robot (simulated)" : "● Connected to " + api.getHost())
+                    + (version != null && !demo ? "  ·  " + version : ""));
             connText.setTextColor(Color.parseColor("#15803D"));
         } else {
             connText.setText("○ Not connected" + (lastError != null ? ": " + lastError : ""));
@@ -444,7 +564,11 @@ public class MainActivity extends Activity {
 
         String warn = null;
         String warnColor = "#B91C1C";
-        if (!connected) {
+        if (!connected && demo) {
+            warn = fakeRobot.isOffline()
+                    ? "Demo robot unreachable: simulated Wi-Fi drop. Tap \"Restore Wi-Fi\" below."
+                    : "Connecting to the demo robot…";
+        } else if (!connected) {
             warn = "Not connected. Check the phone is on the robot's Wi-Fi (mobile data off), then tap Test.";
         } else if (emergencyButton == null) {
             warn = "Reading robot status…";
@@ -478,7 +602,7 @@ public class MainActivity extends Activity {
     }
 
     private void log(String line) {
-        logLines.addFirst(clock.format(new Date()) + "  " + line);
+        logLines.addFirst(clock.format(new Date()) + "  " + (demo ? "[DEMO] " : "") + line);
         while (logLines.size() > 14) logLines.removeLast();
         StringBuilder sb = new StringBuilder();
         for (String l : logLines) {

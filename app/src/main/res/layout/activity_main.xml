@@ -5,6 +5,20 @@
     android:background="#F3F4F6"
     android:orientation="vertical">
 
+    <!-- Demo label sits outside the scroll area so it can never be scrolled away -->
+    <TextView
+        android:id="@+id/demoStrip"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#7C3AED"
+        android:gravity="center"
+        android:padding="8dp"
+        android:text="DEMO MODE · simulated robot · nothing is sent to the real robot"
+        android:textColor="#FFFFFF"
+        android:textSize="13sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -18,21 +32,45 @@
             android:padding="16dp">
 
             <!-- Header -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Reeman Remote"
-                android:textColor="#111827"
-                android:textSize="22sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:layout_width="wrap_content"
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="12dp"
-                android:text="Beta · fixed-step drive"
-                android:textColor="#6B7280"
-                android:textSize="13sp" />
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Reeman Remote"
+                        android:textColor="#111827"
+                        android:textSize="22sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Beta 2 · fixed-step drive"
+                        android:textColor="#6B7280"
+                        android:textSize="13sp" />
+                </LinearLayout>
+
+                <Switch
+                    android:id="@+id/demoSwitch"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:padding="4dp"
+                    android:text="Demo"
+                    android:textColor="#7C3AED"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
 
             <!-- Robot address + test -->
             <LinearLayout
@@ -187,6 +225,61 @@
                     android:layout_width="0dp"
                     android:layout_height="1dp"
                     android:layout_weight="1" />
+            </LinearLayout>
+
+            <!-- Demo controls: only shown in demo mode, act on the simulator only -->
+            <LinearLayout
+                android:id="@+id/demoPanel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:background="#EDE9FE"
+                android:orientation="vertical"
+                android:padding="8dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:text="Demo controls: simulate robot events"
+                    android:textColor="#5B21B6"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/demoEstopBtn"
+                        style="@style/DemoButton" />
+
+                    <Button
+                        android:id="@+id/demoWifiBtn"
+                        style="@style/DemoButton" />
+
+                    <Button
+                        android:id="@+id/demoBlockBtn"
+                        style="@style/DemoButton" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/demoBatteryBtn"
+                        style="@style/DemoButton"
+                        android:text="Battery −10%" />
+
+                    <Button
+                        android:id="@+id/demoResetBtn"
+                        style="@style/DemoButton"
+                        android:text="Reset robot" />
+                </LinearLayout>
             </LinearLayout>
 
             <!-- Log -->

@@ -10,8 +10,8 @@ android {
         applicationId 'com.expiation.reemanremote'
         minSdk 24          // Android 7.0 and newer
         targetSdk 34
-        versionCode 1
-        versionName '0.1-beta'
+        versionCode 2
+        versionName '0.2-beta'
     }
 
     buildTypes {
@@ -24,4 +24,9 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+}
+
+dependencies {
+    // Tests only: the app itself still ships with zero third-party libraries.
+    testImplementation 'junit:junit:4.13.2'
 }

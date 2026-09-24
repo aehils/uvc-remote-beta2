@@ -14,6 +14,9 @@ import java.nio.charset.StandardCharsets;
 /**
  * Minimal HTTP client for the Reeman navigation computer (firmware RSNF1-v5.1.12_01).
  * Blocking calls: only ever call these from a background thread.
+ *
+ * A demo instance (see {@link #demo}) answers from an in-app {@link FakeRobot}
+ * and never opens a socket.
  */
 final class RobotApi {
 
@@ -32,9 +35,23 @@ final class RobotApi {
     }
 
     private volatile String host;
+    private final FakeRobot fake; // non-null = demo mode
 
     RobotApi(String host) {
+        this(host, null);
+    }
+
+    private RobotApi(String host, FakeRobot fake) {
         this.host = host;
+        this.fake = fake;
+    }
+
+    static RobotApi demo(FakeRobot fake) {
+        return new RobotApi("demo", fake);
+    }
+
+    boolean isDemo() {
+        return fake != null;
     }
 
     void setHost(String host) {
@@ -54,6 +71,7 @@ final class RobotApi {
     }
 
     private Result request(String method, String path, String json, int connectMs, int readMs) {
+        if (fake != null) return simulate(method, path, json, connectMs);
         HttpURLConnection c = null;
         try {
             URL url = new URL("http://" + host + path);
@@ -74,13 +92,30 @@ final class RobotApi {
             int code = c.getResponseCode();
             InputStream is = code >= 400 ? c.getErrorStream() : c.getInputStream();
             String body = is == null ? "" : readAll(is).trim();
-            boolean ok = code >= 200 && code < 300;
-            return new Result(ok, code, body, ok ? null : "HTTP " + code + " " + body);
+            return toResult(code, body);
         } catch (IOException e) {
             return new Result(false, -1, "", describe(e));
         } finally {
             if (c != null) c.disconnect();
         }
+    }
+
+    private Result simulate(String method, String path, String json, int connectMs) {
+        FakeRobot.Reply r = fake.handle(method, path, json);
+        try {
+            // A dropped connection costs the same wait as the real timeout would.
+            Thread.sleep(r == null ? connectMs : r.latencyMs);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new Result(false, -1, "", "interrupted");
+        }
+        if (r == null) return new Result(false, -1, "", "timed out: robot not answering (demo: simulated Wi-Fi drop)");
+        return toResult(r.code, r.body);
+    }
+
+    private static Result toResult(int code, String body) {
+        boolean ok = code >= 200 && code < 300;
+        return new Result(ok, code, body, ok ? null : "HTTP " + code + " " + body);
     }
 
     private static String readAll(InputStream is) throws IOException {
