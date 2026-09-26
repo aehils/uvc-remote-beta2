@@ -7,6 +7,7 @@ that produced the hard stops (see `REEMAN_HANDOFF.txt`, sections 5–7).
 
 Beta 2 starts from beta 0.1 (which drove the real robot successfully) and adds
 **demo mode**, so the app can be developed and shown with the robot switched off.
+It is written in Kotlin with a Jetpack Compose (Material 3) screen, in light and dark themes.
 
 > The engineering handoffs (`REEMAN_HANDOFF.txt`, `REEMAN_HANDOFF_v2.txt`) are kept
 > outside this repository on purpose: they describe unpatched weaknesses in the
@@ -27,7 +28,7 @@ Safety behaviour:
 - Drive buttons only work when: connected, e-stop released, **Drive enabled** switched on, and no step is running.
 - One step at a time: buttons lock until the robot's measured speed has been ~0 for about a second.
 - Leaving the app (home button, screen off, switching apps) switches Drive off.
-- Speeds are capped in code (`MAX_LINEAR` 0.3 m/s, `MAX_ANGULAR` 0.5 rad/s in `MainActivity.java`).
+- Speeds are capped in code (`MAX_LINEAR` 0.3 m/s, `MAX_ANGULAR` 0.5 rad/s in `DriveController.kt`).
 - STOP is a hard stop. Use it for emergencies, not for routine stopping (steps end on their own).
 - The physical e-stop remains the real backstop.
 
@@ -39,9 +40,10 @@ built into the app instead of the real one:
 - A purple **DEMO MODE** strip stays pinned to the top of the screen, the status line
   reads *Connected to DEMO robot (simulated)*, and every log line starts with `[DEMO]`.
 - **Nothing is sent over the network.** Demo requests are answered inside the app
-  (`FakeRobot.java`), so demo mode is safe to use while on the robot's Wi-Fi.
+  (`FakeRobot.kt`), so demo mode is safe to use while on the robot's Wi-Fi.
 - All the real app logic runs unchanged: polling, the drive interlocks, the step lock,
   STOP. Only the robot at the other end is replaced.
+- The Demo switch is locked (but still shows ON) while a step is running.
 - The emulator starts in demo mode until you choose a mode yourself, because the
   emulator shares the Mac's network and could otherwise reach the real robot.
 - You can't switch mode while a step is running, and switching always turns
@@ -52,18 +54,18 @@ error codes (`009`, `004`), ~200 ms command latency, and the measured accelerati
 profile. It sits in a 5 m × 4 m room with a box obstacle, and stops short at walls.
 
 The **Demo controls** panel (shown only in demo mode) simulates events that are hard
-to set up on the real robot:
+to set up on the real robot. The first three are toggles: highlighted means active.
 
-| Button | Simulates | What the app should do |
+| Control | Simulates | What the app should do |
 |---|---|---|
-| Press / Release e-stop | physical e-stop | red E-stop tile, driving blocked; pressing mid-step stops the robot |
-| Drop / Restore Wi-Fi | lost connection | *Not connected* after ~3 failed polls, driving blocked |
-| Block next step | obstacle in the way | step accepted but never starts → "no motion seen" |
-| Battery −10% | draining battery | battery tile drops (wraps back to 100%) |
+| E-stop pressed | physical e-stop | red E-stop tile, driving blocked; pressing mid-step stops the robot |
+| Wi-Fi dropped | lost connection | *Not connected* after ~3 failed polls, driving blocked |
+| Obstacle ahead | obstacle in the way | next step accepted but never starts → "no motion seen" |
+| Battery −10% | draining battery | battery tile turns amber at 20%, red at 10% (wraps back to 100%) |
 | Reset robot | — | robot back to the room centre, faults cleared |
 
 Things the simulator does **not** know about the real robot (marked `GUESS` in
-`FakeRobot.java`): turn acceleration, what happens to a command sent with the e-stop
+`FakeRobot.kt`): turn acceleration, what happens to a command sent with the e-stop
 pressed, how a new step pre-empts a running one, the success response body, and
 whether `/reeman/laser` points are in map or robot frame. Confirm these on the real
 robot before relying on them.
@@ -89,7 +91,9 @@ From a terminal (needs a JDK 17–21, e.g. `export JAVA_HOME=~/Library/Java/Java
 ./gradlew testDebugUnitTest assembleDebug
 ```
 
-The unit tests drive the simulated robot on a fake clock (`app/src/test/`).
+The unit tests (`app/src/test/`) run in virtual time against the simulated robot. They cover
+the simulator itself and the drive rules end to end: interlocks, the step lock, STOP,
+e-stop and Wi-Fi loss.
 
 ## Network
 
@@ -115,9 +119,18 @@ low battery. These can now be rehearsed in demo mode first.
 
 ## Files
 
-- `app/src/main/java/com/expiation/reemanremote/MainActivity.java`: screen, safety rules, step lock, demo switch
-- `app/src/main/java/com/expiation/reemanremote/RobotApi.java`: HTTP calls to the robot (or to the simulator in demo mode)
-- `app/src/main/java/com/expiation/reemanremote/FakeRobot.java`: the simulated robot used by demo mode
-- `app/src/test/java/com/expiation/reemanremote/`: unit tests for the simulator
-- `app/src/main/res/layout/activity_main.xml`: screen layout
-- `app/src/main/res/xml/network_security_config.xml`: the http exception for the robot's address
+All under `app/src/main/java/com/expiation/reemanremote/`:
+
+- `DriveController.kt`: **every drive rule lives here**: polling, interlocks, the step lock, STOP, demo switching.
+  Plain Kotlin (no Android), with the state as explicit types: `Link` (Disconnected / Connected + e-stop)
+  and `StepPhase` (Idle / Stepping / Stopping).
+- `RobotApi.kt`: HTTP calls to the robot (or to the simulator in demo mode)
+- `FakeRobot.kt`: the simulated robot used by demo mode
+- `RemoteViewModel.kt`: keeps the controller alive across screen recreation; saves the address and demo choice
+- `MainActivity.kt`: hosts the screen; leaving the app pauses polling and switches Drive off
+- `ui/RemoteScreen.kt`: the Compose screen. It only draws `RemoteState` and forwards taps.
+  Open it in Android Studio's Split/Design view to see the previews.
+- `ui/Theme.kt`: colours for light and dark themes, including the status colours
+
+Also: `app/src/main/res/xml/network_security_config.xml` holds the http exception for the robot's address.
+Tests are in `app/src/test/java/com/expiation/reemanremote/`.
