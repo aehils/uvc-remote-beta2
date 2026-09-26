@@ -1,4 +1,4 @@
-# Reeman Remote — beta 2
+# Robot Control — beta 2
 
 Android remote for the Reeman Spark robot. Fixed-step driving only: every button
 sends one pre-planned step (`/cmd/move` or `/cmd/turn`), so the robot plans its own
@@ -34,16 +34,17 @@ Safety behaviour:
 
 ## Demo mode
 
-Flip the **Demo** switch at the top right. The app then talks to a simulated robot
-built into the app instead of the real one:
+Tap the **DEMO** pill at the top right (its dot is filled when demo mode is on) and
+use the **Turn on DEMO** button in the menu. The app then talks to a simulated robot built into the
+app instead of the real one:
 
-- A purple **DEMO MODE** strip stays pinned to the top of the screen, the status line
-  reads *Connected to DEMO robot (simulated)*, and every log line starts with `[DEMO]`.
+- A purple **DEMO MODE IS ON** strip stays pinned to the top of the screen, the status line
+  reads *Connected to DEMO robot*, and every log line starts with `[DEMO]`.
 - **Nothing is sent over the network.** Demo requests are answered inside the app
   (`FakeRobot.kt`), so demo mode is safe to use while on the robot's Wi-Fi.
 - All the real app logic runs unchanged: polling, the drive interlocks, the step lock,
   STOP. Only the robot at the other end is replaced.
-- The Demo switch is locked (but still shows ON) while a step is running.
+- The DEMO menu's switch button is disabled (the pill still shows ON) while a step is running.
 - The emulator starts in demo mode until you choose a mode yourself, because the
   emulator shares the Mac's network and could otherwise reach the real robot.
 - You can't switch mode while a step is running, and switching always turns
@@ -63,6 +64,14 @@ to set up on the real robot. The first three are toggles: highlighted means acti
 | Obstacle ahead | obstacle in the way | next step accepted but never starts → "no motion seen" |
 | Battery −10% | draining battery | battery tile turns amber at 20%, red at 10% (wraps back to 100%) |
 | Reset robot | — | robot back to the room centre, faults cleared |
+
+### Demo mode limitations
+
+The simulator only covers fixed-step driving. These are answered with error `004`
+("Not simulated in DEMO mode"): velocity streaming (`/cmd/speed`), navigation
+(`/cmd/nav`, `/cmd/nav_name`, `/cmd/cancel_goal`), charging, relocalisation, maps and
+restricted layers, speed limits, mode changes and shutdown. The room, obstacle and
+motion profile are a simple model, not the robot's real map or sensors.
 
 Things the simulator does **not** know about the real robot (marked `GUESS` in
 `FakeRobot.kt`): turn acceleration, what happens to a command sent with the e-stop

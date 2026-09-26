@@ -23,7 +23,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         val emulatorDefault = !prefs.contains(KEY_DEMO) && isEmulator()
         val demo = prefs.getBoolean(KEY_DEMO, emulatorDefault)
         controller = DriveController(viewModelScope, RobotApi(host), FakeRobot(), demo)
-        if (emulatorDefault) controller.note("Emulator detected: starting in demo mode")
+        if (emulatorDefault) controller.note("Emulator detected: starting in DEMO mode")
         controller.note(if (demo) "App started in DEMO MODE (simulated robot)" else "App started. Robot address $host")
         controller.testConnection(null)
     }

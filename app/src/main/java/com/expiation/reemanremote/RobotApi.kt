@@ -41,7 +41,7 @@ class RobotApi private constructor(host: String, private val fake: FakeRobot?) {
         val r = fake.handle(method, path, json)
         // A dropped connection costs the same wait as the real timeout would.
         delay(r?.latencyMs ?: connectMs.toLong())
-        if (r == null) return Result(false, -1, "", "timed out: robot not answering (demo: simulated Wi-Fi drop)")
+        if (r == null) return Result(false, -1, "", "timed out: robot not answering (DEMO: simulated Wi-Fi drop)")
         return toResult(r.code, r.body)
     }
 

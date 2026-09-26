@@ -75,6 +75,9 @@ private val DarkStatus = StatusColors(
     stop = Color(0xFFDC2626), // STOP stays the same saturated red in both themes
 )
 
+/** Fill for the BETA pill. Decoration, not state, so it is the same in both themes (white text on it). */
+val BetaOrange = Color(0xFFEA580C)
+
 private val LocalStatusColors = staticCompositionLocalOf { LightStatus }
 
 object RemoteTheme {
