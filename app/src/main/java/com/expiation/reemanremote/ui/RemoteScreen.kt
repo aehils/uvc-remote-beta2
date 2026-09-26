@@ -1,0 +1,513 @@
+package com.expiation.reemanremote.ui
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.expiation.reemanremote.DemoStatus
+import com.expiation.reemanremote.EStop
+import com.expiation.reemanremote.Link
+import com.expiation.reemanremote.Move
+import com.expiation.reemanremote.RemoteState
+import com.expiation.reemanremote.Step
+import com.expiation.reemanremote.StepPhase
+import com.expiation.reemanremote.Tracking
+import java.util.Locale
+
+/** Everything the screen can ask for. */
+data class RemoteActions(
+    val onDemoChange: (Boolean) -> Unit = {},
+    val onTest: (String) -> Unit = {},
+    val onArmChange: (Boolean) -> Unit = {},
+    val onMove: (Move) -> Unit = {},
+    val onStop: () -> Unit = {},
+    val onDemoEstop: () -> Unit = {},
+    val onDemoWifi: () -> Unit = {},
+    val onDemoBlock: () -> Unit = {},
+    val onDemoBattery: () -> Unit = {},
+    val onDemoReset: () -> Unit = {},
+)
+
+private enum class Tone { NEUTRAL, GOOD, WARN, DANGER }
+
+@Composable
+fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
+    Scaffold(
+        topBar = {
+            Column {
+                TopBar(state, actions.onDemoChange)
+                // Pinned above the scrolling content so it can never be scrolled away.
+                AnimatedVisibility(state.demo) { DemoStrip() }
+            }
+        },
+        // STOP lives outside the scroll area so it is always on screen.
+        bottomBar = { StopBar(actions.onStop) },
+        containerColor = MaterialTheme.colorScheme.background,
+    ) { padding ->
+        Column(
+            Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            ConnectionCard(state, actions.onTest)
+            StatusRow(state)
+            warning(state)?.let { (text, tone) -> Banner(text, tone) }
+            DriveCard(state, actions)
+            if (state.demoStatus != null) DemoControls(state.demoStatus, actions)
+            ActivityLog(state.log)
+            Spacer(Modifier.height(4.dp))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------- chrome
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TopBar(state: RemoteState, onDemoChange: (Boolean) -> Unit) {
+    val status = RemoteTheme.status
+    TopAppBar(
+        title = {
+            Column {
+                Text("Reeman Remote", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Beta 2 · fixed-step drive",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        actions = {
+            Text("Demo", style = MaterialTheme.typography.labelLarge, color = status.demo, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.width(8.dp))
+            Switch(
+                checked = state.demo,
+                onCheckedChange = onDemoChange,
+                enabled = !state.busy, // never switch robots mid-step
+                // Disabled mid-step, but must still clearly read as ON: never let demo look off.
+                colors = SwitchDefaults.colors(
+                    checkedTrackColor = status.demo,
+                    disabledCheckedTrackColor = status.demo.copy(alpha = 0.6f),
+                    disabledCheckedThumbColor = MaterialTheme.colorScheme.surface,
+                ),
+            )
+            Spacer(Modifier.width(12.dp))
+        },
+        colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+    )
+}
+
+@Composable
+private fun DemoStrip() {
+    Text(
+        "DEMO MODE · simulated robot · nothing is sent to the real robot",
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(RemoteTheme.status.demoBold)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        color = Color.White,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.Bold,
+        textAlign = TextAlign.Center,
+    )
+}
+
+@Composable
+private fun StopBar(onStop: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.background) {
+        Button(
+            onClick = onStop,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp)
+                .height(76.dp),
+            shape = RoundedCornerShape(22.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = RemoteTheme.status.stop, contentColor = Color.White),
+            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
+        ) {
+            Text("STOP", fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 6.sp)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------- cards
+
+@Composable
+private fun Panel(
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.surface,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = color),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
+    }
+}
+
+@Composable
+private fun ConnectionCard(state: RemoteState, onTest: (String) -> Unit) {
+    val status = RemoteTheme.status
+    val focus = LocalFocusManager.current
+    var hostText by rememberSaveable { mutableStateOf(state.host) }
+    val test = {
+        onTest(hostText)
+        focus.clearFocus()
+    }
+
+    Panel {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(10.dp)
+                    .background(if (state.connected) status.good else status.danger, CircleShape)
+            )
+            Spacer(Modifier.width(10.dp))
+            Column {
+                val link = state.link
+                Text(
+                    when {
+                        !state.connected -> "Not connected"
+                        state.demo -> "Connected to demo robot"
+                        else -> "Connected to ${state.host}"
+                    },
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                val detail = when {
+                    link is Link.Disconnected -> link.lastError
+                    state.demo -> "Simulated robot"
+                    else -> state.version?.let { "Firmware $it" }
+                }
+                if (detail != null) {
+                    Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = if (state.demo) "Demo robot" else hostText,
+                onValueChange = { hostText = it },
+                modifier = Modifier.weight(1f),
+                enabled = !state.demo,
+                label = { Text("Robot address") },
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { test() }),
+            )
+            Spacer(Modifier.width(10.dp))
+            FilledTonalButton(onClick = test, modifier = Modifier.height(56.dp), shape = RoundedCornerShape(14.dp)) {
+                Text("Test")
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatusRow(state: RemoteState) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        val battery = state.battery
+        StatTile(
+            "Battery",
+            battery?.let { "$it%" } ?: "—",
+            when {
+                battery == null -> Tone.NEUTRAL
+                battery <= 10 -> Tone.DANGER
+                battery <= 20 -> Tone.WARN
+                else -> Tone.NEUTRAL
+            },
+        )
+        StatTile(
+            "E-stop",
+            when (state.estop) {
+                null -> "—"
+                EStop.PRESSED -> "PRESSED"
+                EStop.RELEASED -> "Released"
+            },
+            if (state.estop == EStop.PRESSED) Tone.DANGER else Tone.NEUTRAL,
+        )
+        StatTile(
+            "Speed",
+            if (state.connected) String.format(Locale.US, "%.2f m/s\n%.0f°/s", state.vx, Math.toDegrees(state.vth)) else "—",
+            if (state.busy) Tone.WARN else Tone.NEUTRAL,
+        )
+    }
+}
+
+@Composable
+private fun RowScope.StatTile(label: String, value: String, tone: Tone) {
+    val (fill, text) = toneColors(tone)
+    Card(
+        modifier = Modifier.weight(1f),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = fill, contentColor = text),
+    ) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Text(
+                label.uppercase(Locale.US),
+                style = MaterialTheme.typography.labelSmall,
+                letterSpacing = 1.sp,
+                color = if (tone == Tone.NEUTRAL) MaterialTheme.colorScheme.onSurfaceVariant else text,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp)
+        }
+    }
+}
+
+@Composable
+private fun Banner(text: String, tone: Tone) {
+    val (fill, content) = toneColors(tone)
+    Surface(color = if (tone == Tone.NEUTRAL) MaterialTheme.colorScheme.secondaryContainer else fill, shape = RoundedCornerShape(16.dp)) {
+        Text(
+            text,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            color = if (tone == Tone.NEUTRAL) MaterialTheme.colorScheme.onSecondaryContainer else content,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+        )
+    }
+}
+
+@Composable
+private fun DriveCard(state: RemoteState, actions: RemoteActions) {
+    val status = RemoteTheme.status
+    Panel {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Drive enabled", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (state.armed) "Buttons are live. One step at a time." else "Clear the area, then switch on.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = state.armed, onCheckedChange = actions.onArmChange)
+        }
+
+        AnimatedVisibility(state.busy) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = status.warn,
+                    trackColor = status.warnContainer,
+                )
+                Text(
+                    (if (state.phase is StepPhase.Stopping) "Stopping: " else "Moving: ") + (state.busyLabel ?: "") + " …",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = status.warn,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+
+        DrivePad(state.canDrive, actions.onMove)
+    }
+}
+
+@Composable
+private fun DrivePad(enabled: Boolean, onMove: (Move) -> Unit) {
+    val gap = Arrangement.spacedBy(10.dp)
+    Column(verticalArrangement = gap) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
+            Spacer(Modifier.weight(1f))
+            PadButton(Move.FORWARD, "▲", enabled, onMove)
+            Spacer(Modifier.weight(1f))
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
+            PadButton(Move.LEFT, "↺", enabled, onMove)
+            PadButton(Move.AROUND, "↩", enabled, onMove, tonal = true)
+            PadButton(Move.RIGHT, "↻", enabled, onMove)
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
+            Spacer(Modifier.weight(1f))
+            PadButton(Move.BACK, "▼", enabled, onMove)
+            Spacer(Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun RowScope.PadButton(move: Move, glyph: String, enabled: Boolean, onMove: (Move) -> Unit, tonal: Boolean = false) {
+    Button(
+        onClick = { onMove(move) },
+        enabled = enabled,
+        modifier = Modifier
+            .weight(1f)
+            .height(92.dp),
+        shape = RoundedCornerShape(24.dp),
+        colors = if (tonal) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.buttonColors(),
+        contentPadding = PaddingValues(4.dp),
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(glyph, fontSize = 26.sp)
+            Text(move.label, style = MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center)
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@Composable
+private fun DemoControls(demo: DemoStatus, actions: RemoteActions) {
+    val status = RemoteTheme.status
+    Panel(color = status.demoContainer) {
+        Column {
+            Text("Demo controls", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = status.demo)
+            Text(
+                "Simulate robot events. Highlighted = active.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        val chipColors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = status.demoBold,
+            selectedLabelColor = Color.White,
+        )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(demo.estopPressed, actions.onDemoEstop, { Text("E-stop pressed") }, colors = chipColors)
+            FilterChip(demo.offline, actions.onDemoWifi, { Text("Wi-Fi dropped") }, colors = chipColors)
+            FilterChip(demo.blockPending, actions.onDemoBlock, { Text("Obstacle ahead") }, colors = chipColors)
+            AssistChip(actions.onDemoBattery, { Text("Battery −10%") })
+            AssistChip(actions.onDemoReset, { Text("Reset robot") })
+        }
+    }
+}
+
+@Composable
+private fun ActivityLog(lines: List<String>) {
+    Panel {
+        Text("Activity", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        SelectionContainer {
+            Text(
+                lines.joinToString("\n").ifEmpty { "—" },
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+                lineHeight = 16.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------- helpers
+
+/** The banner under the status tiles: why driving is blocked, most important first. */
+private fun warning(s: RemoteState): Pair<String, Tone>? {
+    val link = s.link
+    return when {
+        link is Link.Disconnected && s.demo ->
+            if (s.demoStatus?.offline == true) "Demo robot unreachable: simulated Wi-Fi drop. Tap \"Wi-Fi dropped\" below to restore." to Tone.DANGER
+            else "Connecting to the demo robot…" to Tone.NEUTRAL
+        link is Link.Disconnected ->
+            "Not connected. Check the phone is on the robot's Wi-Fi (mobile data off), then tap Test." to Tone.DANGER
+        s.estop == null -> "Reading robot status…" to Tone.NEUTRAL
+        s.estop == EStop.PRESSED -> "Emergency stop is PRESSED on the robot. Release it to drive." to Tone.DANGER
+        !s.armed -> "Drive is off. Clear the area, then switch on \"Drive enabled\"." to Tone.NEUTRAL
+        else -> null
+    }
+}
+
+@Composable
+private fun toneColors(tone: Tone): Pair<Color, Color> {
+    val s = RemoteTheme.status
+    return when (tone) {
+        Tone.NEUTRAL -> MaterialTheme.colorScheme.surface to MaterialTheme.colorScheme.onSurface
+        Tone.GOOD -> s.goodContainer to s.good
+        Tone.WARN -> s.warnContainer to s.warn
+        Tone.DANGER -> s.dangerContainer to s.danger
+    }
+}
+
+// ---------------------------------------------------------------------- previews
+
+private fun previewState(demo: Boolean, moving: Boolean) = RemoteState(
+    demo = demo,
+    host = "192.168.1.228",
+    link = Link.Connected(EStop.RELEASED),
+    version = "RSNF1-v5.1.12_01",
+    battery = 18,
+    vx = if (moving) 0.27 else 0.0,
+    vth = 0.0,
+    armed = true,
+    phase = if (moving) StepPhase.Stepping(Step("Forward 0.5 m", "/cmd/move", "{}", false, 4000), Tracking(0, 0))
+    else StepPhase.Idle,
+    demoStatus = if (demo) DemoStatus(estopPressed = false, offline = false, blockPending = true) else null,
+    log = listOf(
+        "12:04:10  [DEMO] Forward 0.5 m: accepted {}",
+        "12:04:10  [DEMO] Forward 0.5 m: sending /cmd/move {\"distance\":50,\"direction\":1,\"speed\":0.30}",
+        "12:04:02  [DEMO] Drive enabled",
+    ),
+)
+
+@Preview(name = "Demo, moving", heightDp = 1500)
+@Composable
+private fun PreviewDemo() = RemoteTheme(dark = false) { RemoteScreen(previewState(demo = true, moving = true), RemoteActions()) }
+
+@Preview(name = "Live, dark", heightDp = 1300)
+@Composable
+private fun PreviewLiveDark() = RemoteTheme(dark = true) { RemoteScreen(previewState(demo = false, moving = false), RemoteActions()) }
