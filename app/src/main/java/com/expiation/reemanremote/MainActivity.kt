@@ -26,7 +26,7 @@ class MainActivity : ComponentActivity() {
         val c = vm.controller
         val actions = RemoteActions(
             onDemoChange = vm::setDemo,
-            onTest = vm::testConnection,
+            onPing = vm::testConnection,
             onArmChange = c::setArmed,
             onMove = c::drive,
             onStop = c::stop,

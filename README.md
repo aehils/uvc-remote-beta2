@@ -39,7 +39,7 @@ use the **Turn on DEMO** button in the menu. The app then talks to a simulated r
 app instead of the real one:
 
 - A purple **DEMO MODE IS ON** strip stays pinned to the top of the screen, the status line
-  reads *Connected to DEMO robot*, and every log line starts with `[DEMO]`.
+  reads *CONNECTED*, and every log line starts with `[DEMO]`.
 - **Nothing is sent over the network.** Demo requests are answered inside the app
   (`FakeRobot.kt`), so demo mode is safe to use while on the robot's Wi-Fi.
 - All the real app logic runs unchanged: polling, the drive interlocks, the step lock,
@@ -54,15 +54,17 @@ The simulated robot mimics the real firmware: the same paths and JSON, the same
 error codes (`009`, `004`), ~200 ms command latency, and the measured acceleration
 profile. It sits in a 5 m × 4 m room with a box obstacle, and stops short at walls.
 
-The **Demo controls** panel (shown only in demo mode) simulates events that are hard
-to set up on the real robot. The first three are toggles: highlighted means active.
+The **DEMO controls** page simulates events that are hard to set up on the real robot.
+Open it with the purple sliders button at the top right of the DEMO menu (shown only
+while DEMO is active). STOP and the robot readings stay on screen there, so you can
+watch each event take effect. The first three are switches; the last two are buttons.
 
 | Control | Simulates | What the app should do |
 |---|---|---|
-| E-stop pressed | physical e-stop | red E-stop tile, driving blocked; pressing mid-step stops the robot |
-| Wi-Fi dropped | lost connection | *Not connected* after ~3 failed polls, driving blocked |
+| E-stop pressed | physical e-stop | **E** badge turns solid red, driving blocked; pressing mid-step stops the robot |
+| Wi-Fi dropped | lost connection | *NOT CONNECTED* after ~3 failed polls, driving blocked |
 | Obstacle ahead | obstacle in the way | next step accepted but never starts → "no motion seen" |
-| Battery −10% | draining battery | battery tile turns amber at 20%, red at 10% (wraps back to 100%) |
+| Battery −10% | draining battery | battery figure turns amber at 20%, red at 10% (wraps back to 100%) |
 | Reset robot | — | robot back to the room centre, faults cleared |
 
 ### Demo mode limitations
@@ -114,7 +116,7 @@ e-stop and Wi-Fi loss.
 ## First drive test (real robot)
 
 1. Robot off the charging dock, clear floor ~1 m on every side, you can reach the physical e-stop.
-2. Open the app → status should read *Connected*, battery shown, E-stop *Released*.
+2. Open the app → status should read *CONNECTED*, battery shown, grey **E** badge (e-stop released).
 3. Switch on **Drive enabled** → tap **Left 90°** → confirm it turns left and the buttons unlock after it stops.
 4. Then Right 90°, Forward 0.5 m, Back 0.5 m, Turn 180°.
 5. Test STOP once mid-turn at the slow speed.
