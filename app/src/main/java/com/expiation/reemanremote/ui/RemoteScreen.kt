@@ -2,6 +2,11 @@ package com.expiation.reemanremote.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -43,6 +48,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -126,33 +133,147 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
     }
 }
 
+private enum class Tab(val label: String, val icon: Int) {
+    REMOTE("Remote", R.drawable.ic_tab_remote),
+    TASKS("Tasks", R.drawable.ic_tab_tasks),
+    MAP("Map", R.drawable.ic_tab_map),
+    ACTIVITY("Activity", R.drawable.ic_tab_activity),
+}
+
+/**
+ * Layout, top to bottom: title bar, DEMO strip, the robot's readings (pinned, on every tab),
+ * the current tab, and the nav bar with STOP in its centre so STOP is on every tab too.
+ */
 @Composable
 private fun MainPage(state: RemoteState, actions: RemoteActions, onOpenDemoControls: () -> Unit) {
+    var tab by rememberSaveable { mutableStateOf(Tab.REMOTE) }
+    // Safety: the drive pad only lives on Remote, so leaving Remote disarms (like leaving the app).
+    LaunchedEffect(tab) { if (tab != Tab.REMOTE && state.armed) actions.onArmChange(false) }
+
     Scaffold(
         topBar = {
             Column {
                 TopBar(state, actions.onDemoChange, onOpenDemoControls)
                 // Pinned above the scrolling content so it can never be scrolled away.
                 AnimatedVisibility(state.demo) { DemoStrip() }
+                Box(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) { Telemetry(state) }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
         },
-        // STOP lives outside the scroll area so it is always on screen.
-        bottomBar = { StopBar(actions.onStop) },
+        bottomBar = { NavBar(tab, { tab = it }, state.busy, actions.onStop) },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
-        Column(
-            Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            RobotSection(state, actions.onPing)
-            DriveCard(state, actions)
-            ActivityLog(state.log)
-            Spacer(Modifier.height(4.dp))
+        val content = Modifier
+            .padding(padding)
+            .fillMaxSize()
+        when (tab) {
+            Tab.REMOTE -> Column(
+                content
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                ConnectionSection(state, actions.onPing)
+                DriveCard(state, actions)
+            }
+            Tab.TASKS -> ComingSoon(
+                content, R.drawable.ic_tab_tasks, "Autonomous tasks",
+                "Send the robot to saved points, run routes and send it to charge. " +
+                    "Not in this build yet: it drives in fixed steps only.",
+            )
+            Tab.MAP -> ComingSoon(
+                content, R.drawable.ic_tab_map, "Map",
+                "See the robot on its map, build and switch maps, and set its position. Not in this build yet.",
+            )
+            Tab.ACTIVITY -> ActivityLog(state.log, content)
         }
+    }
+}
+
+/** Four tabs with STOP in the centre: always on screen, always under the thumb, and never a tab. */
+@Composable
+private fun NavBar(current: Tab, onSelect: (Tab) -> Unit, moving: Boolean, onStop: () -> Unit) {
+    NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
+        @Composable
+        fun RowScope.item(t: Tab) = NavigationBarItem(
+            selected = current == t,
+            onClick = { onSelect(t) },
+            icon = { Icon(painterResource(t.icon), contentDescription = null, modifier = Modifier.size(24.dp)) },
+            label = { Text(t.label) },
+        )
+        item(Tab.REMOTE)
+        item(Tab.TASKS)
+        StopNavButton(moving, onStop)
+        item(Tab.MAP)
+        item(Tab.ACTIVITY)
+    }
+}
+
+/** STOP as the nav bar's centre. While the robot is moving it gets a pulsing ring, so it is found fastest then. */
+@Composable
+private fun RowScope.StopNavButton(moving: Boolean, onStop: () -> Unit) {
+    val stop = RemoteTheme.status.stop
+    val pulse by rememberInfiniteTransition(label = "stop").animateFloat(
+        initialValue = 0.15f,
+        targetValue = 0.6f,
+        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
+        label = "ring",
+    )
+    Box(
+        Modifier
+            .weight(1.2f)
+            .height(80.dp), // the bar's height; fillMaxHeight would grow the bar to the whole screen
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                .size(68.dp)
+                .border(3.dp, if (moving) stop.copy(alpha = pulse) else Color.Transparent, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Button(
+                onClick = onStop,
+                modifier = Modifier.size(60.dp),
+                shape = CircleShape,
+                contentPadding = PaddingValues(0.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = stop, contentColor = Color.White),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 3.dp),
+            ) {
+                Text("STOP", fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ComingSoon(modifier: Modifier, icon: Int, title: String, body: String) {
+    Column(
+        modifier.padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(
+            painterResource(icon),
+            contentDescription = null,
+            modifier = Modifier.size(40.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            body,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "COMING SOON",
+            style = MaterialTheme.typography.labelSmall,
+            letterSpacing = 1.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -368,7 +489,7 @@ private fun Panel(
 }
 
 @Composable
-private fun RobotSection(state: RemoteState, onPing: (String) -> Unit) {
+private fun ConnectionSection(state: RemoteState, onPing: (String) -> Unit) {
     val status = RemoteTheme.status
     val focus = LocalFocusManager.current
     var hostText by rememberSaveable { mutableStateOf(state.host) }
@@ -377,8 +498,8 @@ private fun RobotSection(state: RemoteState, onPing: (String) -> Unit) {
         focus.clearFocus()
     }
 
-    // Sits on the page background (no card): this is the header of the screen, not one panel among many.
-    Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    // Sits on the page background (no card): the Remote tab's header, not one panel among many.
+    Column(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             AddressField(
                 value = if (state.demo) "DEMO" else hostText,
@@ -406,8 +527,6 @@ private fun RobotSection(state: RemoteState, onPing: (String) -> Unit) {
             textAlign = TextAlign.Center,
             color = if (state.connected) status.good else status.danger,
         )
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        Telemetry(state)
     }
 }
 
@@ -743,16 +862,22 @@ private fun DemoToggle(title: String, detail: String, on: Boolean, onToggle: () 
     }
 }
 
+/** Newest first. Selectable, so a log can be copied into a bug report. */
 @Composable
-private fun ActivityLog(lines: List<String>) {
-    Panel {
-        Text("Activity", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+private fun ActivityLog(lines: List<String>, modifier: Modifier) {
+    Column(
+        modifier
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        SectionLabel("Activity · newest first")
         SelectionContainer {
             Text(
                 lines.joinToString("\n").ifEmpty { "—" },
                 fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp,
-                lineHeight = 16.sp,
+                lineHeight = 17.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -761,7 +886,6 @@ private fun ActivityLog(lines: List<String>) {
 
 // ---------------------------------------------------------------------- helpers
 
-/** The banner under the status tiles: why driving is blocked, most important first. */
 // ---------------------------------------------------------------------- previews
 
 private fun previewState(demo: Boolean, moving: Boolean) = RemoteState(

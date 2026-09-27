@@ -15,6 +15,12 @@ It is written in Kotlin with a Jetpack Compose (Material 3) screen, in light and
 
 ## What it does
 
+The screen has four tabs: **Remote** (the manual step pad and the robot address),
+**Tasks** and **Map** (placeholders for autonomous work, not in this build yet), and
+**Activity** (the log). The robot's readings (e-stop badge, speed, battery) are pinned
+under the title on every tab, and **STOP is the red button in the centre of the nav bar**,
+so it is on screen on every tab and on the DEMO controls page.
+
 | Button | Command sent | Speed |
 |---|---|---|
 | Forward 0.5 m | `/cmd/move` `{"distance":50,"direction":1,"speed":0.30}` | 0.3 m/s |
@@ -27,7 +33,8 @@ It is written in Kotlin with a Jetpack Compose (Material 3) screen, in light and
 Safety behaviour:
 - Drive buttons only work when: connected, e-stop released, **Drive enabled** switched on, and no step is running.
 - One step at a time: buttons lock until the robot's measured speed has been ~0 for about a second.
-- Leaving the app (home button, screen off, switching apps) switches Drive off.
+- Leaving the app (home button, screen off, switching apps) or the Remote tab switches Drive off.
+- STOP pulses with a red ring while a step is running.
 - Speeds are capped in code (`MAX_LINEAR` 0.3 m/s, `MAX_ANGULAR` 0.5 rad/s in `DriveController.kt`).
 - STOP is a hard stop. Use it for emergencies, not for routine stopping (steps end on their own).
 - The physical e-stop remains the real backstop.
@@ -121,7 +128,7 @@ e-stop and Wi-Fi loss.
 4. Then Right 90°, Forward 0.5 m, Back 0.5 m, Turn 180°.
 5. Test STOP once mid-turn at the slow speed.
 
-Note anything odd from the **Activity** log at the bottom of the screen (long-press to select and copy).
+Note anything odd from the **Activity** tab (long-press to select and copy).
 
 ### Still to confirm on the real robot (from beta 0.1)
 
