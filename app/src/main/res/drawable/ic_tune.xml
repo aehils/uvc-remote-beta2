@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Controls: three sliders with knobs. Tinted by the caller. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M3,6h9.5M17.5,6h3.5M3,12h3.5M11.5,12h9.5M3,18h11.5M19.5,18h1.5" />
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="2"
+        android:pathData="M12.5,6a2.5,2.5 0,1 0,5 0a2.5,2.5 0,1 0,-5 0M6.5,12a2.5,2.5 0,1 0,5 0a2.5,2.5 0,1 0,-5 0M14.5,18a2.5,2.5 0,1 0,5 0a2.5,2.5 0,1 0,-5 0" />
+</vector>

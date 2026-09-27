@@ -144,7 +144,7 @@ class FakeRobot(
     private fun post(path: String, json: String, now: Long): String? = when (path) {
         "/cmd/move" -> move(json, now)
         "/cmd/turn" -> turn(json, now)
-        in UNSIMULATED_CMDS -> error("004", "Not simulated in demo mode")
+        in UNSIMULATED_CMDS -> error("004", "Not simulated in DEMO mode")
         else -> null
     }
 

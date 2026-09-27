@@ -12,7 +12,7 @@ import com.expiation.reemanremote.ui.RemoteScreen
 import com.expiation.reemanremote.ui.RemoteTheme
 
 /**
- * Reeman Remote, beta. The screen only draws [RemoteState] and forwards taps;
+ * Robot Control, beta. The screen only draws [RemoteState] and forwards taps;
  * every drive rule lives in [DriveController].
  */
 class MainActivity : ComponentActivity() {
@@ -26,7 +26,7 @@ class MainActivity : ComponentActivity() {
         val c = vm.controller
         val actions = RemoteActions(
             onDemoChange = vm::setDemo,
-            onTest = vm::testConnection,
+            onPing = vm::testConnection,
             onArmChange = c::setArmed,
             onMove = c::drive,
             onStop = c::stop,

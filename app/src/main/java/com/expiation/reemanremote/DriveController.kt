@@ -156,7 +156,7 @@ class DriveController(
         switchRobot()
         log(
             if (on) "DEMO MODE ON: simulated robot, nothing is sent to the real robot"
-            else "Demo mode OFF: live robot at ${liveApi.host}"
+            else "DEMO mode OFF: live robot at ${liveApi.host}"
         )
         testConnection(null)
         return true
@@ -178,7 +178,7 @@ class DriveController(
             saved = host
         }
         val a = api
-        log("Testing ${if (demo) "demo robot" else a.host} …")
+        log("Testing ${if (demo) "DEMO robot" else a.host} …")
         publish()
         connectJob?.cancel()
         connectJob = scope.launch {
@@ -432,10 +432,10 @@ class DriveController(
 
     fun demoReset() {
         if (phase != StepPhase.Idle) {
-            log("Wait for the current step to finish before resetting the demo robot.")
+            log("Wait for the current step to finish before resetting the DEMO robot.")
         } else {
             demoRobot.reset()
-            log("Demo robot reset: centre of the room, no faults")
+            log("DEMO robot reset: centre of the room, no faults")
         }
         publish()
     }

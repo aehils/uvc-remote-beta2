@@ -1,13 +1,21 @@
 package com.expiation.reemanremote.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -21,22 +29,29 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -45,19 +60,37 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -65,6 +98,7 @@ import com.expiation.reemanremote.DemoStatus
 import com.expiation.reemanremote.EStop
 import com.expiation.reemanremote.Link
 import com.expiation.reemanremote.Move
+import com.expiation.reemanremote.R
 import com.expiation.reemanremote.RemoteState
 import com.expiation.reemanremote.Step
 import com.expiation.reemanremote.StepPhase
@@ -74,7 +108,7 @@ import java.util.Locale
 /** Everything the screen can ask for. */
 data class RemoteActions(
     val onDemoChange: (Boolean) -> Unit = {},
-    val onTest: (String) -> Unit = {},
+    val onPing: (String) -> Unit = {},
     val onArmChange: (Boolean) -> Unit = {},
     val onMove: (Move) -> Unit = {},
     val onStop: () -> Unit = {},
@@ -85,38 +119,161 @@ data class RemoteActions(
     val onDemoReset: () -> Unit = {},
 )
 
-private enum class Tone { NEUTRAL, GOOD, WARN, DANGER }
-
 @Composable
 fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
+    var showDemoControls by rememberSaveable { mutableStateOf(false) }
+    // The controls page only exists in DEMO: leaving DEMO closes it.
+    LaunchedEffect(state.demo) { if (!state.demo) showDemoControls = false }
+
+    val demoStatus = state.demoStatus
+    if (showDemoControls && demoStatus != null) {
+        DemoControlsPage(state, demoStatus, actions, onBack = { showDemoControls = false })
+    } else {
+        MainPage(state, actions, onOpenDemoControls = { showDemoControls = true })
+    }
+}
+
+private enum class Tab(val label: String, val icon: Int) {
+    REMOTE("Remote", R.drawable.ic_tab_remote),
+    TASKS("Tasks", R.drawable.ic_tab_tasks),
+    MAP("Map", R.drawable.ic_tab_map),
+    ACTIVITY("Activity", R.drawable.ic_tab_activity),
+}
+
+/**
+ * Layout, top to bottom: title bar, DEMO strip, the robot's readings (pinned, on every tab),
+ * the current tab, and the nav bar with STOP in its centre so STOP is on every tab too.
+ */
+@Composable
+private fun MainPage(state: RemoteState, actions: RemoteActions, onOpenDemoControls: () -> Unit) {
+    var tab by rememberSaveable { mutableStateOf(Tab.REMOTE) }
+    // Safety: the drive pad only lives on Remote, so leaving Remote disarms (like leaving the app).
+    LaunchedEffect(tab) { if (tab != Tab.REMOTE && state.armed) actions.onArmChange(false) }
+
     Scaffold(
         topBar = {
             Column {
-                TopBar(state, actions.onDemoChange)
+                TopBar(state, actions.onDemoChange, onOpenDemoControls)
                 // Pinned above the scrolling content so it can never be scrolled away.
                 AnimatedVisibility(state.demo) { DemoStrip() }
+                Box(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) { Telemetry(state) }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
         },
-        // STOP lives outside the scroll area so it is always on screen.
-        bottomBar = { StopBar(actions.onStop) },
+        bottomBar = { NavBar(tab, { tab = it }, state.busy, actions.onStop) },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
-        Column(
-            Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            ConnectionCard(state, actions.onTest)
-            StatusRow(state)
-            warning(state)?.let { (text, tone) -> Banner(text, tone) }
-            DriveCard(state, actions)
-            if (state.demoStatus != null) DemoControls(state.demoStatus, actions)
-            ActivityLog(state.log)
-            Spacer(Modifier.height(4.dp))
+        val content = Modifier
+            .padding(padding)
+            .fillMaxSize()
+        when (tab) {
+            Tab.REMOTE -> Column(
+                content
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                ConnectionSection(state, actions.onPing)
+                DriveCard(state, actions)
+            }
+            Tab.TASKS -> ComingSoon(
+                content, R.drawable.ic_tab_tasks, "Autonomous tasks",
+                "Send the robot to saved points, run routes and send it to charge. " +
+                    "Not in this build yet: it drives in fixed steps only.",
+            )
+            Tab.MAP -> ComingSoon(
+                content, R.drawable.ic_tab_map, "Map",
+                "See the robot on its map, build and switch maps, and set its position. Not in this build yet.",
+            )
+            Tab.ACTIVITY -> ActivityLog(state.log, content)
         }
+    }
+}
+
+/** Four tabs with STOP in the centre: always on screen, always under the thumb, and never a tab. */
+@Composable
+private fun NavBar(current: Tab, onSelect: (Tab) -> Unit, moving: Boolean, onStop: () -> Unit) {
+    NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
+        @Composable
+        fun RowScope.item(t: Tab) = NavigationBarItem(
+            selected = current == t,
+            onClick = { onSelect(t) },
+            icon = { Icon(painterResource(t.icon), contentDescription = null, modifier = Modifier.size(24.dp)) },
+            label = { Text(t.label) },
+        )
+        item(Tab.REMOTE)
+        item(Tab.TASKS)
+        StopNavButton(moving, onStop)
+        item(Tab.MAP)
+        item(Tab.ACTIVITY)
+    }
+}
+
+/** STOP as the nav bar's centre. While the robot is moving it gets a pulsing ring, so it is found fastest then. */
+@Composable
+private fun RowScope.StopNavButton(moving: Boolean, onStop: () -> Unit) {
+    val stop = RemoteTheme.status.stop
+    val pulse by rememberInfiniteTransition(label = "stop").animateFloat(
+        initialValue = 0.15f,
+        targetValue = 0.6f,
+        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
+        label = "ring",
+    )
+    Box(
+        Modifier
+            .weight(1.2f)
+            .height(80.dp), // the bar's height; fillMaxHeight would grow the bar to the whole screen
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                .size(68.dp)
+                .border(3.dp, if (moving) stop.copy(alpha = pulse) else Color.Transparent, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Button(
+                onClick = onStop,
+                modifier = Modifier.size(60.dp),
+                shape = CircleShape,
+                contentPadding = PaddingValues(0.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = stop, contentColor = Color.White),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 3.dp),
+            ) {
+                Text("STOP", fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ComingSoon(modifier: Modifier, icon: Int, title: String, body: String) {
+    Column(
+        modifier.padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(
+            painterResource(icon),
+            contentDescription = null,
+            modifier = Modifier.size(40.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            body,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "COMING SOON",
+            style = MaterialTheme.typography.labelSmall,
+            letterSpacing = 1.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -124,51 +281,175 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TopBar(state: RemoteState, onDemoChange: (Boolean) -> Unit) {
-    val status = RemoteTheme.status
+private fun TopBar(state: RemoteState, onDemoChange: (Boolean) -> Unit, onOpenDemoControls: () -> Unit) {
     TopAppBar(
         title = {
-            Column {
-                Text("Reeman Remote", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "Beta 2 · fixed-step drive",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Robot Control", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.width(10.dp))
+                BetaPill()
             }
         },
         actions = {
-            Text("Demo", style = MaterialTheme.typography.labelLarge, color = status.demo, fontWeight = FontWeight.SemiBold)
+            DemoMenu(state, onDemoChange, onOpenDemoControls)
             Spacer(Modifier.width(8.dp))
-            Switch(
-                checked = state.demo,
-                onCheckedChange = onDemoChange,
-                enabled = !state.busy, // never switch robots mid-step
-                // Disabled mid-step, but must still clearly read as ON: never let demo look off.
-                colors = SwitchDefaults.colors(
-                    checkedTrackColor = status.demo,
-                    disabledCheckedTrackColor = status.demo.copy(alpha = 0.6f),
-                    disabledCheckedThumbColor = MaterialTheme.colorScheme.surface,
-                ),
-            )
-            Spacer(Modifier.width(12.dp))
         },
         colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
     )
 }
 
 @Composable
+private fun BetaPill() {
+    Text(
+        "BETA",
+        modifier = Modifier
+            .background(BetaOrange.copy(alpha = 0.7f), RoundedCornerShape(6.dp))
+            .padding(horizontal = 8.dp, vertical = 2.dp),
+        color = Color.White,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 1.sp,
+    )
+}
+
+/** DEMO pill with a status dot; tapping it opens a menu that explains and toggles demo mode. */
+@Composable
+private fun DemoMenu(state: RemoteState, onDemoChange: (Boolean) -> Unit, onOpenDemoControls: () -> Unit) {
+    val status = RemoteTheme.status
+    var open by rememberSaveable { mutableStateOf(false) }
+
+    Box {
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(if (state.demo) status.demoContainer else Color.Transparent)
+                .border(1.dp, if (state.demo) status.demo else MaterialTheme.colorScheme.outline, RoundedCornerShape(6.dp))
+                .clickable(onClickLabel = "DEMO options") { open = true }
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .size(8.dp)
+                    .background(if (state.demo) status.demo else MaterialTheme.colorScheme.outline, CircleShape)
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "DEMO",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = if (state.demo) status.demo else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        DropdownMenu(
+            expanded = open,
+            onDismissRequest = { open = false },
+            shape = RoundedCornerShape(16.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(
+                Modifier
+                    .width(208.dp)
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (state.demo) "DEMO is active" else "DEMO is deactivated",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    // Controls simulate robot events, so they only exist while DEMO is active.
+                    if (state.demo) {
+                        FilledIconButton(
+                            onClick = {
+                                open = false
+                                onOpenDemoControls()
+                            },
+                            modifier = Modifier.size(40.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = status.demoBold,
+                                contentColor = Color.White,
+                            ),
+                        ) {
+                            Icon(painterResource(R.drawable.ic_tune), contentDescription = "DEMO controls", modifier = Modifier.size(22.dp))
+                        }
+                    }
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        if (state.demo) "Now operating a simulated robot. No data is sent."
+                        else "Robot operation is live. Obey safety precautions.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        buildAnnotatedString {
+                            withLink(
+                                LinkAnnotation.Url(
+                                    DEMO_LIMITS_URL,
+                                    TextLinkStyles(SpanStyle(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)),
+                                )
+                            ) { append("Learn More") }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Button(
+                    onClick = { onDemoChange(!state.demo) },
+                    enabled = !state.busy, // never switch robots mid-step
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = if (state.demo) ButtonDefaults.buttonColors()
+                    else ButtonDefaults.buttonColors(containerColor = status.demoBold, contentColor = Color.White),
+                ) {
+                    Text(if (state.demo) "Turn off DEMO" else "Turn on DEMO")
+                }
+                if (state.busy) {
+                    Text(
+                        "Wait for the current step to finish to switch.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Column {
+                    Text(
+                        "FIRMWARE",
+                        style = MaterialTheme.typography.labelSmall,
+                        letterSpacing = 1.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        state.version ?: "—",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private const val DEMO_LIMITS_URL = "https://github.com/aehils/uvc-remote-beta2#demo-mode-limitations"
+
+@Composable
 private fun DemoStrip() {
     Text(
-        "DEMO MODE · simulated robot · nothing is sent to the real robot",
+        "DEMO MODE IS ON",
         modifier = Modifier
             .fillMaxWidth()
             .background(RemoteTheme.status.demoBold)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = 16.dp, vertical = 6.dp),
         color = Color.White,
-        style = MaterialTheme.typography.labelLarge,
-        fontWeight = FontWeight.Bold,
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.Light,
+        letterSpacing = 1.sp,
         textAlign = TextAlign.Center,
+        maxLines = 1,
     )
 }
 
@@ -200,7 +481,7 @@ private fun Panel(
 ) {
     Card(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = color),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
@@ -208,129 +489,216 @@ private fun Panel(
 }
 
 @Composable
-private fun ConnectionCard(state: RemoteState, onTest: (String) -> Unit) {
+private fun ConnectionSection(state: RemoteState, onPing: (String) -> Unit) {
     val status = RemoteTheme.status
     val focus = LocalFocusManager.current
     var hostText by rememberSaveable { mutableStateOf(state.host) }
-    val test = {
-        onTest(hostText)
+    val ping = {
+        onPing(hostText)
         focus.clearFocus()
     }
 
-    Panel {
+    // Sits on the page background (no card): the Remote tab's header, not one panel among many.
+    Column(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .size(10.dp)
-                    .background(if (state.connected) status.good else status.danger, CircleShape)
-            )
-            Spacer(Modifier.width(10.dp))
-            Column {
-                val link = state.link
-                Text(
-                    when {
-                        !state.connected -> "Not connected"
-                        state.demo -> "Connected to demo robot"
-                        else -> "Connected to ${state.host}"
-                    },
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                val detail = when {
-                    link is Link.Disconnected -> link.lastError
-                    state.demo -> "Simulated robot"
-                    else -> state.version?.let { "Firmware $it" }
-                }
-                if (detail != null) {
-                    Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                value = if (state.demo) "Demo robot" else hostText,
+            AddressField(
+                value = if (state.demo) "DEMO" else hostText,
                 onValueChange = { hostText = it },
-                modifier = Modifier.weight(1f),
                 enabled = !state.demo,
-                label = { Text("Robot address") },
-                singleLine = true,
-                shape = RoundedCornerShape(14.dp),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { test() }),
+                onDone = ping,
+                modifier = Modifier.weight(1f),
             )
-            Spacer(Modifier.width(10.dp))
-            FilledTonalButton(onClick = test, modifier = Modifier.height(56.dp), shape = RoundedCornerShape(14.dp)) {
-                Text("Test")
+            Spacer(Modifier.width(8.dp))
+            FilledTonalButton(
+                onClick = ping,
+                modifier = Modifier.size(ADDRESS_ROW_HEIGHT),
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(0.dp),
+            ) {
+                Icon(painterResource(R.drawable.ic_ping), contentDescription = "Ping", modifier = Modifier.size(22.dp))
             }
         }
-    }
-}
-
-@Composable
-private fun StatusRow(state: RemoteState) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        val battery = state.battery
-        StatTile(
-            "Battery",
-            battery?.let { "$it%" } ?: "—",
-            when {
-                battery == null -> Tone.NEUTRAL
-                battery <= 10 -> Tone.DANGER
-                battery <= 20 -> Tone.WARN
-                else -> Tone.NEUTRAL
-            },
-        )
-        StatTile(
-            "E-stop",
-            when (state.estop) {
-                null -> "—"
-                EStop.PRESSED -> "PRESSED"
-                EStop.RELEASED -> "Released"
-            },
-            if (state.estop == EStop.PRESSED) Tone.DANGER else Tone.NEUTRAL,
-        )
-        StatTile(
-            "Speed",
-            if (state.connected) String.format(Locale.US, "%.2f m/s\n%.0f°/s", state.vx, Math.toDegrees(state.vth)) else "—",
-            if (state.busy) Tone.WARN else Tone.NEUTRAL,
+        Text(
+            if (state.connected) "CONNECTED" else "NOT CONNECTED",
+            modifier = Modifier.fillMaxWidth(),
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.5.sp,
+            textAlign = TextAlign.Center,
+            color = if (state.connected) status.good else status.danger,
         )
     }
 }
 
+private val ADDRESS_ROW_HEIGHT = 46.dp
+
+/**
+ * An outlined field at [ADDRESS_ROW_HEIGHT], so it lines up with the Ping button.
+ * (OutlinedTextField has a 56dp minimum plus 8dp above it for the label, so it is built from parts here.)
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RowScope.StatTile(label: String, value: String, tone: Tone) {
-    val (fill, text) = toneColors(tone)
-    Card(
-        modifier = Modifier.weight(1f),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = fill, contentColor = text),
+private fun AddressField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    enabled: Boolean,
+    onDone: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val colors = OutlinedTextFieldDefaults.colors()
+    val shape = RoundedCornerShape(10.dp)
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier.height(ADDRESS_ROW_HEIGHT),
+        enabled = enabled,
+        singleLine = true,
+        textStyle = MaterialTheme.typography.bodyMedium.copy(
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.38f),
+        ),
+        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+        keyboardActions = KeyboardActions(onDone = { onDone() }),
+        interactionSource = interaction,
+    ) { inner ->
+        OutlinedTextFieldDefaults.DecorationBox(
+            value = value,
+            innerTextField = inner,
+            enabled = enabled,
+            singleLine = true,
+            visualTransformation = VisualTransformation.None,
+            interactionSource = interaction,
+            label = { Text("Address") },
+            colors = colors,
+            contentPadding = OutlinedTextFieldDefaults.contentPadding(start = 12.dp, end = 12.dp, top = 0.dp, bottom = 0.dp),
+            container = {
+                OutlinedTextFieldDefaults.Container(
+                    enabled = enabled,
+                    isError = false,
+                    interactionSource = interaction,
+                    colors = colors,
+                    shape = shape,
+                )
+            },
+        )
+    }
+}
+
+/** E-stop badge, then velocity (the main read), then a quiet battery figure. Readings fade when not connected, since they are stale. */
+@Composable
+private fun Telemetry(state: RemoteState) {
+    val status = RemoteTheme.status
+    val live = state.connected
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .alpha(if (live) 1f else 0.45f),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+        EStopBadge(state.estop)
+        Spacer(Modifier.width(16.dp))
+
+        // Velocity is the main read: centred between the badge and the battery, in fixed-width
+        // slots so the figures never shift as they change.
+        val motion = if (state.busy) status.warn else MaterialTheme.colorScheme.onSurface
+        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.Center) {
+            Reading("Linear", if (live) reading(state.vx, 1) else "—", "m/s", motion, Modifier.width(104.dp))
+            Reading("Angular", if (live) reading(Math.toDegrees(state.vth), 0) else "—", "°/s", motion, Modifier.width(96.dp))
+        }
+
+        val battery = state.battery
+        // Quiet unless it needs attention.
+        val batteryColor = when {
+            battery == null -> MaterialTheme.colorScheme.onSurfaceVariant
+            battery <= 10 -> status.danger
+            battery <= 20 -> status.warn
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            BatteryIcon(battery, batteryColor)
+            Spacer(Modifier.height(3.dp))
             Text(
-                label.uppercase(Locale.US),
-                style = MaterialTheme.typography.labelSmall,
-                letterSpacing = 1.sp,
-                color = if (tone == Tone.NEUTRAL) MaterialTheme.colorScheme.onSurfaceVariant else text,
+                battery?.let { "$it%" } ?: "—",
+                style = MaterialTheme.typography.labelMedium,
+                fontFamily = FontFamily.Monospace,
+                color = batteryColor,
             )
-            Spacer(Modifier.height(4.dp))
-            Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp)
         }
     }
 }
 
+/** A small battery outline whose fill tracks the charge level. */
 @Composable
-private fun Banner(text: String, tone: Tone) {
-    val (fill, content) = toneColors(tone)
-    Surface(color = if (tone == Tone.NEUTRAL) MaterialTheme.colorScheme.secondaryContainer else fill, shape = RoundedCornerShape(16.dp)) {
+private fun BatteryIcon(percent: Int?, color: Color) {
+    Canvas(
+        Modifier
+            .size(width = 22.dp, height = 11.dp)
+            .semantics { contentDescription = percent?.let { "Battery $it percent" } ?: "Battery unknown" }
+    ) {
+        val stroke = 1.3.dp.toPx()
+        val tip = 2.dp.toPx()
+        val body = Size(size.width - tip, size.height)
+        val r = CornerRadius(2.dp.toPx())
+        drawRoundRect(color, topLeft = Offset(stroke / 2, stroke / 2), size = Size(body.width - stroke, body.height - stroke), cornerRadius = r, style = Stroke(stroke))
+        drawRoundRect(color, topLeft = Offset(body.width, size.height * 0.3f), size = Size(tip, size.height * 0.4f), cornerRadius = CornerRadius(1.dp.toPx()))
+        val inset = stroke + 1.dp.toPx()
+        val level = (percent ?: 0).coerceIn(0, 100) / 100f
+        drawRoundRect(color, topLeft = Offset(inset, inset), size = Size((body.width - inset * 2) * level, body.height - inset * 2), cornerRadius = CornerRadius(1.dp.toPx()))
+    }
+}
+
+/** Rounds before formatting so sensor noise at rest reads 0, never "-0.00". */
+private fun reading(value: Double, decimals: Int): String {
+    val scale = Math.pow(10.0, decimals.toDouble())
+    val rounded = Math.round(value * scale) / scale + 0.0 // + 0.0 turns -0.0 into 0.0
+    return String.format(Locale.US, "%.${decimals}f", rounded)
+}
+
+/** A bounded "E": solid red when the e-stop is pressed, grey otherwise. Never green: released is not a "go" signal. */
+@Composable
+private fun EStopBadge(estop: EStop?) {
+    val shape = RoundedCornerShape(8.dp)
+    val pressed = estop == EStop.PRESSED
+    val grey = MaterialTheme.colorScheme.outline
+    Box(
+        Modifier
+            .size(44.dp)
+            .background(if (pressed) RemoteTheme.status.danger else Color.Transparent, shape)
+            .border(2.dp, if (pressed) RemoteTheme.status.danger else grey, shape)
+            .semantics {
+                contentDescription = when (estop) {
+                    EStop.PRESSED -> "E-stop pressed"
+                    EStop.RELEASED -> "E-stop released"
+                    null -> "E-stop unknown"
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
         Text(
-            text,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            color = if (tone == Tone.NEUTRAL) MaterialTheme.colorScheme.onSecondaryContainer else content,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium,
+            "E",
+            color = if (pressed) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 22.sp,
+            fontWeight = FontWeight.Black,
         )
+    }
+}
+
+@Composable
+private fun Reading(label: String, value: String, unit: String, valueColor: Color, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        Text(
+            label.uppercase(Locale.US),
+            style = MaterialTheme.typography.labelSmall,
+            letterSpacing = 1.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(value, style = MaterialTheme.typography.headlineSmall, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Medium, color = valueColor)
+            Spacer(Modifier.width(4.dp))
+            Text(unit, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
+        }
     }
 }
 
@@ -411,43 +779,105 @@ private fun RowScope.PadButton(move: Move, glyph: String, enabled: Boolean, onMo
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+/**
+ * DEMO controls: simulate robot events that are hard to set up on the real robot.
+ * A page of its own, but STOP and the robot readings stay on screen so each event's effect is visible.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DemoControls(demo: DemoStatus, actions: RemoteActions) {
-    val status = RemoteTheme.status
-    Panel(color = status.demoContainer) {
-        Column {
-            Text("Demo controls", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = status.demo)
+private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: RemoteActions, onBack: () -> Unit) {
+    BackHandler(onBack = onBack)
+    Scaffold(
+        topBar = {
+            Column {
+                TopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
+                        }
+                    },
+                    title = { Text("DEMO controls", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+                )
+                DemoStrip()
+            }
+        },
+        bottomBar = { StopBar(actions.onStop) },
+        containerColor = MaterialTheme.colorScheme.background,
+    ) { padding ->
+        Column(
+            Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Telemetry(state)
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+            SectionLabel("Faults")
+            DemoToggle("E-stop pressed", "As if the physical e-stop were pressed. Driving is blocked; pressing mid-step stops the robot.", demo.estopPressed, actions.onDemoEstop)
+            DemoToggle("Wi-Fi dropped", "The robot stops answering. NOT CONNECTED shows after about 3 missed polls.", demo.offline, actions.onDemoWifi)
+            DemoToggle("Obstacle ahead", "The next step is accepted but never starts, so the app reports no motion.", demo.blockPending, actions.onDemoBlock)
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            SectionLabel("Robot")
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(actions.onDemoBattery, Modifier.weight(1f), shape = RoundedCornerShape(10.dp)) { Text("Battery −10%") }
+                OutlinedButton(actions.onDemoReset, Modifier.weight(1f), shape = RoundedCornerShape(10.dp)) { Text("Reset robot") }
+            }
             Text(
-                "Simulate robot events. Highlighted = active.",
+                "Battery wraps back to 100% below zero. Reset puts the robot back in the room centre and clears all faults.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        }
-        val chipColors = FilterChipDefaults.filterChipColors(
-            selectedContainerColor = status.demoBold,
-            selectedLabelColor = Color.White,
-        )
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(demo.estopPressed, actions.onDemoEstop, { Text("E-stop pressed") }, colors = chipColors)
-            FilterChip(demo.offline, actions.onDemoWifi, { Text("Wi-Fi dropped") }, colors = chipColors)
-            FilterChip(demo.blockPending, actions.onDemoBlock, { Text("Obstacle ahead") }, colors = chipColors)
-            AssistChip(actions.onDemoBattery, { Text("Battery −10%") })
-            AssistChip(actions.onDemoReset, { Text("Reset robot") })
         }
     }
 }
 
 @Composable
-private fun ActivityLog(lines: List<String>) {
-    Panel {
-        Text("Activity", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+private fun SectionLabel(text: String) {
+    Text(
+        text.uppercase(Locale.US),
+        style = MaterialTheme.typography.labelSmall,
+        letterSpacing = 1.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun DemoToggle(title: String, detail: String, on: Boolean, onToggle: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(
+            checked = on,
+            onCheckedChange = { onToggle() },
+            colors = SwitchDefaults.colors(checkedTrackColor = RemoteTheme.status.demoBold),
+        )
+    }
+}
+
+/** Newest first. Selectable, so a log can be copied into a bug report. */
+@Composable
+private fun ActivityLog(lines: List<String>, modifier: Modifier) {
+    Column(
+        modifier
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        SectionLabel("Activity · newest first")
         SelectionContainer {
             Text(
                 lines.joinToString("\n").ifEmpty { "—" },
                 fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp,
-                lineHeight = 16.sp,
+                lineHeight = 17.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -455,33 +885,6 @@ private fun ActivityLog(lines: List<String>) {
 }
 
 // ---------------------------------------------------------------------- helpers
-
-/** The banner under the status tiles: why driving is blocked, most important first. */
-private fun warning(s: RemoteState): Pair<String, Tone>? {
-    val link = s.link
-    return when {
-        link is Link.Disconnected && s.demo ->
-            if (s.demoStatus?.offline == true) "Demo robot unreachable: simulated Wi-Fi drop. Tap \"Wi-Fi dropped\" below to restore." to Tone.DANGER
-            else "Connecting to the demo robot…" to Tone.NEUTRAL
-        link is Link.Disconnected ->
-            "Not connected. Check the phone is on the robot's Wi-Fi (mobile data off), then tap Test." to Tone.DANGER
-        s.estop == null -> "Reading robot status…" to Tone.NEUTRAL
-        s.estop == EStop.PRESSED -> "Emergency stop is PRESSED on the robot. Release it to drive." to Tone.DANGER
-        !s.armed -> "Drive is off. Clear the area, then switch on \"Drive enabled\"." to Tone.NEUTRAL
-        else -> null
-    }
-}
-
-@Composable
-private fun toneColors(tone: Tone): Pair<Color, Color> {
-    val s = RemoteTheme.status
-    return when (tone) {
-        Tone.NEUTRAL -> MaterialTheme.colorScheme.surface to MaterialTheme.colorScheme.onSurface
-        Tone.GOOD -> s.goodContainer to s.good
-        Tone.WARN -> s.warnContainer to s.warn
-        Tone.DANGER -> s.dangerContainer to s.danger
-    }
-}
 
 // ---------------------------------------------------------------------- previews
 

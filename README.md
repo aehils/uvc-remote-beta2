@@ -1,4 +1,4 @@
-# Reeman Remote — beta 2
+# Robot Control — beta 2
 
 Android remote for the Reeman Spark robot. Fixed-step driving only: every button
 sends one pre-planned step (`/cmd/move` or `/cmd/turn`), so the robot plans its own
@@ -15,6 +15,12 @@ It is written in Kotlin with a Jetpack Compose (Material 3) screen, in light and
 
 ## What it does
 
+The screen has four tabs: **Remote** (the manual step pad and the robot address),
+**Tasks** and **Map** (placeholders for autonomous work, not in this build yet), and
+**Activity** (the log). The robot's readings (e-stop badge, speed, battery) are pinned
+under the title on every tab, and **STOP is the red button in the centre of the nav bar**,
+so it is on screen on every tab and on the DEMO controls page.
+
 | Button | Command sent | Speed |
 |---|---|---|
 | Forward 0.5 m | `/cmd/move` `{"distance":50,"direction":1,"speed":0.30}` | 0.3 m/s |
@@ -27,23 +33,25 @@ It is written in Kotlin with a Jetpack Compose (Material 3) screen, in light and
 Safety behaviour:
 - Drive buttons only work when: connected, e-stop released, **Drive enabled** switched on, and no step is running.
 - One step at a time: buttons lock until the robot's measured speed has been ~0 for about a second.
-- Leaving the app (home button, screen off, switching apps) switches Drive off.
+- Leaving the app (home button, screen off, switching apps) or the Remote tab switches Drive off.
+- STOP pulses with a red ring while a step is running.
 - Speeds are capped in code (`MAX_LINEAR` 0.3 m/s, `MAX_ANGULAR` 0.5 rad/s in `DriveController.kt`).
 - STOP is a hard stop. Use it for emergencies, not for routine stopping (steps end on their own).
 - The physical e-stop remains the real backstop.
 
 ## Demo mode
 
-Flip the **Demo** switch at the top right. The app then talks to a simulated robot
-built into the app instead of the real one:
+Tap the **DEMO** pill at the top right (its dot is filled when demo mode is on) and
+use the **Turn on DEMO** button in the menu. The app then talks to a simulated robot built into the
+app instead of the real one:
 
-- A purple **DEMO MODE** strip stays pinned to the top of the screen, the status line
-  reads *Connected to DEMO robot (simulated)*, and every log line starts with `[DEMO]`.
+- A purple **DEMO MODE IS ON** strip stays pinned to the top of the screen, the status line
+  reads *CONNECTED*, and every log line starts with `[DEMO]`.
 - **Nothing is sent over the network.** Demo requests are answered inside the app
   (`FakeRobot.kt`), so demo mode is safe to use while on the robot's Wi-Fi.
 - All the real app logic runs unchanged: polling, the drive interlocks, the step lock,
   STOP. Only the robot at the other end is replaced.
-- The Demo switch is locked (but still shows ON) while a step is running.
+- The DEMO menu's switch button is disabled (the pill still shows ON) while a step is running.
 - The emulator starts in demo mode until you choose a mode yourself, because the
   emulator shares the Mac's network and could otherwise reach the real robot.
 - You can't switch mode while a step is running, and switching always turns
@@ -53,16 +61,26 @@ The simulated robot mimics the real firmware: the same paths and JSON, the same
 error codes (`009`, `004`), ~200 ms command latency, and the measured acceleration
 profile. It sits in a 5 m × 4 m room with a box obstacle, and stops short at walls.
 
-The **Demo controls** panel (shown only in demo mode) simulates events that are hard
-to set up on the real robot. The first three are toggles: highlighted means active.
+The **DEMO controls** page simulates events that are hard to set up on the real robot.
+Open it with the purple sliders button at the top right of the DEMO menu (shown only
+while DEMO is active). STOP and the robot readings stay on screen there, so you can
+watch each event take effect. The first three are switches; the last two are buttons.
 
 | Control | Simulates | What the app should do |
 |---|---|---|
-| E-stop pressed | physical e-stop | red E-stop tile, driving blocked; pressing mid-step stops the robot |
-| Wi-Fi dropped | lost connection | *Not connected* after ~3 failed polls, driving blocked |
+| E-stop pressed | physical e-stop | **E** badge turns solid red, driving blocked; pressing mid-step stops the robot |
+| Wi-Fi dropped | lost connection | *NOT CONNECTED* after ~3 failed polls, driving blocked |
 | Obstacle ahead | obstacle in the way | next step accepted but never starts → "no motion seen" |
-| Battery −10% | draining battery | battery tile turns amber at 20%, red at 10% (wraps back to 100%) |
+| Battery −10% | draining battery | battery figure turns amber at 20%, red at 10% (wraps back to 100%) |
 | Reset robot | — | robot back to the room centre, faults cleared |
+
+### Demo mode limitations
+
+The simulator only covers fixed-step driving. These are answered with error `004`
+("Not simulated in DEMO mode"): velocity streaming (`/cmd/speed`), navigation
+(`/cmd/nav`, `/cmd/nav_name`, `/cmd/cancel_goal`), charging, relocalisation, maps and
+restricted layers, speed limits, mode changes and shutdown. The room, obstacle and
+motion profile are a simple model, not the robot's real map or sensors.
 
 Things the simulator does **not** know about the real robot (marked `GUESS` in
 `FakeRobot.kt`): turn acceleration, what happens to a command sent with the e-stop
@@ -105,12 +123,12 @@ e-stop and Wi-Fi loss.
 ## First drive test (real robot)
 
 1. Robot off the charging dock, clear floor ~1 m on every side, you can reach the physical e-stop.
-2. Open the app → status should read *Connected*, battery shown, E-stop *Released*.
+2. Open the app → status should read *CONNECTED*, battery shown, grey **E** badge (e-stop released).
 3. Switch on **Drive enabled** → tap **Left 90°** → confirm it turns left and the buttons unlock after it stops.
 4. Then Right 90°, Forward 0.5 m, Back 0.5 m, Turn 180°.
 5. Test STOP once mid-turn at the slow speed.
 
-Note anything odd from the **Activity** log at the bottom of the screen (long-press to select and copy).
+Note anything odd from the **Activity** tab (long-press to select and copy).
 
 ### Still to confirm on the real robot (from beta 0.1)
 
