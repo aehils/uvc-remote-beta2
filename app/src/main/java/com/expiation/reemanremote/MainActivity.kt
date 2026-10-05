@@ -30,6 +30,7 @@ class MainActivity : ComponentActivity() {
             onArmChange = c::setArmed,
             onMove = c::drive,
             onStop = c::stop,
+            onDock = c::dock,
             onDemoEstop = c::demoToggleEstop,
             onDemoWifi = c::demoToggleWifi,
             onDemoBlock = c::demoBlockNextStep,

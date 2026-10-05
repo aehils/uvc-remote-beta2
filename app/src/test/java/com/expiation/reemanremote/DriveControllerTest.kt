@@ -124,6 +124,58 @@ class DriveControllerTest {
         assertTrue("stopped short", robotX(c) < 0.4)
     }
 
+    private fun chargeFlag(c: DriveController) =
+        Regex("\"chargeFlag\":(\\d+)").find(c.demoRobot.handle("GET", "/reeman/base_encode", null)!!.body)!!.groupValues[1].toInt()
+
+    @Test
+    fun dockReversesOntoThePileAndReportsCharging() = runTest {
+        val c = ready()
+        c.dock()
+        assertTrue(c.state.value.phase is StepPhase.Stepping)
+        c.drive(Move.FORWARD) // locked while docking
+        assertEquals(1, c.state.value.log.count { "sending" in it })
+        assertTrue(log(c), logged(c, "sending /cmd/charge {\"type\":0"))
+
+        waitFor(c, maxMs = 40_000) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), logged(c, "Dock charger: done. Robot reports: charging at the pile."))
+        assertEquals("on the pile against the west wall", -2.15, robotX(c), 0.02)
+        assertEquals(2, chargeFlag(c))
+    }
+
+    @Test
+    fun dockNeedsTheInterlock() = runTest {
+        val c = controller()
+        c.resume()
+        advanceTimeBy(2000)
+        c.dock()
+        assertEquals("not armed", StepPhase.Idle, c.state.value.phase)
+    }
+
+    @Test
+    fun dockOutOfRangeReportsNoMotion() = runTest {
+        val c = ready()
+        c.drive(Move.FORWARD) // 2.65 m from the pile: out of the demo's 2.5 m range
+        waitFor(c) { it.phase == StepPhase.Idle }
+        c.dock()
+        val took = waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), logged(c, "Dock charger: no motion seen. Already docked, or no charging pile within range?"))
+        assertTrue("took $took ms", took in 8000..8700)
+    }
+
+    @Test
+    fun stopMidDockCancelsDocking() = runTest {
+        val c = ready()
+        c.dock()
+        advanceTimeBy(4000)
+        assertTrue(c.state.value.vx < -0.05)
+        c.stop()
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), logged(c, "STOP: sent"))
+        assertTrue(log(c), logged(c, "Dock charger: stopped"))
+        assertTrue("stopped short of the pile", robotX(c) > -1.5)
+        assertEquals("not docking any more", 0, chargeFlag(c))
+    }
+
     @Test
     fun estopMidStepIsNoticed() = runTest {
         val c = ready()
