@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Logo drawn in the source artwork's 1200-unit space; the group centres its
+     enclosing circle (620,597 r441.6) in the 108dp canvas at a 30dp radius. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.06793"
+        android:scaleY="0.06793"
+        android:translateX="11.880"
+        android:translateY="13.443">
+        <path android:strokeColor="#FFFFFF" android:strokeWidth="21" android:pathData="M451.5,284.5 L701.2,455 M368,677 L689.1,555.8 M783.5,913 L783.5,630" />
+        <path android:fillColor="#FFFFFF" android:pathData="M365,284.5 a86.5,86.5 0 1,0 173,0 a86.5,86.5 0 1,0 -173,0 Z M282,677 a86,86 0 1,0 172,0 a86,86 0 1,0 -172,0 Z M697,913 a86,86 0 1,0 172,0 a86,86 0 1,0 -172,0 Z" />
+        <path android:fillColor="#FFFFFF" android:fillType="evenOdd" android:pathData="M667,517 a125,125 0 1,0 250,0 a125,125 0 1,0 -250,0 Z M821.9 525.3C826.5 525.3 826.9 524.1 826.9 520.5V509.5C826.9 505.7 826.5 504.7 821.9 504.7H777.2C777.2 495 777.8 486 778.4 479C778.8 474.4 781.2 473 785 473H828.5C833.1 473 833.5 471.8 833.5 468.3V457.3C833.5 453.5 833.1 452.5 828.5 452.5H782.6C773.3 452.5 766.7 453.3 762.1 456.9C757.7 460.5 755.3 465.9 754.3 475.6C753.1 486.2 752.5 501.3 752.5 512.9V521.1C752.5 533.2 753.1 547.8 754.3 558.4C755.5 567.7 756.9 573.1 761.3 576.7C765.7 580.3 772.5 581.5 782.6 581.5H828.3C832.9 581.5 833.5 580.3 833.5 576.7V565.7C833.5 562 832.9 561 828.3 561H785C780.8 561 779 560 778.6 555.4C777.6 545.2 777.2 536 777.2 525.3Z" />
+    </group>
+</vector>
