@@ -5,6 +5,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Random
+import kotlin.math.abs
 
 /** Drives the demo robot on a fake clock, checking it behaves like the real firmware. */
 class FakeRobotTest {
@@ -54,6 +55,51 @@ class FakeRobotTest {
         assertEquals(0.0, vx(), 1e-9)
         advance(0.3)
         assertEquals(0.5, pose("x"), 0.01)
+    }
+
+    private fun chargeFlag() = num(get("/reeman/base_encode"), "chargeFlag")
+    private fun dock() = assertEquals("{}", post("/cmd/charge", """{"type":0,"point":"charging_pile"}"""))
+
+    @Test
+    fun dockTurnsAwayFromThePileThenReversesOntoItAndCharges() {
+        post("/cmd/turn", """{"direction":1,"angle":90,"speed":0.40}""") // face +y: the pile is to its right
+        advance(10.0)
+        dock()
+        assertEquals(8.0, chargeFlag(), 0.0)
+        advance(2.0)
+        assertTrue("turning first", abs(vth()) > 0.1)
+        advance(30.0)
+        assertEquals(2.0, chargeFlag(), 0.0)
+        assertEquals(-2.15, pose("x"), 0.01)
+        assertEquals(0.0, pose("y"), 0.01)
+        assertEquals("faces away from the pile", 0.0, pose("theta"), 0.01)
+
+        val battery = num(get("/reeman/base_encode"), "battery")
+        advance(10.0)
+        assertEquals("charges on the pile", battery + 5, num(get("/reeman/base_encode"), "battery"), 1.0)
+
+        forward()
+        assertEquals("driving off leaves the pile", 0.0, chargeFlag(), 0.0)
+    }
+
+    @Test
+    fun dockOutOfRangeNeverMoves() {
+        forward()
+        advance(5.0)
+        dock()
+        advance(3.0)
+        assertEquals(0.0, vx(), 0.0)
+        assertEquals(9.0, chargeFlag(), 0.0)
+    }
+
+    @Test
+    fun cancelDockStopsTheRobot() {
+        dock()
+        advance(3.0)
+        assertTrue(vx() < -0.05)
+        assertEquals("{}", post("/cmd/charge", """{"type":1,"point":"charging_pile"}"""))
+        assertEquals(0.0, vx(), 0.0)
+        assertEquals(0.0, chargeFlag(), 0.0)
     }
 
     @Test

@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -70,6 +71,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -78,6 +80,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.LinkAnnotation
@@ -112,6 +115,7 @@ data class RemoteActions(
     val onArmChange: (Boolean) -> Unit = {},
     val onMove: (Move) -> Unit = {},
     val onStop: () -> Unit = {},
+    val onDock: () -> Unit = {},
     val onDemoEstop: () -> Unit = {},
     val onDemoWifi: () -> Unit = {},
     val onDemoBlock: () -> Unit = {},
@@ -175,11 +179,12 @@ private fun MainPage(state: RemoteState, actions: RemoteActions, onOpenDemoContr
             ) {
                 ConnectionSection(state, actions.onPing)
                 DriveCard(state, actions)
+                DockButton(state.canDrive, actions.onDock)
             }
             Tab.TASKS -> ComingSoon(
                 content, R.drawable.ic_tab_tasks, "Autonomous tasks",
-                "Send the robot to saved points, run routes and send it to charge. " +
-                    "Not in this build yet: it drives in fixed steps only.",
+                "Send the robot to saved points, run routes and send it to charge from anywhere. " +
+                    "Not in this build yet: it drives in fixed steps, and docks only from close to the charging pile.",
             )
             Tab.MAP -> ComingSoon(
                 content, R.drawable.ic_tab_map, "Map",
@@ -499,34 +504,29 @@ private fun ConnectionSection(state: RemoteState, onPing: (String) -> Unit) {
     }
 
     // Sits on the page background (no card): the Remote tab's header, not one panel among many.
-    Column(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            AddressField(
-                value = if (state.demo) "DEMO" else hostText,
-                onValueChange = { hostText = it },
-                enabled = !state.demo,
-                onDone = ping,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(8.dp))
-            FilledTonalButton(
-                onClick = ping,
-                modifier = Modifier.size(ADDRESS_ROW_HEIGHT),
-                shape = RoundedCornerShape(10.dp),
-                contentPadding = PaddingValues(0.dp),
-            ) {
-                Icon(painterResource(R.drawable.ic_ping), contentDescription = "Ping", modifier = Modifier.size(22.dp))
-            }
-        }
-        Text(
-            if (state.connected) "CONNECTED" else "NOT CONNECTED",
-            modifier = Modifier.fillMaxWidth(),
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 1.5.sp,
-            textAlign = TextAlign.Center,
-            color = if (state.connected) status.good else status.danger,
+    // The Ping icon doubles as the connection light: green when connected, orange when not.
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        AddressField(
+            value = if (state.demo) "DEMO" else hostText,
+            onValueChange = { hostText = it },
+            enabled = !state.demo,
+            onDone = ping,
+            modifier = Modifier.weight(1f),
         )
+        Spacer(Modifier.width(8.dp))
+        FilledTonalButton(
+            onClick = ping,
+            modifier = Modifier.size(ADDRESS_ROW_HEIGHT),
+            shape = RoundedCornerShape(10.dp),
+            contentPadding = PaddingValues(0.dp),
+        ) {
+            Icon(
+                painterResource(R.drawable.ic_ping),
+                contentDescription = if (state.connected) "Ping. Connected" else "Ping. Not connected",
+                modifier = Modifier.size(22.dp),
+                tint = if (state.connected) status.good else status.offline,
+            )
+        }
     }
 }
 
@@ -706,16 +706,25 @@ private fun Reading(label: String, value: String, unit: String, valueColor: Colo
 private fun DriveCard(state: RemoteState, actions: RemoteActions) {
     val status = RemoteTheme.status
     Panel {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Drive enabled", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(
-                    if (state.armed) "Buttons are live. One step at a time." else "Clear the area, then switch on.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        // The whole row is the touch target, so the switch itself can be drawn smaller.
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .toggleable(value = state.armed, role = Role.Switch, onValueChange = actions.onArmChange),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "DRIVE ENABLED",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 1.sp,
+            )
+            // A Switch is a fixed 52 x 32 dp; scaled down here and boxed at the scaled size.
+            Box(Modifier.size(width = 42.dp, height = 26.dp), contentAlignment = Alignment.Center) {
+                Switch(checked = state.armed, onCheckedChange = null, modifier = Modifier.scale(0.8f))
             }
-            Switch(checked = state.armed, onCheckedChange = actions.onArmChange)
         }
 
         AnimatedVisibility(state.busy) {
@@ -735,6 +744,23 @@ private fun DriveCard(state: RemoteState, actions: RemoteActions) {
         }
 
         DrivePad(state.canDrive, actions.onMove)
+    }
+}
+
+/** The robot's own docking routine. It moves the robot, so it is held to the drive pad's interlock. */
+@Composable
+private fun DockButton(enabled: Boolean, onDock: () -> Unit) {
+    FilledTonalButton(
+        onClick = onDock,
+        enabled = enabled,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Icon(painterResource(R.drawable.ic_dock), contentDescription = null, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("DOCK CHARGER", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
     }
 }
 
@@ -818,7 +844,7 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
 
             SectionLabel("Faults")
             DemoToggle("E-stop pressed", "As if the physical e-stop were pressed. Driving is blocked; pressing mid-step stops the robot.", demo.estopPressed, actions.onDemoEstop)
-            DemoToggle("Wi-Fi dropped", "The robot stops answering. NOT CONNECTED shows after about 3 missed polls.", demo.offline, actions.onDemoWifi)
+            DemoToggle("Wi-Fi dropped", "The robot stops answering. The Ping icon turns orange after about 3 missed polls.", demo.offline, actions.onDemoWifi)
             DemoToggle("Obstacle ahead", "The next step is accepted but never starts, so the app reports no motion.", demo.blockPending, actions.onDemoBlock)
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

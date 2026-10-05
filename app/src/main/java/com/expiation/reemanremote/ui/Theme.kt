@@ -52,6 +52,7 @@ data class StatusColors(
     val good: Color, val goodContainer: Color,
     val warn: Color, val warnContainer: Color,
     val danger: Color, val dangerContainer: Color,
+    val offline: Color, // the Ping icon while the robot is not answering
     val demo: Color, val demoContainer: Color,
     val demoBold: Color, // fill for white text: the DEMO strip and active demo chips
     val stop: Color,
@@ -61,6 +62,7 @@ private val LightStatus = StatusColors(
     good = Color(0xFF15803D), goodContainer = Color(0xFFDCFCE7),
     warn = Color(0xFFB45309), warnContainer = Color(0xFFFEF3C7),
     danger = Color(0xFFB91C1C), dangerContainer = Color(0xFFFEE2E2),
+    offline = Color(0xFFEA580C),
     demo = Color(0xFF7C3AED), demoContainer = Color(0xFFEDE9FE),
     demoBold = Color(0xFF7C3AED),
     stop = Color(0xFFDC2626),
@@ -70,6 +72,7 @@ private val DarkStatus = StatusColors(
     good = Color(0xFF4ADE80), goodContainer = Color(0xFF14532D),
     warn = Color(0xFFFBBF24), warnContainer = Color(0xFF78350F),
     danger = Color(0xFFF87171), dangerContainer = Color(0xFF7F1D1D),
+    offline = Color(0xFFFB923C),
     demo = Color(0xFFA78BFA), demoContainer = Color(0xFF2E1065),
     demoBold = Color(0xFF7C3AED), // same in both themes so white text stays readable
     stop = Color(0xFFDC2626), // STOP stays the same saturated red in both themes

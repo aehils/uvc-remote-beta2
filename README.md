@@ -28,10 +28,20 @@ so it is on screen on every tab and on the DEMO controls page.
 | Left 90° | `/cmd/turn` `{"direction":1,"angle":90,"speed":0.40}` | 0.4 rad/s |
 | Right 90° | `/cmd/turn` `{"direction":0,"angle":90,"speed":0.40}` | 0.4 rad/s |
 | Turn 180° | `/cmd/turn` `{"direction":1,"angle":180,"speed":0.40}` | 0.4 rad/s |
-| STOP | `/cmd/move` + `/cmd/turn` stop bodies | always active |
+| DOCK CHARGER | `/cmd/charge` `{"type":0,"point":"charging_pile"}` | set by the firmware |
+| STOP | `/cmd/move` + `/cmd/turn` stop bodies (and `/cmd/charge` `{"type":1}` during a dock) | always active |
+
+**DOCK CHARGER** starts the robot's own docking routine, the one it runs when it is close
+to the charging pile: it finds the pile and reverses onto it. Use it only with the pile
+nearby; it does not navigate there (the loaded map is from another building). It is held
+to the same rules as the drive buttons, and the buttons stay locked until the robot has
+been still for ~3 s. When it finishes, the log says what the robot reports (charging, or
+no pile found). That reading is normally stale, but the docking motion refreshes it.
+Docking speed is the firmware's, not the app's caps below.
 
 Safety behaviour:
-- Drive buttons only work when: connected, e-stop released, **Drive enabled** switched on, and no step is running.
+- Drive buttons (and DOCK CHARGER) only work when: connected, e-stop released, **DRIVE ENABLED** switched on, and no step is running.
+- The **Ping** icon next to the address is the connection light: green when connected, orange when not.
 - One step at a time: buttons lock until the robot's measured speed has been ~0 for about a second.
 - Leaving the app (home button, screen off, switching apps) or the Remote tab switches Drive off.
 - STOP pulses with a red ring while a step is running.
@@ -45,8 +55,8 @@ Tap the **DEMO** pill at the top right (its dot is filled when demo mode is on) 
 use the **Turn on DEMO** button in the menu. The app then talks to a simulated robot built into the
 app instead of the real one:
 
-- A purple **DEMO MODE IS ON** strip stays pinned to the top of the screen, the status line
-  reads *CONNECTED*, and every log line starts with `[DEMO]`.
+- A purple **DEMO MODE IS ON** strip stays pinned to the top of the screen, the Ping icon
+  turns green, and every log line starts with `[DEMO]`.
 - **Nothing is sent over the network.** Demo requests are answered inside the app
   (`FakeRobot.kt`), so demo mode is safe to use while on the robot's Wi-Fi.
 - All the real app logic runs unchanged: polling, the drive interlocks, the step lock,
@@ -69,16 +79,19 @@ watch each event take effect. The first three are switches; the last two are but
 | Control | Simulates | What the app should do |
 |---|---|---|
 | E-stop pressed | physical e-stop | **E** badge turns solid red, driving blocked; pressing mid-step stops the robot |
-| Wi-Fi dropped | lost connection | *NOT CONNECTED* after ~3 failed polls, driving blocked |
+| Wi-Fi dropped | lost connection | Ping icon turns orange after ~3 failed polls, driving blocked |
 | Obstacle ahead | obstacle in the way | next step accepted but never starts → "no motion seen" |
 | Battery −10% | draining battery | battery figure turns amber at 20%, red at 10% (wraps back to 100%) |
 | Reset robot | — | robot back to the room centre, faults cleared |
 
 ### Demo mode limitations
 
-The simulator only covers fixed-step driving. These are answered with error `004`
+The simulator covers fixed-step driving and docking. Its charging pile is against the
+middle of the west wall, right behind the start position, and it can be seen from 2.5 m
+(a guess): DOCK CHARGER from the start docks, but one step forward first puts it out of
+range ("no motion seen"). On the pile the battery climbs 1% every 2 s. These are answered with error `004`
 ("Not simulated in DEMO mode"): velocity streaming (`/cmd/speed`), navigation
-(`/cmd/nav`, `/cmd/nav_name`, `/cmd/cancel_goal`), charging, relocalisation, maps and
+(`/cmd/nav`, `/cmd/nav_name`, `/cmd/cancel_goal`), driving to the pile (`/cmd/charge` type 2), relocalisation, maps and
 restricted layers, speed limits, mode changes and shutdown. The room, obstacle and
 motion profile are a simple model, not the robot's real map or sensors.
 
@@ -111,7 +124,7 @@ From a terminal (needs a JDK 17–21, e.g. `export JAVA_HOME=~/Library/Java/Java
 
 The unit tests (`app/src/test/`) run in virtual time against the simulated robot. They cover
 the simulator itself and the drive rules end to end: interlocks, the step lock, STOP,
-e-stop and Wi-Fi loss.
+e-stop, Wi-Fi loss and docking.
 
 ## Network
 
@@ -123,8 +136,8 @@ e-stop and Wi-Fi loss.
 ## First drive test (real robot)
 
 1. Robot off the charging dock, clear floor ~1 m on every side, you can reach the physical e-stop.
-2. Open the app → status should read *CONNECTED*, battery shown, grey **E** badge (e-stop released).
-3. Switch on **Drive enabled** → tap **Left 90°** → confirm it turns left and the buttons unlock after it stops.
+2. Open the app → the Ping icon should be green, battery shown, grey **E** badge (e-stop released).
+3. Switch on **DRIVE ENABLED** → tap **Left 90°** → confirm it turns left and the buttons unlock after it stops.
 4. Then Right 90°, Forward 0.5 m, Back 0.5 m, Turn 180°.
 5. Test STOP once mid-turn at the slow speed.
 

@@ -3,8 +3,10 @@ package com.expiation.reemanremote
 import java.util.Locale
 import java.util.Random
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.ceil
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sign
@@ -80,6 +82,8 @@ class FakeRobot(
     private var y = 0.0
     private var theta = 0.0
     private var motion: Motion? = null
+    private var nextLeg: ((Long) -> Motion)? = null // docking: the reverse that follows the turn
+    private var chargeFlag = CHARGE_NONE
     private var battery = 0.0
     private var estopPressed = false
     private var offline = false
@@ -117,8 +121,8 @@ class FakeRobot(
         "/reeman/hostname" -> """{"hostname":"demo-robot"}"""
         "/reeman/get_mode" -> """{"mode":2}"""
         "/reeman/base_encode" -> fmt(
-            """{"battery":%d,"chargeFlag":0,"emergencyButton":%d}""",
-            batteryPercent(), if (estopPressed) 0 else 1,
+            """{"battery":%d,"chargeFlag":%d,"emergencyButton":%d}""",
+            batteryPercent(), chargeFlag, if (estopPressed) 0 else 1,
         )
         "/reeman/speed" -> {
             val m = motion
@@ -144,6 +148,7 @@ class FakeRobot(
     private fun post(path: String, json: String, now: Long): String? = when (path) {
         "/cmd/move" -> move(json, now)
         "/cmd/turn" -> turn(json, now)
+        "/cmd/charge" -> charge(json, now)
         in UNSIMULATED_CMDS -> error("004", "Not simulated in DEMO mode")
         else -> null
     }
@@ -154,7 +159,7 @@ class FakeRobot(
         val speed = num(json, "speed")
         if (distance == null || direction == null || speed == null) return error("004", "Internal service error")
         if (distance == 0.0 || speed == 0.0) {
-            motion = null // the stop body: a hard stop, as on the real robot
+            halt() // the stop body: a hard stop, as on the real robot
             return OK
         }
         if (distance < 0 || speed < 0) return error("004", "Internal service error")
@@ -169,7 +174,7 @@ class FakeRobot(
         val speed = num(json, "speed")
         if (direction == null || angle == null || speed == null) return error("004", "Internal service error")
         if (angle == 0.0 || speed == 0.0) {
-            motion = null
+            halt()
             return OK
         }
         // SLAM 3.0 docs limit angle to [-180, 180]; assume the firmware rejects more.
@@ -180,22 +185,68 @@ class FakeRobot(
     }
 
     /**
+     * type 0: dock with the pile if it is within [DOCK_RANGE]: turn to face away from it, then
+     * reverse onto it. GUESS: the real routine and its range were never watched; this is the
+     * shape the manual describes. Out of range the command is still accepted but the robot
+     * never moves and chargeFlag reads 9, as the firmware documents. type 1 cancels docking.
+     */
+    private fun charge(json: String, now: Long): String {
+        return when (num(json, "type")) {
+            0.0 -> {
+                if (chargeFlag == CHARGE_DOCKED) return OK // already on the pile
+                val dx = x - DOCK_X
+                val dy = y - DOCK_Y
+                val distance = hypot(dx, dy)
+                if (distance > DOCK_RANGE) {
+                    halt()
+                    chargeFlag = CHARGE_NOT_FOUND
+                    return OK
+                }
+                val turn = wrap(atan2(dy, dx) - theta)
+                if (start(true, turn.sign, abs(turn), DOCK_TURN_SPEED, ANGULAR_ACCEL, now)) {
+                    chargeFlag = CHARGE_DOCKING
+                    nextLeg = { t -> Motion(false, -1.0, distance, DOCK_SPEED, 0.36 * DOCK_SPEED.pow(0.40), t) }
+                }
+                OK
+            }
+            1.0 -> {
+                halt()
+                OK
+            }
+            null -> error("004", "Internal service error")
+            else -> error("004", "Not simulated in DEMO mode") // type 2 navigates to the pile first
+        }
+    }
+
+    /** Hard stop. Abandons a dock in progress, but a robot already on the pile stays on it. */
+    private fun halt() {
+        motion = null
+        nextLeg = null
+        if (chargeFlag == CHARGE_DOCKING) chargeFlag = CHARGE_NONE
+    }
+
+    /**
      * A new step replaces the running one outright (GUESS: the firmware's pre-emption
      * behaviour is unmeasured). With the e-stop pressed or an obstacle simulated the
      * step is accepted but the wheels never turn (also a GUESS).
      */
-    private fun start(turn: Boolean, sign: Double, amount: Double, speed: Double, accel: Double, now: Long) {
+    private fun start(turn: Boolean, sign: Double, amount: Double, speed: Double, accel: Double, now: Long): Boolean {
+        halt()
+        chargeFlag = CHARGE_NONE // any move takes it off the pile
         if (estopPressed || blockNext) {
             blockNext = false
-            motion = null
-            return
+            return false
         }
         motion = Motion(turn, sign, amount, speed, accel, now + CMD_LATENCY_NS)
+        return true
     }
 
     // ------------------------------------------------------------------ physics
 
     private fun advance(now: Long) {
+        if (chargeFlag == CHARGE_DOCKED) {
+            battery = min(100.0, battery + (now - lastNs) / 1e9 / CHARGING_SECONDS_PER_PERCENT)
+        }
         var t = lastNs
         while (t < now) {
             val m = motion ?: break
@@ -208,14 +259,18 @@ class FakeRobot(
                 val nx = x + v * dt * cos(theta)
                 val ny = y + v * dt * sin(theta)
                 if (collides(nx, ny)) {
-                    motion = null // obstacle brake: stops short, like the real safety brake
+                    halt() // obstacle brake: stops short, like the real safety brake
                 } else {
                     x = nx
                     y = ny
                 }
             }
             if (v != 0.0) battery = maxOf(0.0, battery - dt / MOVING_SECONDS_PER_PERCENT)
-            if (motion?.finished(next) == true) motion = null
+            if (motion?.finished(next) == true) {
+                motion = nextLeg?.invoke(next)
+                nextLeg = null
+                if (motion == null && chargeFlag == CHARGE_DOCKING) chargeFlag = CHARGE_DOCKED
+            }
             t = next
         }
         lastNs = now
@@ -242,7 +297,7 @@ class FakeRobot(
     fun setEstopPressed(pressed: Boolean) {
         advance(clock())
         estopPressed = pressed
-        if (pressed) motion = null // the e-stop cuts the motors
+        if (pressed) halt() // the e-stop cuts the motors
     }
 
     @get:Synchronized @set:Synchronized
@@ -278,6 +333,8 @@ class FakeRobot(
         poseX = 0.0; poseY = 0.0; poseTheta = 0.0
         poseNs = lastNs - POSE_PERIOD_NS
         motion = null
+        nextLeg = null
+        chargeFlag = CHARGE_NONE
         battery = 87.0
         estopPressed = false
         offline = false
@@ -298,11 +355,25 @@ class FakeRobot(
         private const val POSE_PERIOD_NS = 200_000_000L  // real pose only updates at ~5 Hz
         private const val STEP_NS = 10_000_000L          // integration step
         private const val MOVING_SECONDS_PER_PERCENT = 20.0 // battery drain while moving, sped up for demos
+        private const val CHARGING_SECONDS_PER_PERCENT = 2.0 // battery gain on the pile, sped up for demos
+
+        // ---- Docking. chargeFlag values from /reeman/base_encode (SLAM Web API). ----
+        private const val CHARGE_NONE = 0                // "other values: not charging"
+        private const val CHARGE_DOCKED = 2              // charging at the pile
+        private const val CHARGE_DOCKING = 8             // connecting to the pile
+        private const val CHARGE_NOT_FOUND = 9           // no pile found while docking
+        private const val DOCK_RANGE = 2.5               // m, GUESS: how far away the pile can be seen
+        private const val DOCK_SPEED = 0.15              // m/s reversing onto the pile, GUESS
+        private const val DOCK_TURN_SPEED = 0.4          // rad/s, GUESS
 
         // ---- Simulated room, metres, map frame. Robot starts in the centre facing +x. ----
         private const val ROOM_X = 2.5                   // half-widths: a 5 m x 4 m room
         private const val ROOM_Y = 2.0
         private val BOX = doubleArrayOf(1.2, 0.8, 1.8, 1.4) // obstacle: minX, minY, maxX, maxY
+        // Charging pile against the middle of the west wall, right behind the start position.
+        // DOCK_X/Y is where the robot's centre sits when it is on the pile.
+        private const val DOCK_X = -ROOM_X + ROBOT_RADIUS + 0.05
+        private const val DOCK_Y = 0.0
         private val WALLS = arrayOf(
             doubleArrayOf(-ROOM_X, -ROOM_Y, ROOM_X, -ROOM_Y), doubleArrayOf(ROOM_X, -ROOM_Y, ROOM_X, ROOM_Y),
             doubleArrayOf(ROOM_X, ROOM_Y, -ROOM_X, ROOM_Y), doubleArrayOf(-ROOM_X, ROOM_Y, -ROOM_X, -ROOM_Y),
@@ -316,7 +387,7 @@ class FakeRobot(
         // so a demo never suggests a real route doesn't exist.
         private val UNSIMULATED_CMDS = setOf(
             "/cmd/speed", "/cmd/nav_name", "/cmd/nav", "/cmd/cancel_goal", "/cmd/max_speed",
-            "/cmd/charge", "/cmd/reloc_pose", "/cmd/reloc_absolute", "/cmd/set_mode",
+            "/cmd/reloc_pose", "/cmd/reloc_absolute", "/cmd/set_mode",
             "/cmd/save_map", "/cmd/apply_map", "/cmd/position", "/cmd/restrict_layer",
             "/cmd/shutdown", "/cmd/external_power_supply",
         )

@@ -31,7 +31,25 @@ enum class Move(val label: String) {
     FORWARD("Forward 0.5 m"), BACK("Back 0.5 m"), LEFT("Left 90°"), RIGHT("Right 90°"), AROUND("Turn 180°")
 }
 
-data class Step(val label: String, val path: String, val json: String, val isTurn: Boolean, val estimateMs: Long)
+/**
+ * One fixed command and how the step lock tracks it. The defaults suit a d-pad step;
+ * docking overrides them (see [DriveController.dock]).
+ *
+ * @param stillPolls polls (~0.3 s each) of stillness, after motion, that mean the step is over
+ * @param noMotionMs how long to wait for any motion before giving up
+ * @param capMs hard cap, in case the robot never settles
+ */
+data class Step(
+    val label: String,
+    val path: String,
+    val json: String,
+    val isTurn: Boolean,
+    val estimateMs: Long,
+    val stillPolls: Int = DriveController.STILL_POLLS_TO_FINISH,
+    val noMotionMs: Long = estimateMs + 2000,
+    val capMs: Long = estimateMs + 12000,
+    val stallHint: String = "Obstacle in the way, or command ignored?",
+)
 
 /** How the step lock decides a step is over (see [DriveController.trackStep]). */
 data class Tracking(
@@ -108,6 +126,7 @@ class DriveController(
     private var failCount = 0
     private var version: String? = null
     private var battery: Int? = null
+    private var chargeFlag: Int? = null
     private var vx = 0.0
     private var vth = 0.0
     private var armed = false
@@ -202,6 +221,7 @@ class DriveController(
         failCount = 0
         version = null
         battery = null
+        chargeFlag = null
         vx = 0.0
         vth = 0.0
         if (pollJob != null) {
@@ -255,6 +275,7 @@ class DriveController(
             runCatching {
                 val o = JSONObject(b.body)
                 if (o.has("battery")) battery = o.getInt("battery")
+                if (o.has("chargeFlag")) chargeFlag = o.getInt("chargeFlag")
                 val l = link
                 if (o.has("emergencyButton") && l is Link.Connected) {
                     val e = if (o.getInt("emergencyButton") == 0) EStop.PRESSED else EStop.RELEASED
@@ -263,7 +284,8 @@ class DriveController(
                     }
                     link = Link.Connected(e)
                 }
-                // chargeFlag deliberately ignored: it is stale on this firmware.
+                // chargeFlag is stale on this firmware, so it is never shown as live state; only
+                // reported once a dock finishes, after motion has refreshed it (see dockReport).
             }
         }
 
@@ -300,9 +322,32 @@ class DriveController(
             }
         }
 
+        send(step)
+    }
+
+    /**
+     * Starts the firmware's own docking routine (/cmd/charge type 0): the robot finds the
+     * charging pile nearby and reverses onto it. It moves the robot, so it takes the same
+     * interlock and step lock as the d-pad. The firmware picks the docking speed.
+     */
+    fun dock() {
+        if (!snapshot().canDrive) return
+        send(
+            Step(
+                "Dock charger", DOCK_PATH, DOCK_START, isTurn = false,
+                estimateMs = 30_000,     // GUESS: never timed on the real robot
+                stillPolls = 10,         // ~3 s: the routine may pause between aligning and reversing
+                noMotionMs = 8_000,
+                capMs = 120_000,
+                stallHint = "Already docked, or no charging pile within range?",
+            )
+        )
+    }
+
+    private fun send(step: Step) {
         // Lock before sending, so a double-tap can't send a second step.
         val t = now()
-        phase = StepPhase.Stepping(step, Tracking(t + step.estimateMs + 2000, t + step.estimateMs + 12000))
+        phase = StepPhase.Stepping(step, Tracking(t + step.noMotionMs, t + step.capMs))
         log("${step.label}: sending ${step.path} ${step.json}")
         publish()
 
@@ -319,10 +364,15 @@ class DriveController(
         }
     }
 
-    /** Always sends, in every phase. Sends both stop bodies, the running step's type first. */
+    /**
+     * Always sends, in every phase. Sends both stop bodies, the running step's type first.
+     * During a dock it cancels docking first: the firmware's routine may not obey the stop bodies.
+     */
     fun stop() {
         val p = phase
-        val turnFirst = (p as? StepPhase.Stepping)?.step?.isTurn ?: (p as? StepPhase.Stopping)?.step?.isTurn ?: false
+        val running = (p as? StepPhase.Stepping)?.step ?: (p as? StepPhase.Stopping)?.step
+        val turnFirst = running?.isTurn ?: false
+        val docking = running?.path == DOCK_PATH
         log("STOP pressed")
         val t = now()
         fun shorten(tr: Tracking) = tr.copy(
@@ -338,10 +388,11 @@ class DriveController(
 
         val a = api
         scope.launch {
+            val cancel = if (docking) a.post(DOCK_PATH, DOCK_CANCEL) else null
             val first = if (turnFirst) a.post("/cmd/turn", TURN_STOP) else a.post("/cmd/move", MOVE_STOP)
             val second = if (turnFirst) a.post("/cmd/move", MOVE_STOP) else a.post("/cmd/turn", TURN_STOP)
             log(
-                "STOP: " + if (first.ok || second.ok) "sent"
+                "STOP: " + if (first.ok || second.ok || cancel?.ok == true) "sent"
                 else "FAILED ${first.error}. USE THE PHYSICAL E-STOP"
             )
             publish()
@@ -374,11 +425,12 @@ class DriveController(
         val t = now()
         val stopping = p is StepPhase.Stopping
         val message = when {
-            tr.sawMotion && tr.stillPolls >= STILL_POLLS_TO_FINISH ->
-                if (stopping) "${step.label}: stopped" else "${step.label}: done"
+            tr.sawMotion && tr.stillPolls >= step.stillPolls ->
+                if (stopping) "${step.label}: stopped"
+                else "${step.label}: done" + if (step.path == DOCK_PATH) dockReport() else ""
             !tr.sawMotion && t > tr.noMotionDeadline ->
                 if (stopping) "${step.label}: stopped before it moved"
-                else "${step.label}: no motion seen. Obstacle in the way, or command ignored?"
+                else "${step.label}: no motion seen. ${step.stallHint}"
             t > tr.hardCap -> "${step.label}: timed out waiting for the robot to stop"
             else -> null
         }
@@ -390,6 +442,15 @@ class DriveController(
             p is StepPhase.Stepping -> p.copy(track = tr)
             else -> (p as StepPhase.Stopping).copy(track = tr)
         }
+    }
+
+    /** chargeFlag is stale while the robot sits still, but motion refreshes it, so after a dock it is worth a line. */
+    private fun dockReport() = ". Robot reports: " + when (chargeFlag) {
+        2 -> "charging at the pile."
+        8 -> "still connecting to the pile."
+        9 -> "no charging pile found."
+        null -> "no charging status."
+        else -> "not charging (chargeFlag $chargeFlag). Check it is on the pile."
     }
 
     /** Ends [step] early, unless the lock has already moved on from it. */
@@ -496,6 +557,14 @@ class DriveController(
         private const val LOG_LINES = 14
         private const val MOVE_STOP = """{"distance":0,"direction":1,"speed":0}"""
         private const val TURN_STOP = """{"direction":1,"angle":0,"speed":0}"""
+
+        // ---- Docking (REEMAN SLAM WEB API, "Navigation charging") ----
+        const val DOCK_PATH = "/cmd/charge"
+        // type 0 = dock with a pile close by, 1 = cancel docking. (2 = drive to the pile
+        // first: not used, the loaded map is from another building.) The robot's pile point is
+        // named "charging_pile".
+        private const val DOCK_START = """{"type":0,"point":"charging_pile"}"""
+        private const val DOCK_CANCEL = """{"type":1,"point":"charging_pile"}"""
 
         /** The firmware reports errors as {"error":"...","error_code":"009"}. */
         private fun robotError(body: String): String? {
