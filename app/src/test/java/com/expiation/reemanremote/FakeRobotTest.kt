@@ -102,6 +102,99 @@ class FakeRobotTest {
         assertEquals(0.0, chargeFlag(), 0.0)
     }
 
+    private fun nav(point: String) = post("/cmd/nav_name", """{"point":"$point"}""")
+    private fun planning() = !get("/reeman/global_plan").contains("\"007\"")
+
+    @Test
+    fun positionListsTheSavedPoints() {
+        val body = get("/reeman/position")
+        assertTrue(body, body.startsWith("""{"waypoints":[{"name":"Bed 1","type":"delivery","pose":{"x":1.6000,"y":-1.2000"""))
+        assertTrue(body, body.contains(""""name":"charging_pile""""))
+    }
+
+    @Test
+    fun navTurnsDrivesAndSettlesOnThePointsHeading() {
+        assertTrue("no plan while idle", !planning())
+        assertEquals("{}", nav("Bed 1"))
+        advance(1.0)
+        assertTrue("turning to face the point first", abs(vth()) > 0.1)
+        assertTrue(planning())
+        advance(40.0)
+        assertEquals(1.6, pose("x"), 0.02)
+        assertEquals(-1.2, pose("y"), 0.02)
+        assertEquals(-Math.PI / 2, pose("theta"), 0.02)
+        assertTrue("plan gone on arrival", !planning())
+    }
+
+    @Test
+    fun cancelGoalStopsANavigation() {
+        nav("Bed 2")
+        advance(5.0)
+        assertTrue(planning())
+        assertEquals("{}", post("/cmd/cancel_goal", "{}"))
+        assertEquals(0.0, vx(), 0.0)
+        assertEquals(0.0, vth(), 0.0)
+        assertTrue(!planning())
+    }
+
+    @Test
+    fun setPointSavesAPointTheRobotCanGoTo() {
+        assertEquals("{}", post("/cmd/position", """{"name":"Door","type":"delivery","pose":{"x":0.8,"y":-0.4,"theta":0.0}}"""))
+        assertTrue(get("/reeman/position").contains(""""name":"Door","type":"delivery","pose":{"x":0.8000,"y":-0.4000"""))
+        assertTrue("type must be one the API lists",
+            post("/cmd/position", """{"name":"X","type":"disinfect","pose":{"x":0,"y":0,"theta":0}}""").contains("004"))
+        nav("Door")
+        advance(30.0)
+        assertEquals(0.8, pose("x"), 0.02)
+        assertEquals(-0.4, pose("y"), 0.02)
+
+        robot.reset()
+        assertTrue("reset restores the demo points", !get("/reeman/position").contains("Door"))
+    }
+
+    @Test
+    fun stopBodyOnlyPausesANavigationLikeTheRealRobot() {
+        nav("Bed 2")
+        advance(4.0)
+        assertTrue(abs(vx()) + abs(vth()) > 0.05)
+        post("/cmd/move", """{"distance":0,"direction":1,"speed":0}""")
+        assertEquals(0.0, vx(), 1e-9)
+        assertEquals(0.0, vth(), 1e-9)
+        advance(3.0)
+        assertTrue("carried on after the stop body", abs(vx()) + abs(vth()) > 0.05)
+        post("/cmd/cancel_goal", "{}")
+        advance(3.0)
+        assertEquals("cancel_goal ends it", 0.0, abs(vx()) + abs(vth()), 1e-9)
+    }
+
+    @Test
+    fun chargeType2NavigatesToThePileThenDocks() {
+        assertEquals("{}", post("/cmd/charge", """{"type":2,"point":"charging_pile"}"""))
+        advance(2.0)
+        assertTrue("a trip with a plan", planning())
+        advance(60.0)
+        assertEquals(2.0, chargeFlag(), 0.0)
+        assertEquals(-2.15, pose("x"), 0.02)
+        assertEquals(0.0, pose("y"), 0.02)
+        assertTrue(!planning())
+    }
+
+    @Test
+    fun chargeCancelEndsAChargeTrip() {
+        robot.goChargeOnItsOwn()
+        advance(4.0)
+        post("/cmd/charge", """{"type":1,"point":"charging_pile"}""")
+        advance(5.0)
+        assertEquals(0.0, abs(vx()) + abs(vth()), 1e-9)
+        assertEquals(0.0, chargeFlag(), 0.0)
+    }
+
+    @Test
+    fun navToAnUnknownPointIsRejected() {
+        assertTrue(nav("Bed 9").contains("\"error_code\":\"004\""))
+        assertTrue(!planning())
+    }
+
     @Test
     fun backwardStepMovesBackward() {
         post("/cmd/move", """{"distance":50,"direction":0,"speed":0.20}""")

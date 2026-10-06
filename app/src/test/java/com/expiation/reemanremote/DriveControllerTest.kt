@@ -9,6 +9,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.abs
 import java.util.Random
 
 /**
@@ -174,6 +175,221 @@ class DriveControllerTest {
         assertTrue(log(c), logged(c, "Dock charger: stopped"))
         assertTrue("stopped short of the pile", robotX(c) > -1.5)
         assertEquals("not docking any more", 0, chargeFlag(c))
+    }
+
+    private fun robotPose(c: DriveController, key: String) =
+        Regex("\"$key\":(-?[0-9.]+)").find(c.demoRobot.handle("GET", "/reeman/pose", null)!!.body)!!.groupValues[1].toDouble()
+
+    /** Ready to drive, with the points read. */
+    private fun TestScope.withPoints(): Pair<DriveController, List<Waypoint>> {
+        val c = ready()
+        c.loadPoints()
+        waitFor(c) { it.points is Points.Loaded }
+        return c to (c.state.value.points as Points.Loaded).list
+    }
+
+    @Test
+    fun loadsThePointsWithoutTheChargingPile() = runTest {
+        val (c, points) = withPoints()
+        assertEquals(listOf("Bed 1", "Bed 2", "Sink area"), points.map { it.name })
+        assertEquals(Pose(1.6, -1.2, -1.5708), points[0].pose)
+        assertTrue(log(c), logged(c, "Loaded 3 disinfection point(s)"))
+    }
+
+    @Test
+    fun goToDrivesToThePointAndReportsArrival() = runTest {
+        val (c, points) = withPoints()
+        c.goTo(points[0])
+        assertEquals(points[0], c.state.value.running?.goal)
+        assertTrue(log(c), logged(c, "Go to Bed 1: sending /cmd/nav_name {\"point\":\"Bed 1\"}"))
+        c.drive(Move.FORWARD) // locked while navigating
+        assertEquals(1, c.state.value.log.count { "sending" in it })
+
+        waitFor(c, maxMs = 60_000) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), logged(c, "Go to Bed 1: arrived (0.0"))
+        assertEquals(1.6, robotPose(c, "x"), 0.02)
+        assertEquals(-1.2, robotPose(c, "y"), 0.02)
+    }
+
+    @Test
+    fun tripStaysLockedWhileTheRobotWaitsOnItsWay() = runTest {
+        val (c, points) = withPoints()
+        c.goTo(points[0])
+        advanceTimeBy(5000) // driving towards the point
+        assertTrue(c.state.value.demoStatus!!.navigating)
+        c.demoPersonInTheWay() // still for 5 s: longer than the ~3 s that would end a step
+        advanceTimeBy(4500)
+        assertEquals("waiting", 0.0, c.state.value.vx, 0.02)
+        assertTrue("still locked while the robot has a plan\n" + log(c), c.state.value.phase is StepPhase.Stepping)
+
+        waitFor(c, maxMs = 60_000) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), logged(c, "Go to Bed 1: arrived"))
+    }
+
+    @Test
+    fun addPointHereSavesTheSpotAndTheRobotCanGoBackToIt() = runTest {
+        val (c, _) = withPoints()
+        c.drive(Move.FORWARD)
+        waitFor(c) { it.phase == StepPhase.Idle }
+
+        c.addPointHere("  Bed 4 ")
+        assertTrue(c.state.value.addingPoint)
+        waitFor(c) { !it.addingPoint && (it.points as? Points.Loaded)?.list?.size == 4 }
+        val added = (c.state.value.points as Points.Loaded).list.single { it.name == "Bed 4" }
+        assertEquals(DriveController.NEW_POINT_TYPE, added.type)
+        assertEquals(0.5, added.pose!!.x, 0.02)
+        assertEquals(0.0, added.pose!!.y, 0.02)
+        assertEquals("Added \"Bed 4\" at x 0.50, y 0.00", c.state.value.pointMessage)
+        val sent = c.state.value.log.single { "Add point: sending /cmd/position" in it }
+        assertTrue(sent, "\"name\":\"Bed 4\"" in sent && "\"type\":\"delivery\"" in sent && "\"pose\":{" in sent)
+
+        c.drive(Move.BACK)
+        waitFor(c) { it.phase == StepPhase.Idle }
+        c.goTo(added)
+        waitFor(c, maxMs = 60_000) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), logged(c, "Go to Bed 4: arrived"))
+        assertEquals(0.5, robotX(c), 0.02)
+    }
+
+    @Test
+    fun addPointHereRefusesTakenNamesAndAMovingRobot() = runTest {
+        val (c, _) = withPoints()
+        c.addPointHere("Bed 1")
+        assertEquals("A point called \"Bed 1\" already exists.", c.state.value.pointMessage)
+        c.addPointHere("charging_pile")
+        assertEquals("A point called \"charging_pile\" already exists.", c.state.value.pointMessage)
+        c.addPointHere(" ")
+        assertEquals("Give the point a name.", c.state.value.pointMessage)
+
+        c.drive(Move.FORWARD)
+        advanceTimeBy(1500)
+        assertFalse(c.state.value.canAddPoint)
+        c.addPointHere("Mid-step")
+        assertEquals("Wait for the robot to stand still.", c.state.value.pointMessage)
+        assertFalse(c.state.value.addingPoint)
+        assertFalse(logged(c, "/cmd/position"))
+    }
+
+    @Test
+    fun goToNeedsTheInterlock() = runTest {
+        val (c, points) = withPoints()
+        c.setArmed(false)
+        c.goTo(points[0])
+        assertEquals("not armed", StepPhase.Idle, c.state.value.phase)
+    }
+
+    @Test
+    fun stopMidTripCancelsTheGoal() = runTest {
+        val (c, points) = withPoints()
+        c.goTo(points[1])
+        advanceTimeBy(6000)
+        c.stop()
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), logged(c, "STOP: sent"))
+        assertTrue(log(c), logged(c, "Go to Bed 2: stopped"))
+        assertTrue("stopped short of the point", robotPose(c, "y") < 0.8)
+        advanceTimeBy(5000)
+        assertEquals("the robot does not carry on", 0.0, c.state.value.vx, 0.02)
+    }
+
+    @Test
+    fun blockedTripReportsNoMotion() = runTest {
+        val (c, points) = withPoints()
+        c.demoBlockNextStep()
+        c.goTo(points[2])
+        val took = waitFor(c, maxMs = 30_000) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), logged(c, "Go to Sink area: no motion seen. Already at the point, or no route to it?"))
+        assertTrue("took $took ms", took in 15_000..15_700)
+    }
+
+    @Test
+    fun switchingRobotForgetsThePoints() = runTest {
+        val (c, _) = withPoints()
+        c.setDemo(false)
+        assertEquals(Points.NotLoaded, c.state.value.points)
+    }
+
+    private fun moving(c: DriveController) = c.state.value.let { abs(it.vx) > 0.02 || abs(it.vth) > 0.03 }
+
+    /** The robot stays still for [ms] (checked every poll). */
+    private fun TestScope.staysStill(c: DriveController, ms: Long) {
+        val end = currentTime + ms
+        while (currentTime < end) {
+            advanceTimeBy(300)
+            assertFalse("moved at ${currentTime}\n" + log(c), moving(c))
+        }
+    }
+
+    @Test
+    fun stopEndsATaskTheRobotStartedOnItsOwn() = runTest {
+        val c = ready()
+        c.demoChargeOnItsOwn() // the incident: the robot sets off to charge by itself
+        advanceTimeBy(4000)
+        assertTrue(moving(c))
+        assertTrue(log(c), logged(c, "Robot is moving, but not by this app"))
+        assertFalse("no driving while the robot moves by itself", c.state.value.canDrive)
+
+        c.stop()
+        advanceTimeBy(2500)
+        staysStill(c, 12_000) // the old STOP only paused it: it carried on ~1 s later
+        assertTrue(log(c), logged(c, "STOP: sent"))
+        assertFalse(log(c), logged(c, "sending STOP again"))
+        assertEquals("not docking", 0, chargeFlag(c))
+    }
+
+    @Test
+    fun stopIsSentAgainIfTheRobotCarriesOn() = runTest {
+        val c = ready()
+        c.demoChargeOnItsOwn()
+        advanceTimeBy(4000)
+        c.stop()
+        advanceTimeBy(3000)
+        c.demoRobot.goChargeOnItsOwn() // something on the robot starts the trip again
+        waitFor(c) { logged(c, "Robot moving after STOP: sending STOP again (1)") }
+        advanceTimeBy(2500)
+        staysStill(c, 5000)
+        assertFalse(c.state.value.runaway)
+    }
+
+    @Test
+    fun robotThatWontStopRaisesTheAlarm() = runTest {
+        val c = ready()
+        c.demoChargeOnItsOwn()
+        advanceTimeBy(4000)
+        c.stop()
+        val start = currentTime
+        while (!c.state.value.runaway) { // keeps restarting, as if the robot ignored every cancel
+            check(currentTime - start < 20_000) { "no alarm\n" + log(c) }
+            c.demoRobot.goChargeOnItsOwn()
+            advanceTimeBy(500)
+        }
+        assertTrue(log(c), logged(c, "USE THE PHYSICAL E-STOP"))
+
+        waitFor(c) { !it.runaway } // it stops restarting: the next STOP holds
+        assertTrue(log(c), logged(c, "Robot has stopped"))
+    }
+
+    @Test
+    fun aNewCommandAfterStopIsNotTreatedAsTheRobotCarryingOn() = runTest {
+        val c = ready()
+        c.drive(Move.FORWARD)
+        advanceTimeBy(1500)
+        c.stop()
+        waitFor(c) { it.phase == StepPhase.Idle && it.canDrive }
+        c.drive(Move.FORWARD) // within the guard: the user's own step
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), logged(c, "Forward 0.5 m: done"))
+        assertFalse(log(c), logged(c, "sending STOP again"))
+    }
+
+    @Test
+    fun goToChargeDrivesToThePileAndDocks() = runTest {
+        val c = ready()
+        c.goToCharge()
+        assertTrue(log(c), logged(c, "Go to charge: sending /cmd/charge {\"type\":2,\"point\":\"charging_pile\"}"))
+        waitFor(c, maxMs = 90_000) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), logged(c, "Go to charge: done. Robot reports: charging at the pile."))
+        assertEquals(-2.15, robotX(c), 0.02)
     }
 
     @Test

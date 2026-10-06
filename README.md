@@ -16,8 +16,8 @@ It is written in Kotlin with a Jetpack Compose (Material 3) screen, in light and
 ## What it does
 
 The screen has four tabs: **Remote** (the manual step pad and the robot address),
-**Tasks** and **Map** (placeholders for autonomous work, not in this build yet), and
-**Activity** (the log). The robot's readings (e-stop badge, speed, battery) are pinned
+**Tasks** (a list of tasks: **Disinfection points** opens its own page), **Map** (a placeholder, not in this
+build yet), and **Activity** (the log). The robot's readings (e-stop badge, speed, battery) are pinned
 under the title on every tab, and **STOP is the red button in the centre of the nav bar**,
 so it is on screen on every tab and on the DEMO controls page.
 
@@ -29,7 +29,10 @@ so it is on screen on every tab and on the DEMO controls page.
 | Right 90° | `/cmd/turn` `{"direction":0,"angle":90,"speed":0.40}` | 0.4 rad/s |
 | Turn 180° | `/cmd/turn` `{"direction":1,"angle":180,"speed":0.40}` | 0.4 rad/s |
 | DOCK CHARGER | `/cmd/charge` `{"type":0,"point":"charging_pile"}` | set by the firmware |
-| STOP | `/cmd/move` + `/cmd/turn` stop bodies (and `/cmd/charge` `{"type":1}` during a dock) | always active |
+| GO (Disinfection points page) | `/cmd/nav_name` `{"point":"<name>"}` | set by the firmware |
+| Add point where the robot is | `/reeman/pose`, then `/cmd/position` `{"name":"<name>","type":"delivery","pose":{"x","y","theta"}}` | doesn't move the robot |
+| GO TO CHARGE (Tasks tab) | `/cmd/charge` `{"type":2,"point":"charging_pile"}` | set by the firmware |
+| STOP | stop body, `/cmd/cancel_goal`, `/cmd/charge` `{"type":1}`, the other stop body: every time | always active |
 
 **DOCK CHARGER** starts the robot's own docking routine, the one it runs when it is close
 to the charging pile: it finds the pile and reverses onto it. Use it only with the pile
@@ -39,11 +42,58 @@ been still for ~3 s. When it finishes, the log says what the robot reports (char
 no pile found). That reading is normally stale, but the docking motion refreshes it.
 Docking speed is the firmware's, not the app's caps below.
 
+**Tasks → Disinfection points.** Tap **Disinfection points** on the Tasks tab to open its
+page (STOP and the robot's readings stay on screen there). It lists the points saved on the
+robot's map (`/reeman/position`), except the charging pile, which has DOCK CHARGER. **GO**
+sends the robot there with `/cmd/nav_name`: the robot plans its own route and speed. It only
+drives there; it does not switch on the UV lamps. The page has its own **DRIVE ENABLED**
+switch (switched off when you leave the page) and the same rules as the drive buttons.
+During a trip the app also reads `/reeman/global_plan` and `/reeman/pose` every ~1.5 s:
+- The robot can stop on its way (waiting for a person to pass), so being still only ends
+  the trip once the robot reports no plan (`007`). Until then the buttons stay locked.
+  STOP still works at any time and ends the trip.
+- When the trip ends, the log says how far from the point the robot stopped: "arrived"
+  within 0.3 m, otherwise "stopped X m from the point".
+- Points are read when the page opens (and with **Refresh**). Switching between DEMO and
+  live forgets them.
+
+**Add point where the robot is** saves the robot's current spot, and the way it faces, as a
+new point: the app reads `/reeman/pose`, then sends `/cmd/position` (as the Web API says to)
+and reloads the list. A robot sent there later turns to face the same way. It needs no
+DRIVE ENABLED (the robot doesn't move), but the robot must be connected and standing still,
+with no step running. Names must be new: setting an existing name would move that point.
+Points are renamed or deleted in the robot's own app.
+
+This relies on the loaded map matching the building (the robot's map was replaced after
+beta 0.1, whose map was from another site). Still to confirm on the real robot (marked
+`GUESS` in the code): what `/reeman/global_plan` returns during a trip (the Web API documents
+`{"coordinates":[...]}`), which point `type` the robot's own app uses (new points are saved
+as `delivery`), the reply to an unknown point, and that `/cmd/cancel_goal` stops a trip.
+
+**STOP ends any task, whoever started it.** On 2026-10-05 the robot set off to charge by
+itself; STOP on the phone stopped it, but it carried on right after. The stop bodies only
+pause a navigation, and STOP used to cancel only tasks this app had started. Now every STOP:
+- brakes, then cancels any navigation (`/cmd/cancel_goal`) and any docking (`/cmd/charge`
+  type 1), even if the app didn't start them;
+- then watches the robot for 10 s. If it moves again (or never stops), STOP is sent again,
+  every 1.5 s while it moves. After 3 tries a red **ROBOT STILL MOVING AFTER STOP. USE THE
+  PHYSICAL E-STOP** banner appears (and STOP keeps being sent). Sending a new command
+  yourself ends the watch.
+
+The log also says when the robot moves without the app having asked ("Robot is moving, but
+not by this app"), STOP pulses whenever the robot moves, and the drive buttons stay locked
+until it is still. Still to confirm on the real robot: that `/cmd/charge` type 1 does nothing
+while the robot sits charging on the pile (STOP now sends it every time).
+
+**GO TO CHARGE** (Tasks tab) sends the robot to the charging pile on its own route and docks
+(`/cmd/charge` type 2). It has the Tasks tab's own **DRIVE ENABLED** switch and the same rules
+as GO; the lock allows ~5 s of stillness between arriving and docking.
+
 Safety behaviour:
-- Drive buttons (and DOCK CHARGER) only work when: connected, e-stop released, **DRIVE ENABLED** switched on, and no step is running.
+- Drive buttons (and DOCK CHARGER, GO and GO TO CHARGE) only work when: connected, e-stop released, **DRIVE ENABLED** switched on, no step running, and the robot standing still.
 - The **Ping** icon next to the address is the connection light: green when connected, orange when not.
 - One step at a time: buttons lock until the robot's measured speed has been ~0 for about a second.
-- Leaving the app (home button, screen off, switching apps) or the Remote tab switches Drive off.
+- Leaving the app (home button, screen off, switching apps) or changing tab switches Drive off.
 - STOP pulses with a red ring while a step is running.
 - Speeds are capped in code (`MAX_LINEAR` 0.3 m/s, `MAX_ANGULAR` 0.5 rad/s in `DriveController.kt`).
 - STOP is a hard stop. Use it for emergencies, not for routine stopping (steps end on their own).
@@ -74,24 +124,31 @@ profile. It sits in a 5 m × 4 m room with a box obstacle, and stops short at wa
 The **DEMO controls** page simulates events that are hard to set up on the real robot.
 Open it with the purple sliders button at the top right of the DEMO menu (shown only
 while DEMO is active). STOP and the robot readings stay on screen there, so you can
-watch each event take effect. The first three are switches; the last two are buttons.
+watch each event take effect. The first three are switches; the rest are buttons.
 
 | Control | Simulates | What the app should do |
 |---|---|---|
 | E-stop pressed | physical e-stop | **E** badge turns solid red, driving blocked; pressing mid-step stops the robot |
 | Wi-Fi dropped | lost connection | Ping icon turns orange after ~3 failed polls, driving blocked |
 | Obstacle ahead | obstacle in the way | next step accepted but never starts → "no motion seen" |
+| Robot goes to charge by itself | the robot starting a trip on its own (only while it is still) | "moving, but not by this app" in the log; STOP ends the trip for good |
+| Person in the way | a trip held up on its way (only during a trip) | robot waits 5 s then carries on; the trip stays locked the whole time |
 | Battery −10% | draining battery | battery figure turns amber at 20%, red at 10% (wraps back to 100%) |
-| Reset robot | — | robot back to the room centre, faults cleared |
+| Reset robot | — | robot back to the room centre, faults cleared, added points removed |
 
 ### Demo mode limitations
 
-The simulator covers fixed-step driving and docking. Its charging pile is against the
+The simulator covers fixed-step driving, docking, trips to saved points and to the pile
+(`/cmd/charge` type 2). As on the real robot, a stop body only pauses a trip for ~1 s;
+`/cmd/cancel_goal` or `/cmd/charge` type 1 ends it. Its charging pile is against the
 middle of the west wall, right behind the start position, and it can be seen from 2.5 m
 (a guess): DOCK CHARGER from the start docks, but one step forward first puts it out of
-range ("no motion seen"). On the pile the battery climbs 1% every 2 s. These are answered with error `004`
-("Not simulated in DEMO mode"): velocity streaming (`/cmd/speed`), navigation
-(`/cmd/nav`, `/cmd/nav_name`, `/cmd/cancel_goal`), driving to the pile (`/cmd/charge` type 2), relocalisation, maps and
+range ("no motion seen"). On the pile the battery climbs 1% every 2 s. Its room has three saved points
+(Bed 1, Bed 2, Sink area) and the pile; points you add are kept until Reset robot. A trip turns to face the point, drives a straight
+line and turns to the point's heading. It does not plan around obstacles: a wall or the box
+in the way stops it short. These are answered with error `004`
+("Not simulated in DEMO mode"): velocity streaming (`/cmd/speed`), navigation to
+coordinates (`/cmd/nav`), relocalisation, maps and
 restricted layers, speed limits, mode changes and shutdown. The room, obstacle and
 motion profile are a simple model, not the robot's real map or sensors.
 
@@ -124,7 +181,8 @@ From a terminal (needs a JDK 17–21, e.g. `export JAVA_HOME=~/Library/Java/Java
 
 The unit tests (`app/src/test/`) run in virtual time against the simulated robot. They cover
 the simulator itself and the drive rules end to end: interlocks, the step lock, STOP,
-e-stop, Wi-Fi loss and docking.
+e-stop, Wi-Fi loss, docking, trips to points and to the pile, adding points, and STOP ending
+a task the robot started by itself.
 
 ## Network
 
@@ -152,7 +210,7 @@ low battery. These can now be rehearsed in demo mode first.
 
 All under `app/src/main/java/com/expiation/reemanremote/`:
 
-- `DriveController.kt`: **every drive rule lives here**: polling, interlocks, the step lock, STOP, demo switching.
+- `DriveController.kt`: **every drive rule lives here**: polling, interlocks, the step lock, STOP, trips to points, demo switching.
   Plain Kotlin (no Android), with the state as explicit types: `Link` (Disconnected / Connected + e-stop)
   and `StepPhase` (Idle / Stepping / Stopping).
 - `RobotApi.kt`: HTTP calls to the robot (or to the simulator in demo mode)

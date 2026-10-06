@@ -35,6 +35,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -52,12 +53,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -98,14 +101,18 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.expiation.reemanremote.DemoStatus
+import com.expiation.reemanremote.DriveController
 import com.expiation.reemanremote.EStop
 import com.expiation.reemanremote.Link
 import com.expiation.reemanremote.Move
+import com.expiation.reemanremote.Points
+import com.expiation.reemanremote.Pose
 import com.expiation.reemanremote.R
 import com.expiation.reemanremote.RemoteState
 import com.expiation.reemanremote.Step
 import com.expiation.reemanremote.StepPhase
 import com.expiation.reemanremote.Tracking
+import com.expiation.reemanremote.Waypoint
 import java.util.Locale
 
 /** Everything the screen can ask for. */
@@ -116,26 +123,51 @@ data class RemoteActions(
     val onMove: (Move) -> Unit = {},
     val onStop: () -> Unit = {},
     val onDock: () -> Unit = {},
+    val onLoadPoints: () -> Unit = {},
+    val onGoTo: (Waypoint) -> Unit = {},
+    val onAddPoint: (String) -> Unit = {},
+    val onGoToCharge: () -> Unit = {},
     val onDemoEstop: () -> Unit = {},
     val onDemoWifi: () -> Unit = {},
     val onDemoBlock: () -> Unit = {},
+    val onDemoPerson: () -> Unit = {},
+    val onDemoChargeOnItsOwn: () -> Unit = {},
     val onDemoBattery: () -> Unit = {},
     val onDemoReset: () -> Unit = {},
 )
 
 @Composable
 fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
-    var showDemoControls by rememberSaveable { mutableStateOf(false) }
+    // Kept here, not in MainPage, so coming back from another page returns to the same tab.
+    var tab by rememberSaveable { mutableStateOf(Tab.REMOTE) }
+    var page by rememberSaveable { mutableStateOf(Page.MAIN) }
     // The controls page only exists in DEMO: leaving DEMO closes it.
-    LaunchedEffect(state.demo) { if (!state.demo) showDemoControls = false }
+    LaunchedEffect(state.demo) { if (!state.demo && page == Page.DEMO_CONTROLS) page = Page.MAIN }
 
     val demoStatus = state.demoStatus
-    if (showDemoControls && demoStatus != null) {
-        DemoControlsPage(state, demoStatus, actions, onBack = { showDemoControls = false })
-    } else {
-        MainPage(state, actions, onOpenDemoControls = { showDemoControls = true })
+    when {
+        page == Page.DEMO_CONTROLS && demoStatus != null ->
+            DemoControlsPage(state, demoStatus, actions, onBack = { page = Page.MAIN })
+        page == Page.POINTS -> PointsPage(state, actions, onBack = {
+            // Safety: the points page has its own DRIVE ENABLED switch; leaving it disarms.
+            if (state.armed) actions.onArmChange(false)
+            page = Page.MAIN
+        })
+        else -> MainPage(
+            state, actions, tab,
+            onTabChange = { tab = it },
+            onOpenDemoControls = { page = Page.DEMO_CONTROLS },
+            onOpenPoints = {
+                // Safety: the points page has its own DRIVE ENABLED switch, like a tab change.
+                if (state.armed) actions.onArmChange(false)
+                page = Page.POINTS
+            },
+        )
     }
 }
+
+/** Pages over the main (tabbed) page. Each keeps STOP and the robot's readings on screen. */
+private enum class Page { MAIN, DEMO_CONTROLS, POINTS }
 
 private enum class Tab(val label: String, val icon: Int) {
     REMOTE("Remote", R.drawable.ic_tab_remote),
@@ -144,15 +176,29 @@ private enum class Tab(val label: String, val icon: Int) {
     ACTIVITY("Activity", R.drawable.ic_tab_activity),
 }
 
+/** Tabs that can move the robot. Each has its own DRIVE ENABLED switch (as do pages that can). */
+private val DRIVE_TABS = setOf(Tab.REMOTE, Tab.TASKS)
+
 /**
  * Layout, top to bottom: title bar, DEMO strip, the robot's readings (pinned, on every tab),
  * the current tab, and the nav bar with STOP in its centre so STOP is on every tab too.
  */
 @Composable
-private fun MainPage(state: RemoteState, actions: RemoteActions, onOpenDemoControls: () -> Unit) {
-    var tab by rememberSaveable { mutableStateOf(Tab.REMOTE) }
-    // Safety: the drive pad only lives on Remote, so leaving Remote disarms (like leaving the app).
-    LaunchedEffect(tab) { if (tab != Tab.REMOTE && state.armed) actions.onArmChange(false) }
+private fun MainPage(
+    state: RemoteState,
+    actions: RemoteActions,
+    tab: Tab,
+    onTabChange: (Tab) -> Unit,
+    onOpenDemoControls: () -> Unit,
+    onOpenPoints: () -> Unit,
+) {
+    // Safety: every place that can move the robot has its own DRIVE ENABLED switch, and changing
+    // tab always disarms (like leaving the app), so the switch that was turned on is on screen.
+    val selectTab = { t: Tab ->
+        if (t != tab && state.armed) actions.onArmChange(false)
+        onTabChange(t)
+    }
+    LaunchedEffect(tab) { if (tab !in DRIVE_TABS && state.armed) actions.onArmChange(false) }
 
     Scaffold(
         topBar = {
@@ -161,10 +207,11 @@ private fun MainPage(state: RemoteState, actions: RemoteActions, onOpenDemoContr
                 // Pinned above the scrolling content so it can never be scrolled away.
                 AnimatedVisibility(state.demo) { DemoStrip() }
                 Box(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) { Telemetry(state) }
+                AnimatedVisibility(state.runaway) { RunawayBanner() }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
         },
-        bottomBar = { NavBar(tab, { tab = it }, state.busy, actions.onStop) },
+        bottomBar = { NavBar(tab, selectTab, moving = state.busy || !state.still, actions.onStop) },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
         val content = Modifier
@@ -179,13 +226,9 @@ private fun MainPage(state: RemoteState, actions: RemoteActions, onOpenDemoContr
             ) {
                 ConnectionSection(state, actions.onPing)
                 DriveCard(state, actions)
-                DockButton(state.canDrive, actions.onDock)
+                DockButton("DOCK CHARGER", state.canDrive, actions.onDock)
             }
-            Tab.TASKS -> ComingSoon(
-                content, R.drawable.ic_tab_tasks, "Autonomous tasks",
-                "Send the robot to saved points, run routes and send it to charge from anywhere. " +
-                    "Not in this build yet: it drives in fixed steps, and docks only from close to the charging pile.",
-            )
+            Tab.TASKS -> TasksTab(state, actions, onOpenPoints, content)
             Tab.MAP -> ComingSoon(
                 content, R.drawable.ic_tab_map, "Map",
                 "See the robot on its map, build and switch maps, and set its position. Not in this build yet.",
@@ -458,6 +501,22 @@ private fun DemoStrip() {
     )
 }
 
+/** STOP was sent again and again, but the robot keeps moving. */
+@Composable
+private fun RunawayBanner() {
+    Text(
+        "ROBOT STILL MOVING AFTER STOP. USE THE PHYSICAL E-STOP.",
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(RemoteTheme.status.danger)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        color = Color.White,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.Bold,
+        textAlign = TextAlign.Center,
+    )
+}
+
 @Composable
 private fun StopBar(onStop: () -> Unit) {
     Surface(color = MaterialTheme.colorScheme.background) {
@@ -704,52 +763,332 @@ private fun Reading(label: String, value: String, unit: String, valueColor: Colo
 
 @Composable
 private fun DriveCard(state: RemoteState, actions: RemoteActions) {
-    val status = RemoteTheme.status
     Panel {
-        // The whole row is the touch target, so the switch itself can be drawn smaller.
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(8.dp))
-                .toggleable(value = state.armed, role = Role.Switch, onValueChange = actions.onArmChange),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "DRIVE ENABLED",
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 1.sp,
-            )
-            // A Switch is a fixed 52 x 32 dp; scaled down here and boxed at the scaled size.
-            Box(Modifier.size(width = 42.dp, height = 26.dp), contentAlignment = Alignment.Center) {
-                Switch(checked = state.armed, onCheckedChange = null, modifier = Modifier.scale(0.8f))
-            }
-        }
-
-        AnimatedVisibility(state.busy) {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                LinearProgressIndicator(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = status.warn,
-                    trackColor = status.warnContainer,
-                )
-                Text(
-                    (if (state.phase is StepPhase.Stopping) "Stopping: " else "Moving: ") + (state.busyLabel ?: "") + " …",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = status.warn,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-        }
-
+        ArmRow(state.armed, actions.onArmChange)
+        BusyStatus(state)
         DrivePad(state.canDrive, actions.onMove)
     }
 }
 
+@Composable
+private fun ArmRow(armed: Boolean, onArmChange: (Boolean) -> Unit) {
+    // The whole row is the touch target, so the switch itself can be drawn smaller.
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .toggleable(value = armed, role = Role.Switch, onValueChange = onArmChange),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "DRIVE ENABLED",
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 1.sp,
+        )
+        // A Switch is a fixed 52 x 32 dp; scaled down here and boxed at the scaled size.
+        Box(Modifier.size(width = 42.dp, height = 26.dp), contentAlignment = Alignment.Center) {
+            Switch(checked = armed, onCheckedChange = null, modifier = Modifier.scale(0.8f))
+        }
+    }
+}
+
+/** While a step runs: a progress bar and what the robot is doing. */
+@Composable
+private fun BusyStatus(state: RemoteState) {
+    val status = RemoteTheme.status
+    AnimatedVisibility(state.busy) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth(),
+                color = status.warn,
+                trackColor = status.warnContainer,
+            )
+            Text(
+                (if (state.phase is StepPhase.Stopping) "Stopping: " else "Moving: ") + (state.busyLabel ?: "") + " …",
+                style = MaterialTheme.typography.labelLarge,
+                color = status.warn,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------- tasks
+
+/**
+ * The Tasks tab: GO TO CHARGE, which moves the robot (so the tab has its own DRIVE ENABLED
+ * switch), and a list of tasks, each opening its own page.
+ */
+@Composable
+private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: () -> Unit, modifier: Modifier) {
+    val goal = state.running?.goal
+    val charging = goal?.name == "charging_pile"
+    val count = (state.points as? Points.Loaded)?.list?.size
+    Column(
+        modifier
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Panel {
+            ArmRow(state.armed, actions.onArmChange)
+            BusyStatus(state)
+        }
+        DockButton("GO TO CHARGE", state.canDrive, actions.onGoToCharge)
+        TasksNote(
+            "Drives to the charging pile on the robot's own route, then docks. " +
+                "STOP cancels it, even when the robot set off by itself."
+        )
+
+        SectionLabel("Tasks")
+        TaskItem(
+            icon = R.drawable.ic_tab_tasks,
+            title = "Disinfection points",
+            detail = when {
+                charging && count != null -> "$count saved. Send the robot to one, or add one."
+                charging -> "Send the robot to a saved point, or add one where it stands."
+                goal != null -> "On the way to ${goal.name}"
+                count != null -> "$count saved. Send the robot to one, or add one."
+                else -> "Send the robot to a saved point, or add one where it stands."
+            },
+            highlight = goal != null && !charging,
+            onClick = onOpenPoints,
+        )
+    }
+}
+
+/** One row of the Tasks list. The whole card opens the task's page. */
+@Composable
+private fun TaskItem(icon: Int, title: String, detail: String, highlight: Boolean, onClick: () -> Unit) {
+    val status = RemoteTheme.status
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (highlight) status.warnContainer else MaterialTheme.colorScheme.surface,
+        ),
+    ) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                painterResource(icon),
+                contentDescription = null,
+                modifier = Modifier.size(24.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (highlight) status.warn else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text("›", fontSize = 28.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/**
+ * Disinfection points: send the robot to one, or save where it stands as a new one.
+ * GO moves the robot, so this page has its own DRIVE ENABLED switch (switched off on leaving),
+ * and, like the DEMO controls page, keeps STOP and the robot's readings on screen.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () -> Unit) {
+    BackHandler(onBack = onBack)
+    val points = state.points
+    var adding by rememberSaveable { mutableStateOf(false) }
+    // Read the points once connected (again after a robot switch, which forgets them).
+    LaunchedEffect(state.connected, points is Points.NotLoaded) {
+        if (state.connected && points is Points.NotLoaded) actions.onLoadPoints()
+    }
+
+    Scaffold(
+        topBar = {
+            Column {
+                TopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
+                        }
+                    },
+                    title = { Text("Disinfection points", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
+                    actions = {
+                        TextButton(
+                            onClick = actions.onLoadPoints,
+                            enabled = state.connected && points != Points.Loading,
+                        ) { Text("Refresh") }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+                )
+                AnimatedVisibility(state.demo) { DemoStrip() }
+                Box(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) { Telemetry(state) }
+                AnimatedVisibility(state.runaway) { RunawayBanner() }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            }
+        },
+        bottomBar = { StopBar(actions.onStop) },
+        containerColor = MaterialTheme.colorScheme.background,
+    ) { padding ->
+        Column(
+            Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Panel {
+                ArmRow(state.armed, actions.onArmChange)
+                BusyStatus(state)
+            }
+
+            SectionLabel("Send the robot to")
+            when {
+                points is Points.Loaded && points.list.isNotEmpty() -> {
+                    val goal = state.running?.goal
+                    points.list.forEach { PointRow(it, goingHere = it == goal, state.canDrive, actions.onGoTo) }
+                }
+                points is Points.Loaded -> TasksNote("No disinfection points are saved on this robot's map yet. Add one below.")
+                points is Points.Failed -> TasksNote("Couldn't read the points: ${points.error}")
+                points == Points.Loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                !state.connected -> TasksNote("Connect to the robot to see its points.")
+            }
+            TasksNote(
+                "GO sends the robot to the point on its own: it plans its route and speed. " +
+                    "STOP cancels the trip. This only drives there; it does not switch on the UV lamps."
+            )
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            SectionLabel("Add a point")
+            OutlinedButton(
+                onClick = { adding = true },
+                enabled = state.canAddPoint,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) {
+                Text(
+                    if (state.addingPoint) "Saving …" else "+  Add point where the robot is",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            TasksNote(
+                state.pointMessage ?: when {
+                    !state.connected -> "Connect to the robot first."
+                    state.busy || !state.still -> "The robot must be standing still."
+                    else -> "Saves the spot the robot is on, and the way it faces, as a new point on its map."
+                }
+            )
+        }
+    }
+
+    if (adding) {
+        val taken = (points as? Points.Loaded)?.list.orEmpty().map { it.name }.toSet() + "charging_pile"
+        AddPointDialog(
+            taken = taken,
+            onDismiss = { adding = false },
+            onAdd = {
+                adding = false
+                actions.onAddPoint(it)
+            },
+        )
+    }
+}
+
+@Composable
+private fun AddPointDialog(taken: Set<String>, onDismiss: () -> Unit, onAdd: (String) -> Unit) {
+    var name by rememberSaveable {
+        mutableStateOf(generateSequence(taken.size) { it + 1 }.map { "Point $it" }.first { it !in taken })
+    }
+    val clean = name.trim()
+    val problem = when {
+        clean.isEmpty() -> "Enter a name."
+        clean.length > DriveController.MAX_POINT_NAME -> "Use ${DriveController.MAX_POINT_NAME} characters or fewer."
+        clean in taken -> "A point with this name already exists."
+        else -> null
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add point here") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Saves where the robot is standing, and the way it faces, as a disinfection point on its map.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Name") },
+                    singleLine = true,
+                    isError = problem != null,
+                    supportingText = problem?.let { { Text(it) } },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { if (problem == null) onAdd(clean) }),
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onAdd(clean) }, enabled = problem == null) { Text("Add") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun PointRow(point: Waypoint, goingHere: Boolean, canDrive: Boolean, onGoTo: (Waypoint) -> Unit) {
+    val status = RemoteTheme.status
+    Panel(color = if (goingHere) status.warnContainer else MaterialTheme.colorScheme.surface) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(point.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                point.pose?.let {
+                    Text(
+                        String.format(Locale.US, "x %.2f   y %.2f", it.x, it.y),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+            if (goingHere) {
+                Text(
+                    "ON THE WAY",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp,
+                    color = status.warn,
+                )
+            } else {
+                Button(
+                    onClick = { onGoTo(point) },
+                    enabled = canDrive,
+                    modifier = Modifier.height(48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Text("GO", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TasksNote(text: String) {
+    Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
 /** The robot's own docking routine. It moves the robot, so it is held to the drive pad's interlock. */
 @Composable
-private fun DockButton(enabled: Boolean, onDock: () -> Unit) {
+private fun DockButton(label: String, enabled: Boolean, onDock: () -> Unit) {
     FilledTonalButton(
         onClick = onDock,
         enabled = enabled,
@@ -760,7 +1099,7 @@ private fun DockButton(enabled: Boolean, onDock: () -> Unit) {
     ) {
         Icon(painterResource(R.drawable.ic_dock), contentDescription = null, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(8.dp))
-        Text("DOCK CHARGER", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+        Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
     }
 }
 
@@ -840,12 +1179,35 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Telemetry(state)
+            AnimatedVisibility(state.runaway) { RunawayBanner() }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
             SectionLabel("Faults")
             DemoToggle("E-stop pressed", "As if the physical e-stop were pressed. Driving is blocked; pressing mid-step stops the robot.", demo.estopPressed, actions.onDemoEstop)
             DemoToggle("Wi-Fi dropped", "The robot stops answering. The Ping icon turns orange after about 3 missed polls.", demo.offline, actions.onDemoWifi)
             DemoToggle("Obstacle ahead", "The next step is accepted but never starts, so the app reports no motion.", demo.blockPending, actions.onDemoBlock)
+            OutlinedButton(
+                actions.onDemoChargeOnItsOwn,
+                Modifier.fillMaxWidth(),
+                enabled = !demo.robotBusy,
+                shape = RoundedCornerShape(10.dp),
+            ) { Text("Robot goes to charge by itself") }
+            Text(
+                "As if the robot started a trip to the pile on its own. STOP must end it for good, not just pause it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(
+                actions.onDemoPerson,
+                Modifier.fillMaxWidth(),
+                enabled = demo.navigating,
+                shape = RoundedCornerShape(10.dp),
+            ) { Text("Person in the way") }
+            Text(
+                "During a trip to a point (Tasks tab): the robot waits 5 s, then carries on. The trip stays locked while it waits.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             SectionLabel("Robot")
@@ -914,6 +1276,12 @@ private fun ActivityLog(lines: List<String>, modifier: Modifier) {
 
 // ---------------------------------------------------------------------- previews
 
+private val PREVIEW_POINTS = listOf(
+    Waypoint("Bed 1", "normal", Pose(1.6, -1.2, -1.57)),
+    Waypoint("Bed 2", "normal", Pose(-1.4, 1.2, 1.57)),
+    Waypoint("Sink area", "normal", Pose(-1.4, -1.3, 3.14)),
+)
+
 private fun previewState(demo: Boolean, moving: Boolean) = RemoteState(
     demo = demo,
     host = "192.168.1.228",
@@ -925,7 +1293,11 @@ private fun previewState(demo: Boolean, moving: Boolean) = RemoteState(
     armed = true,
     phase = if (moving) StepPhase.Stepping(Step("Forward 0.5 m", "/cmd/move", "{}", false, 4000), Tracking(0, 0))
     else StepPhase.Idle,
-    demoStatus = if (demo) DemoStatus(estopPressed = false, offline = false, blockPending = true) else null,
+    points = Points.Loaded(PREVIEW_POINTS),
+    addingPoint = false,
+    pointMessage = null,
+    runaway = false,
+    demoStatus = if (demo) DemoStatus(estopPressed = false, offline = false, blockPending = true, navigating = false, robotBusy = moving) else null,
     log = listOf(
         "12:04:10  [DEMO] Forward 0.5 m: accepted {}",
         "12:04:10  [DEMO] Forward 0.5 m: sending /cmd/move {\"distance\":50,\"direction\":1,\"speed\":0.30}",
@@ -940,3 +1312,19 @@ private fun PreviewDemo() = RemoteTheme(dark = false) { RemoteScreen(previewStat
 @Preview(name = "Live, dark", heightDp = 1300)
 @Composable
 private fun PreviewLiveDark() = RemoteTheme(dark = true) { RemoteScreen(previewState(demo = false, moving = false), RemoteActions()) }
+
+@Preview(name = "Disinfection points, going to one", heightDp = 1100)
+@Composable
+private fun PreviewPoints() = RemoteTheme(dark = false) {
+    val goal = PREVIEW_POINTS[1]
+    val state = previewState(demo = true, moving = true).copy(
+        phase = StepPhase.Stepping(Step("Go to ${goal.name}", "/cmd/nav_name", "{}", false, 60_000, goal = goal), Tracking(0, 0)),
+    )
+    PointsPage(state, RemoteActions(), onBack = {})
+}
+
+@Preview(name = "Tasks, dark", heightDp = 500)
+@Composable
+private fun PreviewTasks() = RemoteTheme(dark = true) {
+    TasksTab(previewState(demo = false, moving = false), RemoteActions(), {}, Modifier.background(MaterialTheme.colorScheme.background))
+}
