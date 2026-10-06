@@ -27,7 +27,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -74,7 +73,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -83,7 +81,6 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.LinkAnnotation
@@ -119,7 +116,6 @@ import java.util.Locale
 data class RemoteActions(
     val onDemoChange: (Boolean) -> Unit = {},
     val onPing: (String) -> Unit = {},
-    val onArmChange: (Boolean) -> Unit = {},
     val onMove: (Move) -> Unit = {},
     val onStop: () -> Unit = {},
     val onLoadPoints: () -> Unit = {},
@@ -147,20 +143,12 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
     when {
         page == Page.DEMO_CONTROLS && demoStatus != null ->
             DemoControlsPage(state, demoStatus, actions, onBack = { page = Page.MAIN })
-        page == Page.POINTS -> PointsPage(state, actions, onBack = {
-            // Safety: the points page has its own DRIVE ENABLED switch; leaving it disarms.
-            if (state.armed) actions.onArmChange(false)
-            page = Page.MAIN
-        })
+        page == Page.POINTS -> PointsPage(state, actions, onBack = { page = Page.MAIN })
         else -> MainPage(
             state, actions, tab,
             onTabChange = { tab = it },
             onOpenDemoControls = { page = Page.DEMO_CONTROLS },
-            onOpenPoints = {
-                // Safety: the points page has its own DRIVE ENABLED switch, like a tab change.
-                if (state.armed) actions.onArmChange(false)
-                page = Page.POINTS
-            },
+            onOpenPoints = { page = Page.POINTS },
         )
     }
 }
@@ -175,9 +163,6 @@ private enum class Tab(val label: String, val icon: Int) {
     ACTIVITY("Activity", R.drawable.ic_tab_activity),
 }
 
-/** Tabs that can move the robot. Each has its own DRIVE ENABLED switch (as do pages that can). */
-private val DRIVE_TABS = setOf(Tab.REMOTE, Tab.TASKS)
-
 /**
  * Layout, top to bottom: title bar, DEMO strip, the robot's readings (pinned, on every tab),
  * the current tab, and the nav bar with STOP in its centre so STOP is on every tab too.
@@ -191,14 +176,6 @@ private fun MainPage(
     onOpenDemoControls: () -> Unit,
     onOpenPoints: () -> Unit,
 ) {
-    // Safety: every place that can move the robot has its own DRIVE ENABLED switch, and changing
-    // tab always disarms (like leaving the app), so the switch that was turned on is on screen.
-    val selectTab = { t: Tab ->
-        if (t != tab && state.armed) actions.onArmChange(false)
-        onTabChange(t)
-    }
-    LaunchedEffect(tab) { if (tab !in DRIVE_TABS && state.armed) actions.onArmChange(false) }
-
     Scaffold(
         topBar = {
             Column {
@@ -210,7 +187,7 @@ private fun MainPage(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
         },
-        bottomBar = { NavBar(tab, selectTab, moving = state.busy || !state.still, actions.onStop) },
+        bottomBar = { NavBar(tab, onTabChange, moving = state.busy || !state.still, actions.onStop) },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
         val content = Modifier
@@ -762,33 +739,8 @@ private fun Reading(label: String, value: String, unit: String, valueColor: Colo
 @Composable
 private fun DriveCard(state: RemoteState, actions: RemoteActions) {
     Panel {
-        ArmRow(state.armed, actions.onArmChange)
         BusyStatus(state)
         DrivePad(state.canDrive, actions.onMove)
-    }
-}
-
-@Composable
-private fun ArmRow(armed: Boolean, onArmChange: (Boolean) -> Unit) {
-    // The whole row is the touch target, so the switch itself can be drawn smaller.
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .toggleable(value = armed, role = Role.Switch, onValueChange = onArmChange),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            "DRIVE ENABLED",
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-            letterSpacing = 1.sp,
-        )
-        // A Switch is a fixed 52 x 32 dp; scaled down here and boxed at the scaled size.
-        Box(Modifier.size(width = 42.dp, height = 26.dp), contentAlignment = Alignment.Center) {
-            Switch(checked = armed, onCheckedChange = null, modifier = Modifier.scale(0.8f))
-        }
     }
 }
 
@@ -815,10 +767,7 @@ private fun BusyStatus(state: RemoteState) {
 
 // ---------------------------------------------------------------------- tasks
 
-/**
- * The Tasks tab: GO TO CHARGER, which moves the robot (so the tab has its own DRIVE ENABLED
- * switch), and a list of tasks, each opening its own page.
- */
+/** The Tasks tab: GO TO CHARGER, and a list of tasks, each opening its own page. */
 @Composable
 private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: () -> Unit, modifier: Modifier) {
     val goal = state.running?.goal
@@ -830,10 +779,7 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Panel {
-            ArmRow(state.armed, actions.onArmChange)
-            BusyStatus(state)
-        }
+        AnimatedVisibility(state.busy) { Panel { BusyStatus(state) } }
         ChargerButton(state.canDrive, actions.onGoToCharger)
         TasksNote(
             "Docks straight away if the charging pile is close (within ${DriveController.DOCK_NEAR_M} m on the map); " +
@@ -893,8 +839,7 @@ private fun TaskItem(icon: Int, title: String, detail: String, highlight: Boolea
 
 /**
  * Disinfection points: send the robot to one, or save where it stands as a new one.
- * GO moves the robot, so this page has its own DRIVE ENABLED switch (switched off on leaving),
- * and, like the DEMO controls page, keeps STOP and the robot's readings on screen.
+ * Like the DEMO controls page, it keeps STOP and the robot's readings on screen.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -942,10 +887,7 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () ->
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Panel {
-                ArmRow(state.armed, actions.onArmChange)
-                BusyStatus(state)
-            }
+            AnimatedVisibility(state.busy) { Panel { BusyStatus(state) } }
 
             SectionLabel("Send the robot to")
             when {
@@ -1288,7 +1230,6 @@ private fun previewState(demo: Boolean, moving: Boolean) = RemoteState(
     battery = 18,
     vx = if (moving) 0.27 else 0.0,
     vth = 0.0,
-    armed = true,
     phase = if (moving) StepPhase.Stepping(Step("Forward 0.5 m", "/cmd/move", "{}", false, 4000), Tracking(0, 0))
     else StepPhase.Idle,
     points = Points.Loaded(PREVIEW_POINTS),
@@ -1299,7 +1240,6 @@ private fun previewState(demo: Boolean, moving: Boolean) = RemoteState(
     log = listOf(
         "12:04:10  [DEMO] Forward 0.5 m: accepted {}",
         "12:04:10  [DEMO] Forward 0.5 m: sending /cmd/move {\"distance\":50,\"direction\":1,\"speed\":0.30}",
-        "12:04:02  [DEMO] Drive enabled",
     ),
 )
 
