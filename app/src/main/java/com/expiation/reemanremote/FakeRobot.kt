@@ -82,7 +82,12 @@ class FakeRobot(
     private var y = 0.0
     private var theta = 0.0
     private var motion: Motion? = null
-    private var nextLeg: ((Long) -> Motion)? = null // docking: the reverse that follows the turn
+    // Legs still to run after [motion], each planned when it starts (from where the robot is then):
+    // docking's reverse after its turn, a navigation's drive and final turn.
+    private val legs = ArrayDeque<(Long) -> Motion>()
+    private var navGoal: SavedPoint? = null // set while navigating
+    private var navThen: ((Long) -> Motion)? = null // what follows the navigation: docking, for charge type 2
+    private val points = DEFAULT_POINTS.toMutableList() // saved on the robot's map
     private var chargeFlag = CHARGE_NONE
     private var battery = 0.0
     private var estopPressed = false
@@ -140,8 +145,13 @@ class FakeRobot(
             fmt("""{"x":%.4f,"y":%.4f,"theta":%.4f}""", poseX, poseY, poseTheta)
         }
         "/reeman/laser" -> laser()
+        "/reeman/position" -> points.joinToString(",", """{"waypoints":[""", "]}") {
+            fmt("""{"name":"%s","type":"%s","pose":{"x":%.4f,"y":%.4f,"theta":%.4f}}""", it.name, it.type, it.x, it.y, it.theta)
+        }
         "/reeman/nav_status" -> error("004", "Internal service error") // what the real robot says while idle
-        "/reeman/global_plan" -> error("007", "Can't get plan data")
+        // The API's documented shape (points ~30 cm apart); here just where the robot is.
+        "/reeman/global_plan" -> if (navGoal != null) fmt("""{"coordinates":[[%.3f,%.3f]]}""", x, y)
+        else error("007", "Can't get plan data")
         else -> null
     }
 
@@ -149,6 +159,12 @@ class FakeRobot(
         "/cmd/move" -> move(json, now)
         "/cmd/turn" -> turn(json, now)
         "/cmd/charge" -> charge(json, now)
+        "/cmd/nav_name" -> navName(json, now)
+        "/cmd/position" -> setPoint(json)
+        "/cmd/cancel_goal" -> {
+            if (navGoal != null) halt()
+            OK
+        }
         in UNSIMULATED_CMDS -> error("004", "Not simulated in DEMO mode")
         else -> null
     }
@@ -159,7 +175,7 @@ class FakeRobot(
         val speed = num(json, "speed")
         if (distance == null || direction == null || speed == null) return error("004", "Internal service error")
         if (distance == 0.0 || speed == 0.0) {
-            halt() // the stop body: a hard stop, as on the real robot
+            stopBody()
             return OK
         }
         if (distance < 0 || speed < 0) return error("004", "Internal service error")
@@ -174,7 +190,7 @@ class FakeRobot(
         val speed = num(json, "speed")
         if (direction == null || angle == null || speed == null) return error("004", "Internal service error")
         if (angle == 0.0 || speed == 0.0) {
-            halt()
+            stopBody()
             return OK
         }
         // SLAM 3.0 docs limit angle to [-180, 180]; assume the firmware rejects more.
@@ -182,6 +198,15 @@ class FakeRobot(
         val sign = (if (direction == 1.0) 1.0 else -1.0) * angle.sign
         start(true, sign, Math.toRadians(abs(angle)), speed, ANGULAR_ACCEL, now)
         return OK
+    }
+
+    /**
+     * The stop bodies are a hard stop. But during a navigation they only pause it: the robot
+     * brakes, then carries on, as the real robot did when it went to charge by itself
+     * (2026-10-05). Only /cmd/cancel_goal (or /cmd/charge type 1) ends a navigation.
+     */
+    private fun stopBody() {
+        if (navGoal != null) pauseNav(STOP_BODY_PAUSE_S) else halt()
     }
 
     /**
@@ -203,41 +228,124 @@ class FakeRobot(
                     return OK
                 }
                 val turn = wrap(atan2(dy, dx) - theta)
-                if (start(true, turn.sign, abs(turn), DOCK_TURN_SPEED, ANGULAR_ACCEL, now)) {
-                    chargeFlag = CHARGE_DOCKING
-                    nextLeg = { t -> Motion(false, -1.0, distance, DOCK_SPEED, 0.36 * DOCK_SPEED.pow(0.40), t) }
-                }
+                val started = startLegs(
+                    { t -> Motion(true, turn.sign, abs(turn), DOCK_TURN_SPEED, ANGULAR_ACCEL, t) },
+                    { t -> Motion(false, -1.0, distance, DOCK_SPEED, 0.36 * DOCK_SPEED.pow(0.40), t) },
+                    now = now,
+                )
+                if (started) chargeFlag = CHARGE_DOCKING
                 OK
             }
             1.0 -> {
                 halt()
                 OK
             }
+            2.0 -> {
+                goCharge(now)
+                OK
+            }
             null -> error("004", "Internal service error")
-            else -> error("004", "Not simulated in DEMO mode") // type 2 navigates to the pile first
+            else -> error("004", "Internal service error")
         }
     }
 
-    /** Hard stop. Abandons a dock in progress, but a robot already on the pile stays on it. */
-    private fun halt() {
-        motion = null
-        nextLeg = null
-        if (chargeFlag == CHARGE_DOCKING) chargeFlag = CHARGE_NONE
+    /**
+     * type 2: navigate to a spot just in front of the pile, facing away from it, then reverse
+     * onto it. GUESS: the shape of the real routine was never watched.
+     */
+    private fun goCharge(now: Long) {
+        if (chargeFlag == CHARGE_DOCKED) return // already on the pile
+        val approach = SavedPoint(PILE_POINT, "charge", DOCK_X + DOCK_APPROACH, DOCK_Y, 0.0)
+        if (!startLegs(*navLegs(approach), now = now)) return
+        navGoal = approach
+        navThen = { t ->
+            navGoal = null // the trip is over; docking is not a navigation (no plan)
+            navThen = null
+            chargeFlag = CHARGE_DOCKING
+            Motion(false, -1.0, hypot(x - DOCK_X, y - DOCK_Y), DOCK_SPEED, 0.36 * DOCK_SPEED.pow(0.40), t)
+        }
+        legs.addLast { t -> navThen!!(t) }
     }
 
     /**
-     * A new step replaces the running one outright (GUESS: the firmware's pre-emption
-     * behaviour is unmeasured). With the e-stop pressed or an obstacle simulated the
-     * step is accepted but the wheels never turn (also a GUESS).
+     * Navigate to a saved point: turn to face it, drive straight there, turn to the point's
+     * heading. GUESS: the real robot plans a route around obstacles and picks its own speed;
+     * this one drives a straight line, so the demo points are placed with clear lines between
+     * them, and a wall or the box in the way stops it short (and ends the navigation).
      */
-    private fun start(turn: Boolean, sign: Double, amount: Double, speed: Double, accel: Double, now: Long): Boolean {
+    private fun navName(json: String, now: Long): String {
+        val goal = points.firstOrNull { it.name == str(json, "point") }
+            ?: return error("004", "Internal service error") // GUESS: the real reply to an unknown point
+        if (startLegs(*navLegs(goal), now = now)) navGoal = goal
+        return OK
+    }
+
+    /**
+     * Saves a point, as /cmd/position documents: {"name","type","pose":{"x","y","theta"}}, type
+     * one of [POINT_TYPES]. A name already in use is replaced (GUESS: never tried on the robot).
+     */
+    private fun setPoint(json: String): String {
+        val name = str(json, "name")
+        val type = str(json, "type")
+        val x = num(json, "x")
+        val y = num(json, "y")
+        val theta = num(json, "theta")
+        if (name.isNullOrEmpty() || type == null || type !in POINT_TYPES || x == null || y == null || theta == null) {
+            return error("004", "Internal service error")
+        }
+        points.removeAll { it.name == name }
+        points.add(SavedPoint(name, type, x, y, theta))
+        return OK
+    }
+
+    private fun navLegs(goal: SavedPoint): Array<(Long) -> Motion> {
+        val face = { t: Long -> turnTo(atan2(goal.y - y, goal.x - x), t) }
+        val drive = { t: Long -> Motion(false, 1.0, hypot(goal.x - x, goal.y - y), NAV_SPEED, 0.36 * NAV_SPEED.pow(0.40), t) }
+        val settle = { t: Long -> turnTo(goal.theta, t) }
+        return if (hypot(goal.x - x, goal.y - y) > 0.05) arrayOf(face, drive, settle) else arrayOf(settle)
+    }
+
+    private fun turnTo(heading: Double, t: Long): Motion {
+        val d = wrap(heading - theta)
+        return Motion(true, d.sign, abs(d), NAV_TURN_SPEED, ANGULAR_ACCEL, t)
+    }
+
+    /** A navigation waits [seconds] where it is, keeping its plan, then carries on. */
+    private fun pauseNav(seconds: Double) {
+        val goal = navGoal ?: return
+        // sign 0: a "leg" that lasts [seconds] and never moves the robot.
+        motion = Motion(false, 0.0, seconds, 1.0, 1e9, clock())
+        legs.clear()
+        legs.addAll(navLegs(goal))
+        navThen?.let { then -> legs.addLast { t -> then(t) } }
+    }
+
+    /** Hard stop. Abandons a dock or a navigation in progress, but a robot already on the pile stays on it. */
+    private fun halt() {
+        motion = null
+        legs.clear()
+        navGoal = null
+        navThen = null
+        if (chargeFlag == CHARGE_DOCKING) chargeFlag = CHARGE_NONE
+    }
+
+    private fun start(turn: Boolean, sign: Double, amount: Double, speed: Double, accel: Double, now: Long): Boolean =
+        startLegs({ t -> Motion(turn, sign, amount, speed, accel, t) }, now = now)
+
+    /**
+     * A new command replaces the running one outright (GUESS: the firmware's pre-emption
+     * behaviour is unmeasured). With the e-stop pressed or an obstacle simulated the
+     * command is accepted but the wheels never turn (also a GUESS).
+     */
+    private fun startLegs(vararg plan: (Long) -> Motion, now: Long): Boolean {
         halt()
         chargeFlag = CHARGE_NONE // any move takes it off the pile
         if (estopPressed || blockNext) {
             blockNext = false
             return false
         }
-        motion = Motion(turn, sign, amount, speed, accel, now + CMD_LATENCY_NS)
+        motion = plan.first()(now + CMD_LATENCY_NS)
+        legs.addAll(plan.drop(1))
         return true
     }
 
@@ -267,9 +375,11 @@ class FakeRobot(
             }
             if (v != 0.0) battery = maxOf(0.0, battery - dt / MOVING_SECONDS_PER_PERCENT)
             if (motion?.finished(next) == true) {
-                motion = nextLeg?.invoke(next)
-                nextLeg = null
-                if (motion == null && chargeFlag == CHARGE_DOCKING) chargeFlag = CHARGE_DOCKED
+                motion = legs.removeFirstOrNull()?.invoke(next)
+                if (motion == null) {
+                    if (chargeFlag == CHARGE_DOCKING) chargeFlag = CHARGE_DOCKED
+                    navGoal = null
+                }
             }
             t = next
         }
@@ -316,6 +426,31 @@ class FakeRobot(
     @get:Synchronized
     val isBlockNextPending: Boolean get() = blockNext
 
+    @get:Synchronized
+    val isNavigating: Boolean get() = navGoal != null
+
+    /**
+     * A person steps into the path of a navigation: the robot brakes, waits [seconds] where it
+     * is (keeping its plan), then carries on to the point. No effect unless navigating.
+     * GUESS: the real robot's waiting behaviour was never watched.
+     */
+    @Synchronized
+    fun personInTheWay(seconds: Double) {
+        advance(clock())
+        pauseNav(seconds)
+    }
+
+    /** As if the robot (or its own app) started a trip to the pile: /cmd/charge type 2, not from the app. */
+    @Synchronized
+    fun goChargeOnItsOwn() {
+        val now = clock()
+        advance(now)
+        goCharge(now)
+    }
+
+    @get:Synchronized
+    val isBusy: Boolean get() = motion != null
+
     /** Knocks 10% off the battery; wraps back to full below zero. */
     @Synchronized
     fun drainBattery() {
@@ -333,7 +468,11 @@ class FakeRobot(
         poseX = 0.0; poseY = 0.0; poseTheta = 0.0
         poseNs = lastNs - POSE_PERIOD_NS
         motion = null
-        nextLeg = null
+        legs.clear()
+        navGoal = null
+        navThen = null
+        points.clear()
+        points.addAll(DEFAULT_POINTS)
         chargeFlag = CHARGE_NONE
         battery = 87.0
         estopPressed = false
@@ -383,12 +522,31 @@ class FakeRobot(
         private const val LASER_BEAMS = 180  // every 2 degrees, GUESS
         private const val LASER_RANGE = 8.0
 
+        // ---- Navigation (/cmd/nav_name). Speeds are the firmware's choice on the real robot. ----
+        private const val NAV_SPEED = 0.3                // m/s, GUESS
+        private const val NAV_TURN_SPEED = 0.4           // rad/s, GUESS
+        private const val STOP_BODY_PAUSE_S = 1.0        // a stop body pauses a navigation this long, GUESS
+        private const val DOCK_APPROACH = 0.6            // m in front of the pile where charge type 2 starts docking, GUESS
+        private const val PILE_POINT = "charging_pile"
+
+        private class SavedPoint(val name: String, val type: String, val x: Double, val y: Double, val theta: Double)
+
+        // Saved points, map frame. Straight lines between any two (and from the start) clear
+        // the box. Types are from the API; which ones the robot's own app uses is unknown.
+        private val POINT_TYPES = setOf("delivery", "normal", "production", "charge")
+        private val DEFAULT_POINTS = listOf(
+            SavedPoint("Bed 1", "delivery", 1.6, -1.2, -Math.PI / 2),
+            SavedPoint("Bed 2", "delivery", -1.4, 1.2, Math.PI / 2),
+            SavedPoint("Sink area", "delivery", -1.4, -1.3, Math.PI),
+            SavedPoint("charging_pile", "charge", DOCK_X, DOCK_Y, 0.0),
+        )
+
         // Real commands this simulator doesn't model. They answer 004 rather than 009
         // so a demo never suggests a real route doesn't exist.
         private val UNSIMULATED_CMDS = setOf(
-            "/cmd/speed", "/cmd/nav_name", "/cmd/nav", "/cmd/cancel_goal", "/cmd/max_speed",
+            "/cmd/speed", "/cmd/nav", "/cmd/max_speed",
             "/cmd/reloc_pose", "/cmd/reloc_absolute", "/cmd/set_mode",
-            "/cmd/save_map", "/cmd/apply_map", "/cmd/position", "/cmd/restrict_layer",
+            "/cmd/save_map", "/cmd/apply_map", "/cmd/restrict_layer",
             "/cmd/shutdown", "/cmd/external_power_supply",
         )
 
@@ -429,5 +587,9 @@ class FakeRobot(
         private fun num(json: String, key: String): Double? =
             Regex("\"" + Regex.escape(key) + "\"\\s*:\\s*\"?(-?\\d+(?:\\.\\d+)?)")
                 .find(json)?.groupValues?.get(1)?.toDouble()
+
+        /** Reads a string from a flat JSON body (no escapes: enough for point names). */
+        private fun str(json: String, key: String): String? =
+            Regex("\"" + Regex.escape(key) + "\"\\s*:\\s*\"([^\"]*)\"").find(json)?.groupValues?.get(1)
     }
 }

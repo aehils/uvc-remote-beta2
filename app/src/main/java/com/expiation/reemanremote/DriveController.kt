@@ -13,6 +13,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.min
 
 // ---------------------------------------------------------------------- state
@@ -49,7 +50,22 @@ data class Step(
     val noMotionMs: Long = estimateMs + 2000,
     val capMs: Long = estimateMs + 12000,
     val stallHint: String = "Obstacle in the way, or command ignored?",
+    /** Set for a navigation to a saved point (see [DriveController.goTo]). */
+    val goal: Waypoint? = null,
 )
+
+data class Pose(val x: Double, val y: Double, val theta: Double)
+
+/** A point saved on the robot's map (/reeman/position). [pose] is null if the robot sent none. */
+data class Waypoint(val name: String, val type: String, val pose: Pose?)
+
+/** The disinfection points read from the robot: its saved points, without the charging pile. */
+sealed interface Points {
+    data object NotLoaded : Points
+    data object Loading : Points
+    data class Loaded(val list: List<Waypoint>) : Points
+    data class Failed(val error: String) : Points
+}
 
 /** How the step lock decides a step is over (see [DriveController.trackStep]). */
 data class Tracking(
@@ -68,7 +84,14 @@ sealed interface StepPhase {
     data class Stopping(val step: Step, val track: Tracking) : StepPhase
 }
 
-data class DemoStatus(val estopPressed: Boolean, val offline: Boolean, val blockPending: Boolean)
+data class DemoStatus(
+    val estopPressed: Boolean,
+    val offline: Boolean,
+    val blockPending: Boolean,
+    val navigating: Boolean,
+    /** Running any motion or task of its own. */
+    val robotBusy: Boolean,
+)
 
 /** Everything the screen shows. Immutable; a new one is published on every change. */
 data class RemoteState(
@@ -81,20 +104,32 @@ data class RemoteState(
     val vth: Double,
     val armed: Boolean,
     val phase: StepPhase,
+    val points: Points,
+    val addingPoint: Boolean,
+    /** The outcome of the last "add point here", shown on the points page. */
+    val pointMessage: String?,
+    /** STOP was sent again and again but the robot keeps moving: use the physical e-stop. */
+    val runaway: Boolean,
     val demoStatus: DemoStatus?,
     val log: List<String>,
 ) {
     val connected: Boolean get() = link is Link.Connected
     val estop: EStop? get() = (link as? Link.Connected)?.estop
     val busy: Boolean get() = phase != StepPhase.Idle
-    val busyLabel: String? get() = when (phase) {
+    val running: Step? get() = when (phase) {
         StepPhase.Idle -> null
-        is StepPhase.Stepping -> phase.step.label
-        is StepPhase.Stopping -> phase.step.label
+        is StepPhase.Stepping -> phase.step
+        is StepPhase.Stopping -> phase.step
     }
+    val busyLabel: String? get() = running?.label
 
-    /** The drive interlock: connected, e-stop known and released, armed, no step running. */
-    val canDrive: Boolean get() = estop == EStop.RELEASED && armed && !busy
+    val still: Boolean get() = abs(vx) <= DriveController.MOVING_VX && abs(vth) <= DriveController.MOVING_VTH
+
+    /** Saving the robot's spot as a point: connected, standing still, and the existing names known. */
+    val canAddPoint: Boolean get() = connected && !busy && still && points is Points.Loaded && !addingPoint
+
+    /** The drive interlock: connected, e-stop known and released, armed, no step running, robot still. */
+    val canDrive: Boolean get() = estop == EStop.RELEASED && armed && !busy && still
 }
 
 // ---------------------------------------------------------------------- controller
@@ -131,9 +166,25 @@ class DriveController(
     private var vth = 0.0
     private var armed = false
     private var phase: StepPhase = StepPhase.Idle
+    private var points: Points = Points.NotLoaded
+    private var addingPoint = false
+    private var pointMessage: String? = null
+
+    // Read only while navigating to a point. planActive: true = the robot has a plan (still on
+    // its way, even if it is waiting), false = no plan (007), null = not known.
+    private var planActive: Boolean? = null
+    private var navPose: Pose? = null
 
     private var pollJob: Job? = null
     private var connectJob: Job? = null
+    private var pointsJob: Job? = null
+
+    /** Watching the robot after STOP (see [guardStop]). */
+    private data class StopGuard(val pressedAt: Long, val until: Long, val lastSent: Long, val resends: Int)
+    private var stopGuard: StopGuard? = null
+    private var runaway = false
+    private var ownMotionNoted = false
+    private var addJob: Job? = null
 
     private val logLines = ArrayDeque<String>()
     private val clock = SimpleDateFormat("HH:mm:ss", Locale.US)
@@ -217,6 +268,14 @@ class DriveController(
     /** Forget everything about the old robot. Cancelling the jobs drops any answers still in flight. */
     private fun switchRobot() {
         connectJob?.cancel()
+        pointsJob?.cancel()
+        addJob?.cancel()
+        points = Points.NotLoaded // the other robot has its own map and points
+        addingPoint = false
+        pointMessage = null
+        stopGuard = null
+        runaway = false
+        ownMotionNoted = false
         link = Link.Disconnected(null)
         failCount = 0
         version = null
@@ -241,12 +300,15 @@ class DriveController(
             val withBase = tick++ % BASE_EVERY == 0
             val s = a.get("/reeman/speed")
             val b = if (withBase) a.get("/reeman/base_encode") else null
-            onPoll(s, b)
+            val nav = withBase && snapshot().running?.goal != null
+            val plan = if (nav) a.get(PLAN_PATH) else null
+            val pose = if (nav) a.get("/reeman/pose") else null
+            onPoll(s, b, plan, pose)
             delay((POLL_MS - (now() - started)).coerceAtLeast(0))
         }
     }
 
-    private fun onPoll(s: RobotApi.Result, b: RobotApi.Result?) {
+    private fun onPoll(s: RobotApi.Result, b: RobotApi.Result?, plan: RobotApi.Result?, pose: RobotApi.Result?) {
         var speedValid = false
         if (s.ok) {
             runCatching {
@@ -289,7 +351,24 @@ class DriveController(
             }
         }
 
+        if (plan != null) {
+            // The API documents {"coordinates":[...]} during a trip; only 007 has been seen on the real robot.
+            planActive = when (errorCode(plan.body)) {
+                null -> if (plan.ok) true else null
+                NO_PLAN -> false
+                else -> null
+            }
+        }
+        if (pose != null && pose.ok) {
+            runCatching {
+                val o = JSONObject(pose.body)
+                navPose = Pose(o.getDouble("x"), o.getDouble("y"), o.optDouble("theta", 0.0))
+            }
+        }
+
         trackStep(speedValid)
+        guardStop(speedValid)
+        noticeOwnMotion(speedValid)
         publish()
     }
 
@@ -344,9 +423,143 @@ class DriveController(
         )
     }
 
+    /**
+     * Sends the robot to the charging pile and docks (/cmd/charge type 2): it navigates to the
+     * pile's point, then runs its docking routine. Same interlock and lock as GO; the lock holds
+     * while the robot has a plan, and a pause between arriving and docking is allowed for.
+     */
+    fun goToCharge() {
+        if (!snapshot().canDrive) return
+        planActive = null
+        navPose = null
+        send(
+            Step(
+                "Go to charge", DOCK_PATH, CHARGE_NAV, isTurn = false,
+                estimateMs = 90_000,     // unknown: depends on the route
+                stillPolls = 17,         // ~5 s: GUESS, room for a pause between the trip and docking
+                noMotionMs = 15_000,
+                capMs = 15 * 60_000,
+                stallHint = "Already on the pile, or no route to it?",
+                goal = Waypoint(PILE_POINT, "charge", null),
+            )
+        )
+    }
+
+    /** Reads the robot's saved points (/reeman/position) for the Tasks tab. Read-only: safe at any time. */
+    fun loadPoints() {
+        if (points == Points.Loading) return
+        points = Points.Loading
+        publish()
+        val a = api
+        pointsJob?.cancel()
+        pointsJob = scope.launch {
+            val r = a.get(POINTS_PATH)
+            val rejected = if (r.ok) robotError(r.body) else null
+            val loaded = if (r.ok && rejected == null) runCatching { parsePoints(r.body) }.getOrNull() else null
+            points = when {
+                loaded != null -> Points.Loaded(loaded)
+                !r.ok -> Points.Failed(r.error ?: "no answer")
+                rejected != null -> Points.Failed("robot error $rejected")
+                else -> Points.Failed("unexpected reply: ${r.body.take(80)}")
+            }
+            log(
+                when (val p = points) {
+                    is Points.Loaded -> "Loaded ${p.list.size} disinfection point(s)"
+                    is Points.Failed -> "Couldn't load points: ${p.error}"
+                    else -> "Points: ?"
+                }
+            )
+            publish()
+        }
+    }
+
+    /**
+     * Saves the spot the robot is standing on as a new point (/cmd/position), as the API asks:
+     * read the pose first, then set the point with it. Doesn't move the robot, so it doesn't need
+     * Drive enabled, but the robot must be still so the pose (5 Hz) is where it really stands.
+     * Refuses a name already in use, since setting it again would move that point.
+     */
+    fun addPointHere(name: String) {
+        val s = snapshot()
+        val clean = name.trim()
+        val loaded = (s.points as? Points.Loaded)?.list
+        val problem = when {
+            s.addingPoint -> return
+            !s.connected -> "Not connected to the robot."
+            s.busy || !s.still -> "Wait for the robot to stand still."
+            loaded == null -> "Load the points first."
+            clean.isEmpty() -> "Give the point a name."
+            clean.length > MAX_POINT_NAME -> "Use a name of $MAX_POINT_NAME characters or fewer."
+            clean == PILE_POINT || loaded.any { it.name == clean } -> "A point called \"$clean\" already exists."
+            else -> null
+        }
+        if (problem != null) {
+            pointMessage = problem
+            publish()
+            return
+        }
+
+        addingPoint = true
+        pointMessage = "Saving \"$clean\" …"
+        publish()
+        val a = api
+        addJob = scope.launch {
+            val p = a.get("/reeman/pose")
+            val pose = if (p.ok) runCatching {
+                val o = JSONObject(p.body)
+                Pose(o.getDouble("x"), o.getDouble("y"), o.optDouble("theta", 0.0))
+            }.getOrNull() else null
+            val result = if (pose == null) {
+                "Couldn't read where the robot is: ${p.error ?: "unexpected reply ${p.body.take(80)}"}"
+            } else {
+                val body = JSONObject()
+                    .put("name", clean)
+                    .put("type", NEW_POINT_TYPE)
+                    .put("pose", JSONObject().put("x", round3(pose.x)).put("y", round3(pose.y)).put("theta", round3(pose.theta)))
+                    .toString()
+                log("Add point: sending $ADD_POINT_PATH $body")
+                val r = a.post(ADD_POINT_PATH, body)
+                val rejected = if (r.ok) robotError(r.body) else null
+                when {
+                    !r.ok -> "Couldn't add \"$clean\": ${r.error}"
+                    rejected != null -> "Robot rejected \"$clean\": $rejected"
+                    else -> String.format(Locale.US, "Added \"%s\" at x %.2f, y %.2f", clean, pose.x, pose.y)
+                }
+            }
+            log(result)
+            pointMessage = result
+            addingPoint = false
+            publish()
+            loadPoints() // shows the new point, and confirms the robot kept it
+        }
+    }
+
+    /**
+     * Sends the robot to a saved point (/cmd/nav_name). The robot plans its own route and
+     * speed. It moves the robot, so it takes the same interlock and step lock as the d-pad;
+     * the lock also holds while the robot still has a plan (see [trackStep]).
+     */
+    fun goTo(point: Waypoint) {
+        if (!snapshot().canDrive) return
+        planActive = null
+        navPose = null
+        send(
+            Step(
+                "Go to ${point.name}", NAV_PATH, JSONObject().put("point", point.name).toString(), isTurn = false,
+                estimateMs = 60_000,     // unknown: depends on the route
+                stillPolls = 10,         // ~3 s, as for docking
+                noMotionMs = 15_000,     // GUESS: route planning before the first motion
+                capMs = 15 * 60_000,
+                stallHint = "Already at the point, or no route to it?",
+                goal = point,
+            )
+        )
+    }
+
     private fun send(step: Step) {
         // Lock before sending, so a double-tap can't send a second step.
         val t = now()
+        stopGuard = null // a new command from the user: motion is expected now
         phase = StepPhase.Stepping(step, Tracking(t + step.noMotionMs, t + step.capMs))
         log("${step.label}: sending ${step.path} ${step.json}")
         publish()
@@ -365,14 +578,13 @@ class DriveController(
     }
 
     /**
-     * Always sends, in every phase. Sends both stop bodies, the running step's type first.
-     * During a dock it cancels docking first: the firmware's routine may not obey the stop bodies.
+     * Always sends, in every phase, and cancels everything the robot may be doing, whoever
+     * started it (see [sendStop]). Then watches the robot for [STOP_GUARD_MS] and sends STOP
+     * again if it moves (see [guardStop]).
      */
     fun stop() {
         val p = phase
-        val running = (p as? StepPhase.Stepping)?.step ?: (p as? StepPhase.Stopping)?.step
-        val turnFirst = running?.isTurn ?: false
-        val docking = running?.path == DOCK_PATH
+        val turnFirst = snapshot().running?.isTurn ?: (abs(vth) > MOVING_VTH && abs(vx) <= MOVING_VX)
         log("STOP pressed")
         val t = now()
         fun shorten(tr: Tracking) = tr.copy(
@@ -384,19 +596,78 @@ class DriveController(
             is StepPhase.Stepping -> StepPhase.Stopping(p.step, shorten(p.track))
             is StepPhase.Stopping -> p.copy(track = shorten(p.track))
         }
+        stopGuard = StopGuard(pressedAt = t, until = t + STOP_GUARD_MS, lastSent = t, resends = 0)
+        runaway = false
         publish()
+        sendStop(turnFirst, "STOP")
+    }
 
+    /**
+     * Brakes with the stop bodies (the robot's motion type first), and cancels any navigation
+     * (/cmd/cancel_goal) and any docking (/cmd/charge type 1), not only ones this app started.
+     * The robot can start a task on its own (it went to charge by itself on 2026-10-05), and
+     * the stop bodies alone only paused that trip: it carried on right after.
+     */
+    private fun sendStop(turnFirst: Boolean, label: String, report: Boolean = true) {
         val a = api
         scope.launch {
-            val cancel = if (docking) a.post(DOCK_PATH, DOCK_CANCEL) else null
             val first = if (turnFirst) a.post("/cmd/turn", TURN_STOP) else a.post("/cmd/move", MOVE_STOP)
+            val nav = a.post(CANCEL_NAV_PATH, "{}")
+            // GUESS: assumed harmless while charging on the pile (not tried on the real robot).
+            val dock = a.post(DOCK_PATH, DOCK_CANCEL)
             val second = if (turnFirst) a.post("/cmd/move", MOVE_STOP) else a.post("/cmd/turn", TURN_STOP)
-            log(
-                "STOP: " + if (first.ok || second.ok || cancel?.ok == true) "sent"
-                else "FAILED ${first.error}. USE THE PHYSICAL E-STOP"
+            if (report || !(first.ok || second.ok)) log(
+                "$label: " + if (first.ok || second.ok) {
+                    "sent" + if (!nav.ok || !dock.ok) " (cancel ${if (!nav.ok) "navigation" else "docking"} failed: " +
+                        "${(if (!nav.ok) nav else dock).error})" else ""
+                } else "FAILED ${first.error}. USE THE PHYSICAL E-STOP"
             )
             publish()
         }
+    }
+
+    /**
+     * After STOP, makes sure the robot stays stopped: if it moves again (or never stops) during
+     * the guard, the full STOP is sent again, every [STOP_RESEND_GAP_MS] while it moves. After
+     * [STOP_RESENDS] tries the screen says to use the physical e-stop (and STOP keeps being
+     * sent). Sending any new command ends the guard.
+     */
+    private fun guardStop(speedValid: Boolean) {
+        val g = stopGuard ?: return
+        val t = now()
+        if (t > g.until) {
+            stopGuard = null
+            return
+        }
+        if (!speedValid) return
+        val moving = abs(vx) > MOVING_VX || abs(vth) > MOVING_VTH
+        if (!moving) {
+            if (runaway) {
+                runaway = false
+                log("Robot has stopped")
+            }
+            return
+        }
+        if (t - g.pressedAt < STOP_SETTLE_MS || t - g.lastSent < STOP_RESEND_GAP_MS) return
+        val n = g.resends + 1
+        stopGuard = g.copy(until = t + STOP_GUARD_MS, lastSent = t, resends = n) // keep watching while it moves
+        if (n <= STOP_RESENDS) log("Robot moving after STOP: sending STOP again ($n)")
+        if (n >= STOP_RESENDS && !runaway) {
+            runaway = true
+            log("ROBOT STILL MOVING AFTER STOP. USE THE PHYSICAL E-STOP")
+        }
+        sendStop(turnFirst = abs(vth) > MOVING_VTH && abs(vx) <= MOVING_VX, "STOP (again)", report = n <= STOP_RESENDS)
+    }
+
+    /** Notes, once each time, motion this app didn't ask for (for example the robot going to charge by itself). */
+    private fun noticeOwnMotion(speedValid: Boolean) {
+        if (!speedValid) return
+        val moving = abs(vx) > MOVING_VX || abs(vth) > MOVING_VTH
+        if (moving && phase == StepPhase.Idle && stopGuard == null && !ownMotionNoted) {
+            ownMotionNoted = true
+            log("Robot is moving, but not by this app. Press STOP to stop it.")
+        }
+        if (!moving) ownMotionNoted = false
     }
 
     // ------------------------------------------------------------------ step lock
@@ -404,7 +675,8 @@ class DriveController(
     /**
      * A step is over when motion was seen and the robot has been still for
      * [STILL_POLLS_TO_FINISH] polls. Fallbacks: no motion by the no-motion deadline,
-     * or the hard cap.
+     * or the hard cap. A navigation can pause on its way (waiting for a person to pass),
+     * so stillness only ends it once the robot has no plan; after STOP, stillness is enough.
      */
     private fun trackStep(speedValid: Boolean) {
         val p = phase
@@ -424,10 +696,14 @@ class DriveController(
         }
         val t = now()
         val stopping = p is StepPhase.Stopping
+        val onTheWay = !stopping && step.goal != null && planActive == true
         val message = when {
-            tr.sawMotion && tr.stillPolls >= step.stillPolls ->
-                if (stopping) "${step.label}: stopped"
-                else "${step.label}: done" + if (step.path == DOCK_PATH) dockReport() else ""
+            tr.sawMotion && tr.stillPolls >= step.stillPolls && !onTheWay -> when {
+                stopping -> "${step.label}: stopped"
+                step.path == DOCK_PATH -> "${step.label}: done" + dockReport()
+                step.goal != null -> "${step.label}: " + navReport(step.goal)
+                else -> "${step.label}: done"
+            }
             !tr.sawMotion && t > tr.noMotionDeadline ->
                 if (stopping) "${step.label}: stopped before it moved"
                 else "${step.label}: no motion seen. ${step.stallHint}"
@@ -451,6 +727,16 @@ class DriveController(
         9 -> "no charging pile found."
         null -> "no charging status."
         else -> "not charging (chargeFlag $chargeFlag). Check it is on the pile."
+    }
+
+    /** Where the robot stopped, measured against the point's saved pose (both map frame). */
+    private fun navReport(goal: Waypoint): String {
+        val at = navPose
+        val to = goal.pose
+        if (at == null || to == null) return "done"
+        val d = hypot(at.x - to.x, at.y - to.y)
+        return if (d <= ARRIVED_M) String.format(Locale.US, "arrived (%.2f m from the point)", d)
+        else String.format(Locale.US, "stopped %.2f m from the point. Blocked on the way?", d)
     }
 
     /** Ends [step] early, unless the lock has already moved on from it. */
@@ -482,6 +768,18 @@ class DriveController(
     fun demoBlockNextStep() {
         demoRobot.blockNextStep()
         log("Simulated obstacle: the next step will not start")
+        publish()
+    }
+
+    fun demoChargeOnItsOwn() {
+        demoRobot.goChargeOnItsOwn()
+        log("Simulated: the robot sets off to charge by itself")
+        publish()
+    }
+
+    fun demoPersonInTheWay() {
+        demoRobot.personInTheWay(PERSON_WAIT_S)
+        log("Simulated person in the way: the robot waits ${PERSON_WAIT_S.toInt()} s, then carries on")
         publish()
     }
 
@@ -528,7 +826,11 @@ class DriveController(
         vth = vth,
         armed = armed,
         phase = phase,
-        demoStatus = if (demo) DemoStatus(demoRobot.isEstopPressed, demoRobot.isOffline, demoRobot.isBlockNextPending) else null,
+        points = points,
+        addingPoint = addingPoint,
+        pointMessage = pointMessage,
+        runaway = runaway,
+        demoStatus =if (demo) DemoStatus(demoRobot.isEstopPressed, demoRobot.isOffline, demoRobot.isBlockNextPending, demoRobot.isNavigating, demoRobot.isBusy) else null,
         log = logLines.toList(),
     )
 
@@ -560,11 +862,53 @@ class DriveController(
 
         // ---- Docking (REEMAN SLAM WEB API, "Navigation charging") ----
         const val DOCK_PATH = "/cmd/charge"
-        // type 0 = dock with a pile close by, 1 = cancel docking. (2 = drive to the pile
-        // first: not used, the loaded map is from another building.) The robot's pile point is
-        // named "charging_pile".
+        // type 0 = dock with a pile close by, 1 = cancel docking, 2 = navigate to the pile's
+        // point, then dock. The robot's pile point is named "charging_pile".
         private const val DOCK_START = """{"type":0,"point":"charging_pile"}"""
         private const val DOCK_CANCEL = """{"type":1,"point":"charging_pile"}"""
+        private const val CHARGE_NAV = """{"type":2,"point":"charging_pile"}"""
+
+        // ---- After STOP ----
+        const val STOP_GUARD_MS = 10_000L      // watch the robot this long after the last STOP sent
+        const val STOP_SETTLE_MS = 2_500L      // time to brake before motion counts as "moving again"
+        const val STOP_RESEND_GAP_MS = 1_500L
+        const val STOP_RESENDS = 3
+
+        // ---- Navigation to saved points (REEMAN SLAM WEB API) ----
+        const val NAV_PATH = "/cmd/nav_name"            // {"point":"<name>"}
+        private const val CANCEL_NAV_PATH = "/cmd/cancel_goal"
+        private const val POINTS_PATH = "/reeman/position"
+        private const val PLAN_PATH = "/reeman/global_plan"
+        private const val NO_PLAN = "007"               // "Can't get plan data": not navigating
+        private const val PILE_POINT = "charging_pile"
+        const val ARRIVED_M = 0.3                       // GUESS: how close counts as arrived
+        private const val ADD_POINT_PATH = "/cmd/position"
+        // The API allows delivery, normal (route point), production and charge. A disinfection
+        // point is a destination, so "delivery". GUESS: what the robot's own app uses is unknown.
+        const val NEW_POINT_TYPE = "delivery"
+        const val MAX_POINT_NAME = 32
+        private const val PERSON_WAIT_S = 5.0           // DEMO: how long a person blocks the way
+
+        /**
+         * {"waypoints":[{name,type,pose{x,y,theta}}]}, without the charging pile, which has
+         * its own button. The pile is matched by name, and by its API type "charge" in case it
+         * was renamed.
+         */
+        private fun parsePoints(body: String): List<Waypoint> {
+            val list = JSONObject(body).optJSONArray("waypoints") ?: return emptyList() // none saved: may be null
+            return (0 until list.length()).map { i ->
+                val o = list.getJSONObject(i)
+                val pose = o.optJSONObject("pose")?.let {
+                    runCatching { Pose(it.getDouble("x"), it.getDouble("y"), it.optDouble("theta", 0.0)) }.getOrNull()
+                }
+                Waypoint(o.getString("name"), o.optString("type"), pose)
+            }.filterNot { it.name == PILE_POINT || "charg" in it.type.lowercase(Locale.US) }
+        }
+
+        private fun round3(v: Double) = Math.round(v * 1000) / 1000.0
+
+        private fun errorCode(body: String): String? =
+            runCatching { JSONObject(body).optString("error_code").ifEmpty { null } }.getOrNull()
 
         /** The firmware reports errors as {"error":"...","error_code":"009"}. */
         private fun robotError(body: String): String? {
