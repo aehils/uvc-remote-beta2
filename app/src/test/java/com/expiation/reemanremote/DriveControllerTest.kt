@@ -26,12 +26,11 @@ class DriveControllerTest {
         return DriveController(backgroundScope, RobotApi("192.0.2.1"), fake, demo, now = { testScheduler.currentTime })
     }
 
-    /** Connected, e-stop read, armed: ready to drive. */
+    /** Connected and e-stop read: ready to drive. */
     private fun TestScope.ready(): DriveController {
         val c = controller()
         c.resume()
         advanceTimeBy(2000)
-        c.setArmed(true)
         assertTrue(log(c), c.state.value.canDrive)
         return c
     }
@@ -58,7 +57,7 @@ class DriveControllerTest {
         val s = c.state.value
         assertEquals(Link.Connected(EStop.RELEASED), s.link)
         assertEquals(87, s.battery)
-        assertFalse("not armed yet", s.canDrive)
+        assertTrue("ready to drive", s.canDrive)
     }
 
     @Test
@@ -87,12 +86,11 @@ class DriveControllerTest {
     @Test
     fun interlocksBlockDriving() = runTest {
         val c = controller()
+        c.drive(Move.FORWARD)
+        assertEquals("not connected", StepPhase.Idle, c.state.value.phase)
+
         c.resume()
         advanceTimeBy(2000)
-        c.drive(Move.FORWARD)
-        assertEquals("not armed", StepPhase.Idle, c.state.value.phase)
-
-        c.setArmed(true)
         c.demoToggleEstop()
         waitFor(c) { it.estop == EStop.PRESSED }
         assertFalse(c.state.value.canDrive)
@@ -194,12 +192,12 @@ class DriveControllerTest {
 
     @Test
     fun goToChargerNeedsTheInterlock() = runTest {
-        val c = controller()
-        c.resume()
-        advanceTimeBy(2000)
+        val c = ready()
+        c.demoToggleEstop()
+        waitFor(c) { it.estop == EStop.PRESSED }
         c.goToCharger()
         advanceTimeBy(2000)
-        assertEquals("not armed", StepPhase.Idle, c.state.value.phase)
+        assertEquals("e-stop pressed", StepPhase.Idle, c.state.value.phase)
         assertFalse(logged(c, "/cmd/charge"))
     }
 
@@ -325,9 +323,10 @@ class DriveControllerTest {
     @Test
     fun goToNeedsTheInterlock() = runTest {
         val (c, points) = withPoints()
-        c.setArmed(false)
+        c.demoToggleEstop()
+        waitFor(c) { it.estop == EStop.PRESSED }
         c.goTo(points[0])
-        assertEquals("not armed", StepPhase.Idle, c.state.value.phase)
+        assertEquals("e-stop pressed", StepPhase.Idle, c.state.value.phase)
     }
 
     @Test
@@ -469,19 +468,9 @@ class DriveControllerTest {
     }
 
     @Test
-    fun modeSwitchDisarms() = runTest {
-        val c = controller(demo = false) // never resumed, so nothing is sent to the live address
-        c.setArmed(true)
-        assertTrue(c.setDemo(true))
-        assertTrue(c.state.value.demo)
-        assertFalse(c.state.value.armed)
-    }
-
-    @Test
-    fun pauseDisarmsAndStopsPolling() = runTest {
+    fun pauseStopsPolling() = runTest {
         val c = ready()
         c.pause()
-        assertFalse(c.state.value.armed)
         c.demoToggleEstop()
         advanceTimeBy(3000)
         assertEquals("no polls while paused", EStop.RELEASED, c.state.value.estop)
