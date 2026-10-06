@@ -52,6 +52,8 @@ data class Step(
     val stallHint: String = "Obstacle in the way, or command ignored?",
     /** Set for a navigation to a saved point (see [DriveController.goTo]). */
     val goal: Waypoint? = null,
+    /** Sent if this dock finds no pile (see [DriveController.goToCharger]). */
+    val fallback: Step? = null,
 )
 
 data class Pose(val x: Double, val y: Double, val theta: Double)
@@ -185,6 +187,7 @@ class DriveController(
     private var runaway = false
     private var ownMotionNoted = false
     private var addJob: Job? = null
+    private var chargerJob: Job? = null
 
     private val logLines = ArrayDeque<String>()
     private val clock = SimpleDateFormat("HH:mm:ss", Locale.US)
@@ -202,6 +205,7 @@ class DriveController(
     fun pause() {
         pollJob?.cancel()
         pollJob = null
+        chargerJob?.cancel()
         setArmed(false)
     }
 
@@ -270,6 +274,7 @@ class DriveController(
         connectJob?.cancel()
         pointsJob?.cancel()
         addJob?.cancel()
+        chargerJob?.cancel()
         points = Points.NotLoaded // the other robot has its own map and points
         addingPoint = false
         pointMessage = null
@@ -405,45 +410,75 @@ class DriveController(
     }
 
     /**
-     * Starts the firmware's own docking routine (/cmd/charge type 0): the robot finds the
-     * charging pile nearby and reverses onto it. It moves the robot, so it takes the same
-     * interlock and step lock as the d-pad. The firmware picks the docking speed.
+     * GO TO CHARGER: docks straight away if the charging pile is close, otherwise drives to it
+     * and docks. "Close" is measured on the map: the robot's pose (/reeman/pose) against the
+     * pile's saved point (/reeman/position), within [DOCK_NEAR_M].
+     *  - close: /cmd/charge type 0, the docking routine. If that finds no pile (no motion, or
+     *    chargeFlag 9), it falls back to driving there (see [trackStep]).
+     *  - far, or either position unknown: /cmd/charge type 2, drive to the pile, then dock.
+     * Docking is never tried from far away: what the real routine does then is unknown.
      */
-    fun dock() {
-        if (!snapshot().canDrive) return
-        send(
-            Step(
-                "Dock charger", DOCK_PATH, DOCK_START, isTurn = false,
-                estimateMs = 30_000,     // GUESS: never timed on the real robot
-                stillPolls = 10,         // ~3 s: the routine may pause between aligning and reversing
-                noMotionMs = 8_000,
-                capMs = 120_000,
-                stallHint = "Already docked, or no charging pile within range?",
-            )
-        )
+    fun goToCharger() {
+        if (!snapshot().canDrive || chargerJob?.isActive == true) return
+        log("Go to charger: checking how far the charging pile is …")
+        publish()
+        val a = api
+        chargerJob = scope.launch {
+            val all = a.get(POINTS_PATH).takeIf { it.ok }?.let { r -> runCatching { parseWaypoints(r.body) }.getOrNull() }
+            val pile = all?.firstOrNull { isPile(it) }?.pose
+            val here = a.get("/reeman/pose").takeIf { it.ok }?.let { r ->
+                runCatching { JSONObject(r.body).let { Pose(it.getDouble("x"), it.getDouble("y"), 0.0) } }.getOrNull()
+            }
+            val d = if (pile != null && here != null) hypot(here.x - pile.x, here.y - pile.y) else null
+            // The robot may have been disarmed, moved or e-stopped while the app was asking.
+            if (!snapshot().canDrive) {
+                log("Go to charger: not sent (drive no longer enabled, or the robot is moving)")
+                publish()
+                return@launch
+            }
+            val drive = chargeNavStep()
+            when {
+                d == null -> {
+                    log("Go to charger: couldn't tell where the pile is, so driving there first")
+                    send(drive)
+                }
+                d <= DOCK_NEAR_M -> {
+                    log(fmt("Go to charger: pile %.1f m away, docking straight away", d))
+                    // At the pile already: a failed dock means "already docked", not "too far".
+                    send(dockStep(fallback = if (d > AT_PILE_M) drive else null))
+                }
+                else -> {
+                    log(fmt("Go to charger: pile %.1f m away, driving there first", d))
+                    send(drive)
+                }
+            }
+        }
     }
 
+    /** The firmware's own docking routine (/cmd/charge type 0): finds the pile nearby and reverses onto it. */
+    private fun dockStep(fallback: Step?) = Step(
+        "Go to charger (docking)", DOCK_PATH, DOCK_START, isTurn = false,
+        estimateMs = 30_000,     // GUESS: never timed on the real robot
+        stillPolls = 10,         // ~3 s: the routine may pause between aligning and reversing
+        noMotionMs = 8_000,
+        capMs = 120_000,
+        stallHint = "Already docked, or no charging pile within range?",
+        fallback = fallback,
+    )
+
     /**
-     * Sends the robot to the charging pile and docks (/cmd/charge type 2): it navigates to the
-     * pile's point, then runs its docking routine. Same interlock and lock as GO; the lock holds
-     * while the robot has a plan, and a pause between arriving and docking is allowed for.
+     * /cmd/charge type 2: navigate to the pile's point, then dock. The lock holds while the robot
+     * has a plan, and a pause between arriving and docking is allowed for.
      */
-    fun goToCharge() {
-        if (!snapshot().canDrive) return
-        planActive = null
-        navPose = null
-        send(
-            Step(
-                "Go to charge", DOCK_PATH, CHARGE_NAV, isTurn = false,
-                estimateMs = 90_000,     // unknown: depends on the route
-                stillPolls = 17,         // ~5 s: GUESS, room for a pause between the trip and docking
-                noMotionMs = 15_000,
-                capMs = 15 * 60_000,
-                stallHint = "Already on the pile, or no route to it?",
-                goal = Waypoint(PILE_POINT, "charge", null),
-            )
-        )
-    }
+    private fun chargeNavStep() = Step(
+        "Go to charger", DOCK_PATH, CHARGE_NAV, isTurn = false,
+        estimateMs = 90_000,     // unknown: depends on the route
+        stillPolls = 17,         // ~5 s: GUESS, room for a pause between the trip and docking
+        noMotionMs = 15_000,
+        capMs = 15 * 60_000,
+        stallHint = "Already on the pile, or no route to it?",
+        goal = Waypoint(PILE_POINT, "charge", null),
+    )
 
     /** Reads the robot's saved points (/reeman/position) for the Tasks tab. Read-only: safe at any time. */
     fun loadPoints() {
@@ -560,6 +595,10 @@ class DriveController(
         // Lock before sending, so a double-tap can't send a second step.
         val t = now()
         stopGuard = null // a new command from the user: motion is expected now
+        if (step.goal != null) {
+            planActive = null
+            navPose = null
+        }
         phase = StepPhase.Stepping(step, Tracking(t + step.noMotionMs, t + step.capMs))
         log("${step.label}: sending ${step.path} ${step.json}")
         publish()
@@ -596,6 +635,7 @@ class DriveController(
             is StepPhase.Stepping -> StepPhase.Stopping(p.step, shorten(p.track))
             is StepPhase.Stopping -> p.copy(track = shorten(p.track))
         }
+        chargerJob?.cancel() // a GO TO CHARGER still deciding must not send after STOP
         stopGuard = StopGuard(pressedAt = t, until = t + STOP_GUARD_MS, lastSent = t, resends = 0)
         runaway = false
         publish()
@@ -718,13 +758,26 @@ class DriveController(
             p is StepPhase.Stepping -> p.copy(track = tr)
             else -> (p as StepPhase.Stopping).copy(track = tr)
         }
+
+        // A dock that found no pile (never moved, or reports chargeFlag 9): drive there instead.
+        // Not after STOP or a timeout, and only if driving is still allowed.
+        val fallback = step.fallback
+        val noPile = !tr.sawMotion || chargeFlag == CHARGE_NOT_FOUND
+        if (message != null && fallback != null && !stopping && noPile && t <= tr.hardCap) {
+            if (snapshot().canDrive) {
+                log("Go to charger: couldn't dock from here, driving to the pile first")
+                send(fallback)
+            } else {
+                log("Go to charger: couldn't dock from here, and driving to the pile is blocked")
+            }
+        }
     }
 
     /** chargeFlag is stale while the robot sits still, but motion refreshes it, so after a dock it is worth a line. */
     private fun dockReport() = ". Robot reports: " + when (chargeFlag) {
         2 -> "charging at the pile."
         8 -> "still connecting to the pile."
-        9 -> "no charging pile found."
+        CHARGE_NOT_FOUND -> "no charging pile found."
         null -> "no charging status."
         else -> "not charging (chargeFlag $chargeFlag). Check it is on the pile."
     }
@@ -867,6 +920,11 @@ class DriveController(
         private const val DOCK_START = """{"type":0,"point":"charging_pile"}"""
         private const val DOCK_CANCEL = """{"type":1,"point":"charging_pile"}"""
         private const val CHARGE_NAV = """{"type":2,"point":"charging_pile"}"""
+        private const val CHARGE_NOT_FOUND = 9          // chargeFlag: no pile found while docking
+        // GO TO CHARGER docks straight away within this distance of the pile's point, else drives
+        // there first. GUESS: the docking routine's real range was never measured; kept short.
+        const val DOCK_NEAR_M = 1.5
+        private const val AT_PILE_M = 0.3               // this close, the robot is already at the pile
 
         // ---- After STOP ----
         const val STOP_GUARD_MS = 10_000L      // watch the robot this long after the last STOP sent
@@ -894,7 +952,10 @@ class DriveController(
          * its own button. The pile is matched by name, and by its API type "charge" in case it
          * was renamed.
          */
-        private fun parsePoints(body: String): List<Waypoint> {
+        private fun parsePoints(body: String): List<Waypoint> = parseWaypoints(body).filterNot { isPile(it) }
+
+        /** Every saved point, the pile included. */
+        private fun parseWaypoints(body: String): List<Waypoint> {
             val list = JSONObject(body).optJSONArray("waypoints") ?: return emptyList() // none saved: may be null
             return (0 until list.length()).map { i ->
                 val o = list.getJSONObject(i)
@@ -902,8 +963,12 @@ class DriveController(
                     runCatching { Pose(it.getDouble("x"), it.getDouble("y"), it.optDouble("theta", 0.0)) }.getOrNull()
                 }
                 Waypoint(o.getString("name"), o.optString("type"), pose)
-            }.filterNot { it.name == PILE_POINT || "charg" in it.type.lowercase(Locale.US) }
+            }
         }
+
+        private fun isPile(w: Waypoint) = w.name == PILE_POINT || "charg" in w.type.lowercase(Locale.US)
+
+        private fun fmt(format: String, vararg args: Any) = String.format(Locale.US, format, *args)
 
         private fun round3(v: Double) = Math.round(v * 1000) / 1000.0
 

@@ -128,52 +128,104 @@ class DriveControllerTest {
     private fun chargeFlag(c: DriveController) =
         Regex("\"chargeFlag\":(\\d+)").find(c.demoRobot.handle("GET", "/reeman/base_encode", null)!!.body)!!.groupValues[1].toInt()
 
-    @Test
-    fun dockReversesOntoThePileAndReportsCharging() = runTest {
+    /** Ready to drive, 1.15 m from the pile (the demo starts 2.15 m from it). */
+    private fun TestScope.nearThePile(): DriveController {
         val c = ready()
-        c.dock()
-        assertTrue(c.state.value.phase is StepPhase.Stepping)
-        c.drive(Move.FORWARD) // locked while docking
-        assertEquals(1, c.state.value.log.count { "sending" in it })
+        repeat(2) {
+            c.drive(Move.BACK)
+            waitFor(c) { it.phase == StepPhase.Idle && it.canDrive }
+        }
+        return c
+    }
+
+    @Test
+    fun goToChargerDocksStraightAwayWhenThePileIsClose() = runTest {
+        val c = nearThePile()
+        c.goToCharger()
+        waitFor(c) { it.phase is StepPhase.Stepping }
+        assertTrue(log(c), logged(c, "m away, docking straight away"))
         assertTrue(log(c), logged(c, "sending /cmd/charge {\"type\":0"))
+        c.drive(Move.FORWARD) // locked while docking
+        assertEquals(3, c.state.value.log.count { "sending" in it })
 
         waitFor(c, maxMs = 40_000) { it.phase == StepPhase.Idle }
-        assertTrue(log(c), logged(c, "Dock charger: done. Robot reports: charging at the pile."))
+        assertTrue(log(c), logged(c, "Go to charger (docking): done. Robot reports: charging at the pile."))
+        assertFalse(log(c), logged(c, "type\":2"))
         assertEquals("on the pile against the west wall", -2.15, robotX(c), 0.02)
         assertEquals(2, chargeFlag(c))
     }
 
     @Test
-    fun dockNeedsTheInterlock() = runTest {
+    fun goToChargerDrivesThereFirstWhenThePileIsFar() = runTest {
+        val c = ready() // 2.15 m from the pile
+        c.goToCharger()
+        waitFor(c) { it.phase is StepPhase.Stepping }
+        assertTrue(log(c), logged(c, "m away, driving there first"))
+        assertTrue(log(c), logged(c, "Go to charger: sending /cmd/charge {\"type\":2,\"point\":\"charging_pile\"}"))
+        waitFor(c, maxMs = 90_000) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), logged(c, "Go to charger: done. Robot reports: charging at the pile."))
+        assertEquals(-2.15, robotX(c), 0.02)
+    }
+
+    @Test
+    fun goToChargerDrivesThereIfDockingFindsNoPile() = runTest {
+        val c = nearThePile()
+        c.demoBlockNextStep() // the dock is accepted but never starts, as with no pile in range
+        c.goToCharger()
+        waitFor(c, maxMs = 90_000) { logged(c, "Go to charger: done") }
+        assertTrue(log(c), logged(c, "Go to charger (docking): no motion seen"))
+        assertTrue(log(c), logged(c, "couldn't dock from here, driving to the pile first"))
+        assertTrue(log(c), logged(c, "Robot reports: charging at the pile."))
+        assertEquals(-2.15, robotX(c), 0.02)
+    }
+
+    @Test
+    fun goToChargerOnThePileDoesNotDriveOff() = runTest {
+        val c = nearThePile()
+        c.goToCharger()
+        waitFor(c, maxMs = 40_000) { logged(c, "charging at the pile") && it.phase == StepPhase.Idle }
+        c.goToCharger() // again, already docked
+        waitFor(c, maxMs = 20_000) { logged(c, "no motion seen") }
+        assertTrue(log(c), logged(c, "Already docked, or no charging pile within range?"))
+        advanceTimeBy(5000)
+        assertFalse(log(c), logged(c, "driving to the pile first"))
+        assertEquals(2, chargeFlag(c))
+    }
+
+    @Test
+    fun goToChargerNeedsTheInterlock() = runTest {
         val c = controller()
         c.resume()
         advanceTimeBy(2000)
-        c.dock()
+        c.goToCharger()
+        advanceTimeBy(2000)
         assertEquals("not armed", StepPhase.Idle, c.state.value.phase)
+        assertFalse(logged(c, "/cmd/charge"))
     }
 
     @Test
-    fun dockOutOfRangeReportsNoMotion() = runTest {
+    fun stopWhileGoToChargerIsDecidingSendsNothing() = runTest {
         val c = ready()
-        c.drive(Move.FORWARD) // 2.65 m from the pile: out of the demo's 2.5 m range
-        waitFor(c) { it.phase == StepPhase.Idle }
-        c.dock()
-        val took = waitFor(c) { it.phase == StepPhase.Idle }
-        assertTrue(log(c), logged(c, "Dock charger: no motion seen. Already docked, or no charging pile within range?"))
-        assertTrue("took $took ms", took in 8000..8700)
+        c.goToCharger()
+        c.stop() // before the app has finished asking where the pile is
+        advanceTimeBy(10_000)
+        assertFalse(log(c), logged(c, "sending /cmd/charge"))
+        assertEquals(StepPhase.Idle, c.state.value.phase)
     }
 
     @Test
-    fun stopMidDockCancelsDocking() = runTest {
-        val c = ready()
-        c.dock()
+    fun stopMidDockCancelsDockingAndDoesNotFallBack() = runTest {
+        val c = nearThePile()
+        c.goToCharger()
         advanceTimeBy(4000)
-        assertTrue(c.state.value.vx < -0.05)
+        assertTrue(abs(c.state.value.vx) + abs(c.state.value.vth) > 0.05)
         c.stop()
         waitFor(c) { it.phase == StepPhase.Idle }
+        advanceTimeBy(5000)
         assertTrue(log(c), logged(c, "STOP: sent"))
-        assertTrue(log(c), logged(c, "Dock charger: stopped"))
-        assertTrue("stopped short of the pile", robotX(c) > -1.5)
+        assertTrue(log(c), logged(c, "Go to charger (docking): stopped"))
+        assertFalse(log(c), logged(c, "driving to the pile first"))
+        assertTrue("stopped short of the pile", robotX(c) > -2.0)
         assertEquals("not docking any more", 0, chargeFlag(c))
     }
 
@@ -380,16 +432,6 @@ class DriveControllerTest {
         waitFor(c) { it.phase == StepPhase.Idle }
         assertTrue(log(c), logged(c, "Forward 0.5 m: done"))
         assertFalse(log(c), logged(c, "sending STOP again"))
-    }
-
-    @Test
-    fun goToChargeDrivesToThePileAndDocks() = runTest {
-        val c = ready()
-        c.goToCharge()
-        assertTrue(log(c), logged(c, "Go to charge: sending /cmd/charge {\"type\":2,\"point\":\"charging_pile\"}"))
-        waitFor(c, maxMs = 90_000) { it.phase == StepPhase.Idle }
-        assertTrue(log(c), logged(c, "Go to charge: done. Robot reports: charging at the pile."))
-        assertEquals(-2.15, robotX(c), 0.02)
     }
 
     @Test

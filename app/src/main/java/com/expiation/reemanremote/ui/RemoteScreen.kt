@@ -122,11 +122,10 @@ data class RemoteActions(
     val onArmChange: (Boolean) -> Unit = {},
     val onMove: (Move) -> Unit = {},
     val onStop: () -> Unit = {},
-    val onDock: () -> Unit = {},
     val onLoadPoints: () -> Unit = {},
     val onGoTo: (Waypoint) -> Unit = {},
     val onAddPoint: (String) -> Unit = {},
-    val onGoToCharge: () -> Unit = {},
+    val onGoToCharger: () -> Unit = {},
     val onDemoEstop: () -> Unit = {},
     val onDemoWifi: () -> Unit = {},
     val onDemoBlock: () -> Unit = {},
@@ -226,7 +225,6 @@ private fun MainPage(
             ) {
                 ConnectionSection(state, actions.onPing)
                 DriveCard(state, actions)
-                DockButton("DOCK CHARGER", state.canDrive, actions.onDock)
             }
             Tab.TASKS -> TasksTab(state, actions, onOpenPoints, content)
             Tab.MAP -> ComingSoon(
@@ -818,7 +816,7 @@ private fun BusyStatus(state: RemoteState) {
 // ---------------------------------------------------------------------- tasks
 
 /**
- * The Tasks tab: GO TO CHARGE, which moves the robot (so the tab has its own DRIVE ENABLED
+ * The Tasks tab: GO TO CHARGER, which moves the robot (so the tab has its own DRIVE ENABLED
  * switch), and a list of tasks, each opening its own page.
  */
 @Composable
@@ -836,10 +834,10 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
             ArmRow(state.armed, actions.onArmChange)
             BusyStatus(state)
         }
-        DockButton("GO TO CHARGE", state.canDrive, actions.onGoToCharge)
+        ChargerButton(state.canDrive, actions.onGoToCharger)
         TasksNote(
-            "Drives to the charging pile on the robot's own route, then docks. " +
-                "STOP cancels it, even when the robot set off by itself."
+            "Docks straight away if the charging pile is close (within ${DriveController.DOCK_NEAR_M} m on the map); " +
+                "otherwise drives there on the robot's own route first, then docks."
         )
 
         SectionLabel("Tasks")
@@ -1086,9 +1084,9 @@ private fun TasksNote(text: String) {
     Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
-/** The robot's own docking routine. It moves the robot, so it is held to the drive pad's interlock. */
+/** GO TO CHARGER. It moves the robot, so it is held to the drive pad's interlock. */
 @Composable
-private fun DockButton(label: String, enabled: Boolean, onDock: () -> Unit) {
+private fun ChargerButton(enabled: Boolean, onDock: () -> Unit) {
     FilledTonalButton(
         onClick = onDock,
         enabled = enabled,
@@ -1099,7 +1097,7 @@ private fun DockButton(label: String, enabled: Boolean, onDock: () -> Unit) {
     ) {
         Icon(painterResource(R.drawable.ic_dock), contentDescription = null, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(8.dp))
-        Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+        Text("GO TO CHARGER", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
     }
 }
 

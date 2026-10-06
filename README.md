@@ -28,23 +28,31 @@ so it is on screen on every tab and on the DEMO controls page.
 | Left 90° | `/cmd/turn` `{"direction":1,"angle":90,"speed":0.40}` | 0.4 rad/s |
 | Right 90° | `/cmd/turn` `{"direction":0,"angle":90,"speed":0.40}` | 0.4 rad/s |
 | Turn 180° | `/cmd/turn` `{"direction":1,"angle":180,"speed":0.40}` | 0.4 rad/s |
-| DOCK CHARGER | `/cmd/charge` `{"type":0,"point":"charging_pile"}` | set by the firmware |
+| GO TO CHARGER (Tasks tab) | `/reeman/position` + `/reeman/pose`, then `/cmd/charge` `{"type":0,…}` (pile close) or `{"type":2,…}` (pile far) | set by the firmware |
 | GO (Disinfection points page) | `/cmd/nav_name` `{"point":"<name>"}` | set by the firmware |
 | Add point where the robot is | `/reeman/pose`, then `/cmd/position` `{"name":"<name>","type":"delivery","pose":{"x","y","theta"}}` | doesn't move the robot |
-| GO TO CHARGE (Tasks tab) | `/cmd/charge` `{"type":2,"point":"charging_pile"}` | set by the firmware |
 | STOP | stop body, `/cmd/cancel_goal`, `/cmd/charge` `{"type":1}`, the other stop body: every time | always active |
 
-**DOCK CHARGER** starts the robot's own docking routine, the one it runs when it is close
-to the charging pile: it finds the pile and reverses onto it. Use it only with the pile
-nearby; it does not navigate there (the loaded map is from another building). It is held
-to the same rules as the drive buttons, and the buttons stay locked until the robot has
-been still for ~3 s. When it finishes, the log says what the robot reports (charging, or
-no pile found). That reading is normally stale, but the docking motion refreshes it.
-Docking speed is the firmware's, not the app's caps below.
+**GO TO CHARGER** (Tasks tab) gets the robot onto the charging pile from anywhere. It first
+measures, on the map, how far the robot is from the pile's saved point (`charging_pile` in
+`/reeman/position`, against `/reeman/pose`):
+- **Within 1.5 m:** it docks straight away with the robot's own docking routine
+  (`/cmd/charge` type 0), which finds the pile and reverses onto it. If that finds no pile
+  (the robot never moves, or reports "no charging pile found"), it drives there instead.
+- **Further, or either position unknown:** it drives to the pile on the robot's own route,
+  then docks (`/cmd/charge` type 2). The lock holds while the robot has a plan, and allows
+  ~5 s of stillness between arriving and docking.
+
+Docking is never tried from far away, since what the real routine does then is unknown.
+1.5 m is a guess (`DOCK_NEAR_M`): the routine's real range was never measured. It has the
+Tasks tab's own **DRIVE ENABLED** switch and the same rules as the drive buttons. STOP while
+it is still measuring sends nothing. When it finishes, the log says what the robot reports
+(charging, or no pile found). That reading is normally stale, but the docking motion
+refreshes it. Docking speed is the firmware's, not the app's caps below.
 
 **Tasks → Disinfection points.** Tap **Disinfection points** on the Tasks tab to open its
 page (STOP and the robot's readings stay on screen there). It lists the points saved on the
-robot's map (`/reeman/position`), except the charging pile, which has DOCK CHARGER. **GO**
+robot's map (`/reeman/position`), except the charging pile, which has GO TO CHARGER. **GO**
 sends the robot there with `/cmd/nav_name`: the robot plans its own route and speed. It only
 drives there; it does not switch on the UV lamps. The page has its own **DRIVE ENABLED**
 switch (switched off when you leave the page) and the same rules as the drive buttons.
@@ -85,12 +93,8 @@ not by this app"), STOP pulses whenever the robot moves, and the drive buttons s
 until it is still. Still to confirm on the real robot: that `/cmd/charge` type 1 does nothing
 while the robot sits charging on the pile (STOP now sends it every time).
 
-**GO TO CHARGE** (Tasks tab) sends the robot to the charging pile on its own route and docks
-(`/cmd/charge` type 2). It has the Tasks tab's own **DRIVE ENABLED** switch and the same rules
-as GO; the lock allows ~5 s of stillness between arriving and docking.
-
 Safety behaviour:
-- Drive buttons (and DOCK CHARGER, GO and GO TO CHARGE) only work when: connected, e-stop released, **DRIVE ENABLED** switched on, no step running, and the robot standing still.
+- Drive buttons (and GO and GO TO CHARGER) only work when: connected, e-stop released, **DRIVE ENABLED** switched on, no step running, and the robot standing still.
 - The **Ping** icon next to the address is the connection light: green when connected, orange when not.
 - One step at a time: buttons lock until the robot's measured speed has been ~0 for about a second.
 - Leaving the app (home button, screen off, switching apps) or changing tab switches Drive off.
@@ -142,8 +146,8 @@ The simulator covers fixed-step driving, docking, trips to saved points and to t
 (`/cmd/charge` type 2). As on the real robot, a stop body only pauses a trip for ~1 s;
 `/cmd/cancel_goal` or `/cmd/charge` type 1 ends it. Its charging pile is against the
 middle of the west wall, right behind the start position, and it can be seen from 2.5 m
-(a guess): DOCK CHARGER from the start docks, but one step forward first puts it out of
-range ("no motion seen"). On the pile the battery climbs 1% every 2 s. Its room has three saved points
+(a guess). The start is 2.15 m from the pile, so GO TO CHARGER from there drives first;
+two steps back bring it within 1.5 m, and it docks straight away. On the pile the battery climbs 1% every 2 s. Its room has three saved points
 (Bed 1, Bed 2, Sink area) and the pile; points you add are kept until Reset robot. A trip turns to face the point, drives a straight
 line and turns to the point's heading. It does not plan around obstacles: a wall or the box
 in the way stops it short. These are answered with error `004`
