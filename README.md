@@ -16,7 +16,7 @@ It is written in Kotlin with a Jetpack Compose (Material 3) screen, in light and
 ## What it does
 
 The screen has four tabs: **Remote** (the manual step pad and the robot address),
-**Tasks** (a list of tasks: **Disinfection points** opens its own page), **Map** (a placeholder, not in this
+**Tasks** (a list of tasks: **Disinfection Points** opens its own page), **Map** (a placeholder, not in this
 build yet), and **Activity** (the log). The robot's readings (e-stop badge, speed, battery) are pinned
 under the title on every tab, and **STOP is the red button in the centre of the nav bar**,
 so it is on screen on every tab and on the DEMO controls page.
@@ -29,7 +29,8 @@ so it is on screen on every tab and on the DEMO controls page.
 | Right 90° | `/cmd/turn` `{"direction":0,"angle":90,"speed":0.40}` | 0.4 rad/s |
 | Turn 180° | `/cmd/turn` `{"direction":1,"angle":180,"speed":0.40}` | 0.4 rad/s |
 | GO TO CHARGER (Tasks tab) | `/reeman/position` + `/reeman/pose`, then `/cmd/charge` `{"type":0,…}` (pile close) or `{"type":2,…}` (pile far) | set by the firmware |
-| GO (Disinfection points page) | `/cmd/nav_name` `{"point":"<name>"}` | set by the firmware |
+| GO (Disinfection Points page) | `/cmd/nav_name` `{"point":"<name>"}` | set by the firmware |
+| START DISINFECTION (Disinfection Points page) | after the start delay, `/cmd/external_power_supply` `{"type":"24v","operation":"1"}`; at the end `"operation":"0"` | doesn't move the robot |
 | Add point where the robot is | `/reeman/pose`, then `/cmd/position` `{"name":"<name>","type":"delivery","pose":{"x","y","theta"}}` | doesn't move the robot |
 | STOP | stop body, `/cmd/cancel_goal`, `/cmd/charge` `{"type":1}`, the other stop body: every time | always active |
 
@@ -50,11 +51,12 @@ it is still measuring sends nothing. When it finishes, the log says what the rob
 (charging, or no pile found). That reading is normally stale, but the docking motion
 refreshes it. Docking speed is the firmware's, not the app's caps below.
 
-**Tasks → Disinfection points.** Tap **Disinfection points** on the Tasks tab to open its
+**Tasks → Disinfection Points.** Tap **Disinfection Points** on the Tasks tab to open its
 page (STOP and the robot's readings stay on screen there). It lists the points saved on the
 robot's map (`/reeman/position`), except the charging pile, which has GO TO CHARGER. **GO**
 sends the robot there with `/cmd/nav_name`: the robot plans its own route and speed. It only
-drives there; it does not switch on the UV lamps. It has the same rules as the drive buttons.
+drives there; **START DISINFECTION** (below) switches on the UV lamps. It has the same rules as
+the drive buttons.
 During a trip the app also reads `/reeman/global_plan` and `/reeman/pose` every ~1.5 s:
 - The robot can stop on its way (waiting for a person to pass), so being still only ends
   the trip once the robot reports no plan (`007`). Until then the buttons stay locked.
@@ -69,6 +71,34 @@ new point: the app reads `/reeman/pose`, then sends `/cmd/position` (as the Web 
 and reloads the list. A robot sent there later turns to face the same way. The robot must be
 connected and standing still, with no step running. Names must be new: setting an existing name would move that point.
 Points are renamed or deleted in the robot's own app.
+
+**UV disinfection** is the card at the top of the Disinfection Points page. **START
+DISINFECTION** asks you to confirm the room is clear, counts down the start delay (time to
+leave the room), switches the UV lamps on for the set time, then off. **START NOW** (next to
+CANCEL during the countdown) skips the rest of the countdown when the room is already clear. It disinfects where the
+robot stands. The card says which point that is: the one the robot arrived at (within 0.3 m),
+or the one it is found standing on when the points are read; otherwise "isn't at a saved
+point". The **tune** button sets the time (1–30 min) and the start delay (15, 30 or 60 s;
+default 15 s, and there is no 0 s since START NOW does that); they are saved on the phone. While the lamps are on, or about to come on, a red banner with the
+time left is pinned on every page, and the drive buttons, GO and GO TO CHARGER are locked.
+
+The lamps are switched with the power board's external supply (`/cmd/external_power_supply`,
+from the Web API), now the **24 V** one. On the first live test (2026-10-06) the lamps did not
+come on with the 36 V supply (the manual's Debug page names a "36V external supply"); that they
+are on 24 V is still a GUESS until a test shows them light. The robot
+can't report whether that supply is on, so the timer is the app's, and the app switches the
+lamps off (or cancels the countdown) on any of:
+- the set time running out, **LAMPS OFF** / **CANCEL** on the card, or **STOP**;
+- the e-stop pressed, the robot moving (on its own or pushed), or the connection lost;
+- leaving the app (home button, screen off, switching apps), since the timer can't run in the
+  background.
+
+OFF is retried every 1.5 s until the robot accepts it. Until then the banner reads **UV LAMPS
+MAY STILL BE ON**, everything that moves the robot stays locked, and the app won't switch
+robot or mode (OFF has to go to the same robot). ON and OFF are sent one at a time, in order,
+so an OFF can't overtake an ON still in flight. STOP sends OFF only while this app has the
+lamps on (or owes an OFF), not every time like `/cmd/cancel_goal`, until the 24 V guess is
+confirmed. See "First UV test" below.
 
 This relies on the loaded map matching the building (the robot's map was replaced after
 beta 0.1, whose map was from another site). Still to confirm on the real robot (marked
@@ -92,12 +122,13 @@ until it is still. Still to confirm on the real robot: that `/cmd/charge` type 1
 while the robot sits charging on the pile (STOP now sends it every time).
 
 Safety behaviour:
-- Drive buttons (and GO and GO TO CHARGER) only work when: connected, e-stop released, no step running, and the robot standing still.
+- Drive buttons (and GO, GO TO CHARGER and START DISINFECTION) only work when: connected, e-stop released, no step running, the robot standing still, and the UV lamps off.
 - The **Ping** icon next to the address is the connection light: green when connected, orange when not.
 - One step at a time: buttons lock until the robot's measured speed has been ~0 for about a second.
 - STOP pulses with a red ring while a step is running.
 - Speeds are capped in code (`MAX_LINEAR` 0.3 m/s, `MAX_ANGULAR` 0.5 rad/s in `DriveController.kt`).
 - STOP is a hard stop. Use it for emergencies, not for routine stopping (steps end on their own).
+- The UV lamps go off at the end of the set time, on STOP, the e-stop, the robot moving, lost connection, or leaving the app.
 - The physical e-stop remains the real backstop.
 
 ## Demo mode
@@ -139,7 +170,8 @@ watch each event take effect. The first three are switches; the rest are buttons
 ### Demo mode limitations
 
 The simulator covers fixed-step driving, docking, trips to saved points and to the pile
-(`/cmd/charge` type 2). As on the real robot, a stop body only pauses a trip for ~1 s;
+(`/cmd/charge` type 2), and the external power supplies (the DEMO controls page shows whether
+the simulated UV lamps are on). As on the real robot, a stop body only pauses a trip for ~1 s;
 `/cmd/cancel_goal` or `/cmd/charge` type 1 ends it. Its charging pile is against the
 middle of the west wall, right behind the start position, and it can be seen from 2.5 m
 (a guess). The start is 2.15 m from the pile, so GO TO CHARGER from there drives first;
@@ -201,6 +233,24 @@ a task the robot started by itself.
 
 Note anything odd from the **Activity** tab (long-press to select and copy).
 
+## First UV test (real robot)
+
+Which supply the lamps are on is still a guess: 36 V was tried first (2026-10-06) and the lamps
+did not come on; the app now uses 24 V. UV-C burns skin and eyes. Plan this test before running it:
+
+1. Nobody in the room, door closed and signed. Watch from outside (through a window, or with
+   the lamps shielded), or have the lamps disconnected for the first try and check the 24 V
+   supply with a meter instead. Wear the manual's PPE if anyone has to be near.
+2. Set the time to **1 min** and the delay to **30 s** (tune button), then **START
+   DISINFECTION** and leave.
+3. Confirm the lamps come on after the delay, and off after 1 minute. Check the log shows
+   "robot accepted OFF".
+4. Repeat, pressing **STOP** while the lamps are on. Then once more, pressing the physical
+   e-stop: note whether the e-stop alone cuts the lamps.
+5. If the lamps don't come on, the 24 V guess is wrong too: try `24v36` (both supplies) in
+   `UV_SUPPLY` in `DriveController.kt` and repeat from 1, or check the lamp wiring.
+6. Once they work, try **START NOW** during the countdown: the lamps should come on straight away.
+
 ### Still to confirm on the real robot (from beta 0.1)
 
 STOP pressed mid-step, the e-stop-pressed banner, behaviour when Wi-Fi drops, and
@@ -210,13 +260,13 @@ low battery. These can now be rehearsed in demo mode first.
 
 All under `app/src/main/java/com/expiation/reemanremote/`:
 
-- `DriveController.kt`: **every drive rule lives here**: polling, interlocks, the step lock, STOP, trips to points, demo switching.
-  Plain Kotlin (no Android), with the state as explicit types: `Link` (Disconnected / Connected + e-stop)
-  and `StepPhase` (Idle / Stepping / Stopping).
+- `DriveController.kt`: **every drive rule lives here**: polling, interlocks, the step lock, STOP, trips to points, UV disinfection, demo switching.
+  Plain Kotlin (no Android), with the state as explicit types: `Link` (Disconnected / Connected + e-stop),
+  `StepPhase` (Idle / Stepping / Stopping) and `Uv` (Countdown / Starting / On).
 - `RobotApi.kt`: HTTP calls to the robot (or to the simulator in demo mode)
 - `FakeRobot.kt`: the simulated robot used by demo mode
-- `RemoteViewModel.kt`: keeps the controller alive across screen recreation; saves the address and demo choice
-- `MainActivity.kt`: hosts the screen; leaving the app pauses polling
+- `RemoteViewModel.kt`: keeps the controller alive across screen recreation; saves the address, demo choice and disinfection settings
+- `MainActivity.kt`: hosts the screen; leaving the app pauses polling and switches the UV lamps off
 - `ui/RemoteScreen.kt`: the Compose screen. It only draws `RemoteState` and forwards taps.
   Open it in Android Studio's Split/Design view to see the previews.
 - `ui/Theme.kt`: colours for light and dark themes, including the status colours

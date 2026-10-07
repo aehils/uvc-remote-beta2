@@ -33,6 +33,10 @@ class MainActivity : ComponentActivity() {
             onGoTo = c::goTo,
             onAddPoint = c::addPointHere,
             onGoToCharger = c::goToCharger,
+            onStartDisinfection = c::startDisinfection,
+            onStartDisinfectionNow = c::startDisinfectionNow,
+            onStopDisinfection = c::stopDisinfection,
+            onUvSettings = vm::setUvSettings,
             onDemoEstop = c::demoToggleEstop,
             onDemoWifi = c::demoToggleWifi,
             onDemoBlock = c::demoBlockNextStep,
@@ -56,7 +60,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
-        // Leaving the app stops polling. A step already running finishes by itself.
+        // Leaving the app stops polling and switches the UV lamps off. A step already running
+        // finishes by itself.
         vm.controller.pause()
     }
 }

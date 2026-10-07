@@ -93,6 +93,8 @@ class FakeRobot(
     private var estopPressed = false
     private var offline = false
     private var blockNext = false
+    private var power24 = false     // the power board's external supplies
+    private var power36 = false
     private var poseX = 0.0
     private var poseY = 0.0
     private var poseTheta = 0.0
@@ -161,6 +163,7 @@ class FakeRobot(
         "/cmd/charge" -> charge(json, now)
         "/cmd/nav_name" -> navName(json, now)
         "/cmd/position" -> setPoint(json)
+        "/cmd/external_power_supply" -> externalPower(json)
         "/cmd/cancel_goal" -> {
             if (navGoal != null) halt()
             OK
@@ -398,7 +401,34 @@ class FakeRobot(
         return points.joinToString(",", """{"coordinates":[""", "]}")
     }
 
+    /**
+     * Switches the power board's external supply, as the API documents:
+     * {"type":"24v"|"36v"|"24v36","operation":"0"|"1"}. GUESS: the reply to a bad body.
+     */
+    private fun externalPower(json: String): String {
+        val on = when (str(json, "operation")) {
+            "1" -> true
+            "0" -> false
+            else -> return error("004", "Internal service error")
+        }
+        when (str(json, "type")) {
+            "24v" -> power24 = on
+            "36v" -> power36 = on
+            "24v36" -> { power24 = on; power36 = on }
+            else -> return error("004", "Internal service error")
+        }
+        return OK
+    }
+
     // ------------------------------------------------------------------ demo controls
+
+    /** The UV lamps: whichever supply DriveController.UV_SUPPLY says they are on. */
+    @get:Synchronized
+    val isUvOn: Boolean get() = when (DriveController.UV_SUPPLY) {
+        "24v" -> power24
+        "36v" -> power36
+        else -> power24 && power36
+    }
 
     @get:Synchronized
     val isEstopPressed: Boolean get() = estopPressed
@@ -478,6 +508,8 @@ class FakeRobot(
         estopPressed = false
         offline = false
         blockNext = false
+        power24 = false
+        power36 = false
     }
 
     private fun noise() = if (realistic) (rng.nextDouble() * 2 - 1) * SPEED_NOISE else 0.0
@@ -547,7 +579,7 @@ class FakeRobot(
             "/cmd/speed", "/cmd/nav", "/cmd/max_speed",
             "/cmd/reloc_pose", "/cmd/reloc_absolute", "/cmd/set_mode",
             "/cmd/save_map", "/cmd/apply_map", "/cmd/restrict_layer",
-            "/cmd/shutdown", "/cmd/external_power_supply",
+            "/cmd/shutdown",
         )
 
         // GUESS: the real success body was never recorded; the app only checks it isn't an error.

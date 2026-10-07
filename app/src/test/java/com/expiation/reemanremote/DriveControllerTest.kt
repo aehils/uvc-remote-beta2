@@ -481,4 +481,181 @@ class DriveControllerTest {
         val c = ready()
         assertTrue(c.state.value.log.all { "[DEMO]" in it })
     }
+
+    // ------------------------------------------------------------------ UV disinfection
+
+    private fun uvOn(c: DriveController) = c.demoRobot.isUvOn
+
+    /** Ready, with the lamps on (countdown skipped). */
+    private fun TestScope.lampsOn(minutes: Int = 5): DriveController {
+        val c = ready()
+        c.setUvSettings(UvSettings(minutes))
+        c.startDisinfection()
+        c.startDisinfectionNow()
+        waitFor(c) { it.uv is Uv.On }
+        assertTrue(uvOn(c))
+        return c
+    }
+
+    @Test
+    fun disinfectionCountsDownThenRunsForTheSetTime() = runTest {
+        val c = ready()
+        c.setUvSettings(UvSettings(minutes = 1, delaySeconds = 15))
+        c.startDisinfection()
+        assertTrue(c.state.value.uv is Uv.Countdown)
+        assertFalse(c.state.value.canDrive)
+
+        advanceTimeBy(14_000)
+        assertFalse("not before the delay", uvOn(c))
+        val tookOn = waitFor(c) { it.uv is Uv.On }
+        assertTrue(uvOn(c))
+        assertTrue("took $tookOn ms", tookOn < 2_000)
+
+        c.drive(Move.FORWARD) // locked while the lamps are on
+        assertEquals(StepPhase.Idle, c.state.value.phase)
+
+        val ran = waitFor(c, maxMs = 70_000) { it.uv == null }
+        assertTrue("ran $ran ms", ran in 59_000..61_000)
+        waitFor(c) { !it.lampsOffOwed }
+        assertFalse(uvOn(c))
+        assertTrue(log(c), logged(c, "Disinfection done: UV lamps off"))
+        assertTrue(c.state.value.canDrive)
+    }
+
+    @Test
+    fun cancelDuringTheCountdownNeverSwitchesTheLampsOn() = runTest {
+        val c = ready()
+        c.setUvSettings(UvSettings(minutes = 1, delaySeconds = 15))
+        c.startDisinfection()
+        advanceTimeBy(3_000)
+        c.stopDisinfection()
+        advanceTimeBy(20_000)
+        assertFalse(uvOn(c))
+        assertEquals(null, c.state.value.uv)
+        assertFalse("nothing sent", logged(c, DriveController.UV_PATH))
+        assertTrue(log(c), logged(c, "cancelled before the lamps came on"))
+    }
+
+    @Test
+    fun startNowSkipsTheCountdown() = runTest {
+        val c = ready()
+        c.startDisinfectionNow() // no countdown running: does nothing
+        assertEquals(null, c.state.value.uv)
+
+        c.setUvSettings(UvSettings(minutes = 1, delaySeconds = 60))
+        c.startDisinfection()
+        advanceTimeBy(2_000)
+        assertFalse(uvOn(c))
+        c.startDisinfectionNow()
+        val took = waitFor(c) { it.uv is Uv.On }
+        assertTrue("took $took ms", took < 1_000)
+        assertTrue(uvOn(c))
+        assertTrue(log(c), logged(c, "countdown skipped"))
+
+        val ran = waitFor(c, maxMs = 70_000) { it.uv == null } // the full time, from START NOW
+        assertTrue("ran $ran ms", ran in 59_000..61_000)
+        waitFor(c) { !it.lampsOffOwed }
+        assertFalse(uvOn(c))
+    }
+
+    @Test
+    fun stopSwitchesTheLampsOff() = runTest {
+        val c = lampsOn()
+        c.stop()
+        waitFor(c) { !it.lampsOffOwed }
+        assertFalse(uvOn(c))
+        assertEquals(null, c.state.value.uv)
+        assertTrue(log(c), logged(c, "STOP pressed. UV lamps off"))
+    }
+
+    @Test
+    fun stopWhileOnIsInFlightStillEndsWithTheLampsOff() = runTest {
+        val c = ready()
+        c.startDisinfection()
+        c.startDisinfectionNow()
+        assertTrue(c.state.value.uv is Uv.Starting)
+        c.stop() // before the robot has answered the ON
+        advanceTimeBy(2_000)
+        assertFalse("OFF must not overtake ON", uvOn(c))
+        assertEquals(null, c.state.value.uv)
+        assertFalse(c.state.value.lampsOffOwed)
+    }
+
+    @Test
+    fun leavingTheAppSwitchesTheLampsOff() = runTest {
+        val c = lampsOn()
+        c.pause()
+        advanceTimeBy(2_000)
+        assertFalse(uvOn(c))
+        assertTrue(log(c), logged(c, "app left"))
+    }
+
+    @Test
+    fun estopEndsTheRun() = runTest {
+        val c = lampsOn()
+        c.demoToggleEstop()
+        waitFor(c) { it.uv == null && !it.lampsOffOwed }
+        assertFalse(uvOn(c))
+        assertTrue(log(c), logged(c, "e-stop pressed"))
+    }
+
+    @Test
+    fun robotMovingEndsTheRun() = runTest {
+        val c = lampsOn()
+        c.demoChargeOnItsOwn()
+        waitFor(c) { it.uv == null && !it.lampsOffOwed }
+        assertFalse(uvOn(c))
+        assertTrue(log(c), logged(c, "the robot moved"))
+    }
+
+    @Test
+    fun offIsRetriedUntilTheRobotAcceptsIt() = runTest {
+        val c = lampsOn()
+        c.demoToggleWifi()
+        waitFor(c) { it.uv == null }
+        assertTrue(log(c), logged(c, "lost connection"))
+        assertTrue("owed while unreachable", c.state.value.lampsOffOwed)
+        assertTrue("the robot never heard OFF", uvOn(c))
+        advanceTimeBy(5_000)
+        assertTrue(c.state.value.lampsOffOwed)
+        assertEquals(1, c.state.value.log.count { "THE LAMPS MAY STILL BE ON" in it })
+
+        c.demoToggleWifi()
+        waitFor(c) { !it.lampsOffOwed }
+        assertFalse(uvOn(c))
+        assertTrue(log(c), logged(c, "robot accepted OFF"))
+    }
+
+    @Test
+    fun noModeSwitchWhileTheLampsMayBeOn() = runTest {
+        val c = lampsOn()
+        assertFalse(c.setDemo(false))
+        assertTrue(c.state.value.demo)
+        assertTrue(logged(c, "Switch the UV lamps off before changing robot"))
+    }
+
+    @Test
+    fun arrivingAtAPointNamesTheRun() = runTest {
+        val (c, points) = withPoints()
+        assertEquals("starts in the room centre", null, c.state.value.atPoint)
+        c.goTo(points[0])
+        waitFor(c, maxMs = 60_000) { it.phase == StepPhase.Idle }
+        assertEquals(log(c), points[0], c.state.value.atPoint)
+
+        c.setUvSettings(UvSettings(minutes = 1))
+        c.startDisinfection()
+        c.startDisinfectionNow()
+        assertEquals("Bed 1", c.state.value.uv?.point)
+        waitFor(c) { it.uv is Uv.On }
+        assertTrue(log(c), logged(c, "UV lamps ON for 1 min at Bed 1"))
+    }
+
+    @Test
+    fun uvSettingsAreKeptInRange() = runTest {
+        val c = controller()
+        c.setUvSettings(UvSettings(minutes = 0, delaySeconds = 0)) // say, 0 s saved by an older build
+        assertEquals(UvSettings(1, DriveController.MIN_UV_DELAY_S), c.state.value.uvSettings)
+        c.setUvSettings(UvSettings(minutes = 999, delaySeconds = 999))
+        assertEquals(UvSettings(DriveController.MAX_UV_MINUTES, DriveController.MAX_UV_DELAY_S), c.state.value.uvSettings)
+    }
 }
