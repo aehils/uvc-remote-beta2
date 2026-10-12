@@ -423,7 +423,7 @@ private fun DemoMenu(state: RemoteState, onDemoChange: (Boolean) -> Unit, onOpen
                         buildAnnotatedString {
                             withLink(
                                 LinkAnnotation.Url(
-                                    DEMO_LIMITS_URL,
+                                    DEMO_HELP_URL,
                                     TextLinkStyles(SpanStyle(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)),
                                 )
                             ) { append("Learn More") }
@@ -467,7 +467,7 @@ private fun DemoMenu(state: RemoteState, onDemoChange: (Boolean) -> Unit, onOpen
     }
 }
 
-private const val DEMO_LIMITS_URL = "https://github.com/aehils/uvc-remote-beta2#demo-mode-limitations"
+private const val DEMO_HELP_URL = "https://github.com/aehils/uvc-remote-beta2#demo-mode"
 
 /**
  * Under every page's title bar, pinned so it never scrolls away: the DEMO strip, the robot's
