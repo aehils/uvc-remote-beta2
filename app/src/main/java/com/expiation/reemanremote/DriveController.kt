@@ -916,8 +916,8 @@ class DriveController(
 
     /**
      * Brakes with the stop bodies (the robot's motion type first; a zero speed first of all if it
-     * was driven by speed lately), and cancels any navigation
-     * (/cmd/cancel_goal) and any docking (/cmd/charge type 1), not only ones this app started.
+     * was driven by speed lately), cancels any navigation (/cmd/cancel_goal) and any docking
+     * (/cmd/charge type 1), and switches the UV lamps off, not only what this app started.
      * The robot can start a task on its own (it went to charge by itself on 2026-10-05), and
      * the stop bodies alone only paused that trip: it carried on right after.
      */
@@ -931,10 +931,12 @@ class DriveController(
             // GUESS: assumed harmless while charging on the pile (not tried on the real robot).
             val dock = a.post(DOCK_PATH, DOCK_CANCEL)
             val second = if (turnFirst) a.post("/cmd/move", MOVE_STOP) else a.post("/cmd/turn", TURN_STOP)
+            // The lamps too, even if this app didn't switch them on. Queued behind any ON in flight.
+            val lamps = lampLock.withLock { a.post(UV_PATH, UV_OFF) }
+            val failed = listOf("navigation" to nav, "docking" to dock, "lamps off" to lamps).firstOrNull { !it.second.ok }
             if (report || !(first.ok || second.ok)) log(
                 "$label: " + if (first.ok || second.ok) {
-                    "sent" + if (!nav.ok || !dock.ok) " (cancel ${if (!nav.ok) "navigation" else "docking"} failed: " +
-                        "${(if (!nav.ok) nav else dock).error})" else ""
+                    "sent" + (failed?.let { (what, r) -> " ($what failed: ${r.error})" } ?: "")
                 } else "FAILED ${first.error}. USE THE PHYSICAL E-STOP"
             )
             publish()

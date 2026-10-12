@@ -569,6 +569,16 @@ class DriveControllerTest {
     }
 
     @Test
+    fun stopSwitchesOffLampsThisAppDidNotSwitchOn() = runTest {
+        val c = ready()
+        c.demoRobot.handle("POST", DriveController.UV_PATH, """{"type":"24v","operation":"1"}""") // the robot's own app
+        assertTrue(uvOn(c))
+        c.stop()
+        advanceTimeBy(2_000)
+        assertFalse(uvOn(c))
+    }
+
+    @Test
     fun stopWhileOnIsInFlightStillEndsWithTheLampsOff() = runTest {
         val c = ready()
         c.startDisinfection()

@@ -33,7 +33,7 @@ so it is on screen on every tab and on the DEMO controls page.
 | GO (Disinfection Points page) | `/cmd/nav_name` `{"point":"<name>"}` | set by the firmware |
 | START DISINFECTION (Disinfection Points page) | after the start delay, `/cmd/external_power_supply` `{"type":"24v","operation":"1"}`; at the end `"operation":"0"` | doesn't move the robot |
 | Add point where the robot is | `/reeman/pose`, then `/cmd/position` `{"name":"<name>","type":"delivery","pose":{"x","y","theta"}}` | doesn't move the robot |
-| STOP | stop body, `/cmd/cancel_goal`, `/cmd/charge` `{"type":1}`, the other stop body: every time | always active |
+| STOP | stop body, `/cmd/cancel_goal`, `/cmd/charge` `{"type":1}`, the other stop body, UV lamps OFF: every time | always active |
 
 **GO TO CHARGER** (Tasks tab) gets the robot onto the charging pile from anywhere. It first
 measures, on the map, how far the robot is from the pile's saved point (`charging_pile` in
@@ -97,8 +97,8 @@ lamps off (or cancels the countdown) on any of:
 OFF is retried every 1.5 s until the robot accepts it. Until then the banner reads **UV LAMPS
 MAY STILL BE ON**, everything that moves the robot stays locked, and the app won't switch
 robot or mode (OFF has to go to the same robot). ON and OFF are sent one at a time, in order,
-so an OFF can't overtake an ON still in flight. STOP sends OFF only while this app has the
-lamps on (or owes an OFF).
+so an OFF can't overtake an ON still in flight. STOP also sends OFF every time, even for lamps
+this app didn't switch on (say, from the robot's own app).
 
 This relies on the loaded map matching the building (the robot's map was replaced after
 beta 0.1, whose map was from another site). Still to confirm on the real robot (marked
