@@ -17,6 +17,7 @@ import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.min
+import kotlin.math.sign
 
 // ---------------------------------------------------------------------- state
 
@@ -30,8 +31,15 @@ sealed interface Link {
     data class Connected(val estop: EStop?) : Link
 }
 
-enum class Move(val label: String) {
-    FORWARD("Forward 0.5 m"), BACK("Back 0.5 m"), LEFT("Left 90°"), RIGHT("Right 90°"), AROUND("Turn 180°")
+/**
+ * A d-pad button. [label] names its fixed step (see [DriveController.drive]); [word] names it when
+ * held down (see [DriveController.hold]). Turn 180° is a fixed step only.
+ */
+enum class Move(val label: String, val word: String) {
+    FORWARD("Forward 0.5 m", "Forward"), BACK("Back 0.5 m", "Back"), LEFT("Left 90°", "Left"),
+    RIGHT("Right 90°", "Right"), AROUND("Turn 180°", "Turn 180°");
+
+    val holdable: Boolean get() = this != AROUND
 }
 
 /**
@@ -56,9 +64,14 @@ data class Step(
     val goal: Waypoint? = null,
     /** Sent if this dock finds no pile (see [DriveController.goToCharger]). */
     val fallback: Step? = null,
+    /** Set for a held d-pad arrow (see [DriveController.hold]). */
+    val held: Move? = null,
 )
 
 data class Pose(val x: Double, val y: Double, val theta: Double)
+
+/** A speed for /cmd/speed: forward m/s (negative = back), turn rad/s (positive = left). */
+data class Velocity(val vx: Double, val vth: Double)
 
 /** A point saved on the robot's map (/reeman/position). [pose] is null if the robot sent none. */
 data class Waypoint(val name: String, val type: String, val pose: Pose?)
@@ -82,6 +95,14 @@ data class Tracking(
 /** The step lock. Only [StepPhase.Idle] accepts a new step; STOP is accepted in every phase. */
 sealed interface StepPhase {
     data object Idle : StepPhase
+
+    /**
+     * A d-pad arrow is held down: the app streams the robot's speed, ramping up to the arrow's
+     * speed (see [DriveController.hold]). Letting go turns it into [Stepping] while the speed
+     * ramps back down to zero and the robot comes to rest.
+     */
+    data class Holding(val move: Move, val step: Step, val track: Tracking, val since: Long) : StepPhase
+
     data class Stepping(val step: Step, val track: Tracking) : StepPhase
 
     /** STOP was pressed during a step; waiting (with shortened deadlines) for the robot to be still. */
@@ -156,10 +177,14 @@ data class RemoteState(
     val busy: Boolean get() = phase != StepPhase.Idle
     val running: Step? get() = when (phase) {
         StepPhase.Idle -> null
+        is StepPhase.Holding -> phase.step
         is StepPhase.Stepping -> phase.step
         is StepPhase.Stopping -> phase.step
     }
     val busyLabel: String? get() = running?.label
+
+    /** The d-pad arrow being held down, if any. */
+    val holding: Move? get() = (phase as? StepPhase.Holding)?.move
 
     val still: Boolean get() = abs(vx) <= DriveController.MOVING_VX && abs(vth) <= DriveController.MOVING_VTH
 
@@ -172,6 +197,18 @@ data class RemoteState(
      */
     val canDrive: Boolean get() = estop == EStop.RELEASED && !busy && still && uv == null && !lampsOffOwed
 
+    /**
+     * Holding [move] down: the drive interlock, or, just after letting go of an arrow (the robot
+     * still slowing down), pressing one again: the speed ramps from where it is to the new one.
+     */
+    fun canHold(move: Move): Boolean {
+        if (!move.holdable) return false
+        if (canDrive) return true
+        val p = phase
+        return p is StepPhase.Stepping && p.step.held != null &&
+            estop == EStop.RELEASED && uv == null && !lampsOffOwed
+    }
+
     /** Starting UV disinfection takes the same interlock as driving. */
     val canDisinfect: Boolean get() = canDrive
 }
@@ -181,8 +218,9 @@ data class RemoteState(
 /**
  * Talks to the robot (or the demo robot) and enforces the drive rules
  * (REEMAN_HANDOFF.txt sections 5-7):
- *  - every motion is a fixed, pre-planned step (/cmd/move or /cmd/turn); never /cmd/speed
- *  - one step at a time; nothing but STOP is sent while a step runs
+ *  - every motion is a fixed, pre-planned step (/cmd/move or /cmd/turn), except holding a d-pad
+ *    arrow, which streams velocity (/cmd/speed) on the app's own ramp, both ways (see [hold])
+ *  - one step at a time; nothing but STOP (or the held arrow's speed stream) is sent while a step runs
  *  - STOP is a hard stop, for emergencies; steps end on their own
  *
  * Plain Kotlin with no Android dependencies, so it is unit tested on the JVM.
@@ -230,6 +268,18 @@ class DriveController(
     private var addJob: Job? = null
     private var chargerJob: Job? = null
 
+    // Hold-to-drive (see [hold]): the speed stream, the speed it ramps towards, the last speed the
+    // robot accepted, the last sign of life from the button, STOP pressed (the stream ends), drop to
+    // zero at once (the robot has stopped already), failures in a row, and the last command sent.
+    private var driveJob: Job? = null
+    private var target = ZERO
+    private var sent = ZERO
+    private var holdAliveAt = 0L
+    private var jogStop = false
+    private var jumpToZero = false
+    private var jogFailures = 0
+    private var lastJogAt = Long.MIN_VALUE / 2
+
     private var atPoint: Waypoint? = null
     private var uv: Uv? = null
     private var uvSettings = UvSettings()
@@ -255,12 +305,14 @@ class DriveController(
 
     /**
      * Leaving the app stops polling and switches the UV lamps off: the app's timer can't be
-     * trusted to run in the background. A running step finishes by itself.
+     * trusted to run in the background. A running step finishes by itself, and a held arrow
+     * counts as let go.
      */
     fun pause() {
         pollJob?.cancel()
         pollJob = null
         chargerJob?.cancel()
+        (phase as? StepPhase.Holding)?.let { endHold(it, "${it.step.label}: app left, robot slowing to a stop") }
         endDisinfection("app left")
         publish()
     }
@@ -464,6 +516,162 @@ class DriveController(
         }
 
         send(step)
+    }
+
+    // ------------------------------------------------------------------ hold-to-drive
+
+    /**
+     * [move]'s arrow was pressed down. The robot drives while it stays down (the screen calls
+     * [holdAlive] every [HOLD_ALIVE_MS] while it does) and slows to a stop when it is let go
+     * ([release]).
+     *
+     * It streams velocity (/cmd/speed) every [JOG_TICK_MS], on a straight-line ramp up to speed
+     * and back down to zero, never more than one small stair per command ([JOG_ACCEL]·tick). The
+     * robot applies each speed at once, with no ramp of its own, so the app's ramp is the only
+     * thing between the driver and a hard stop (REEMAN_HANDOFF.txt section 6: a jump to 0 brakes
+     * at 7-20 m/s²). Hence: never a bare jump to zero while the robot moves (STOP aside), and a
+     * stalled request slows the ramp down rather than skipping a stair.
+     *
+     * Planned steps sent again and again were tried first (2026-10-07) and dropped: the robot
+     * restarts a step from rest each time one arrives, so it shuffled, and felt slow.
+     *
+     * The weak spot is the network. If commands stop arriving mid-drive (Wi-Fi lost, phone
+     * frozen), the robot carries on for ~1.2 s, then its watchdog stops it hard. The speed caps
+     * keep that stop small; nothing in the app can soften it.
+     */
+    fun hold(move: Move) {
+        if (!snapshot().canHold(move)) return
+        val p = phase
+        val t = now()
+        stopGuard = null // a new command from the user: motion is expected now
+        atPoint = null
+        val step = holdStep(move)
+        val sawMotion = (p as? StepPhase.Stepping)?.track?.sawMotion ?: false
+        phase = StepPhase.Holding(move, step, Tracking(t + HOLD_NO_MOTION_MS, t + HOLD_MAX_MS, sawMotion), since = t)
+        holdAliveAt = t
+        jogStop = false
+        target = holdVelocity(move)
+        log(
+            "${step.label}: " + (if (p is StepPhase.Stepping) "pressed while slowing, " else "") +
+                fmt("driving at %s (/cmd/speed every %d ms while held)", speedText(target), JOG_TICK_MS)
+        )
+        publish()
+        startDriving()
+    }
+
+    /** The held arrow is still down. Without this, the hold ends after [HOLD_ALIVE_TIMEOUT_MS]. */
+    fun holdAlive(move: Move) {
+        val h = phase as? StepPhase.Holding ?: return
+        if (h.move == move) holdAliveAt = now()
+    }
+
+    /** The held arrow was let go: the speed ramps down to zero. */
+    fun release(move: Move) {
+        val h = phase as? StepPhase.Holding ?: return
+        if (h.move != move) return
+        endHold(h, fmt("%s: let go after %.1f s, slowing to a stop", h.step.label, (now() - h.since) / 1000.0))
+        publish()
+    }
+
+    /**
+     * The speed stream: every [JOG_TICK_MS], one stair from the last speed the robot accepted
+     * towards [target], one request at a time. Runs until the robot has been sent zero
+     * [JOG_FINAL_ZEROS] times with nothing more to do, or STOP.
+     */
+    private fun startDriving() {
+        if (driveJob?.isActive == true) return
+        driveJob = scope.launch {
+            var zeros = 0
+            while (isActive) {
+                val started = now()
+                val h = phase as? StepPhase.Holding
+                if (h != null && started - holdAliveAt > HOLD_ALIVE_TIMEOUT_MS) {
+                    // The screen stopped reporting the button (or froze): never drive on without it.
+                    endHold(h, "${h.step.label}: lost track of the button, treating it as let go")
+                    publish()
+                }
+                if (jogStop) break
+                val next = if (jumpToZero) ZERO else ramp(sent, target)
+                if (next == ZERO && sent == ZERO) {
+                    if (++zeros > JOG_FINAL_ZEROS) break
+                } else {
+                    zeros = 0
+                }
+                val a = api
+                val r = a.postQuick(SPEED_PATH, speedJson(next))
+                lastJogAt = now()
+                if (jogStop) {
+                    // STOP was pressed while this was on its way: it may have reached the robot after STOP's zero.
+                    if (next != ZERO) a.postQuick(SPEED_PATH, speedJson(ZERO))
+                    break
+                }
+                val rejected = if (r.ok) robotError(r.body) else null
+                if (r.ok && rejected == null) {
+                    sent = next
+                    if (next == ZERO) jumpToZero = false
+                    jogFailures = 0
+                } else {
+                    onJogFailure(if (!r.ok) "FAILED ${r.error}" else "robot rejected: $rejected")
+                    if (jogFailures >= JOG_GIVE_UP) {
+                        log("Speed commands not getting through. The robot's own watchdog stops it ~1 s after the last one.")
+                        sent = ZERO
+                        target = ZERO
+                        publish()
+                        break
+                    }
+                }
+                delay((JOG_TICK_MS - (now() - started)).coerceAtLeast(0))
+            }
+            sent = if (jogStop) ZERO else sent
+            jogStop = false
+            publish()
+        }
+    }
+
+    /** A speed command that didn't get through: say so once, and end a hold that keeps failing. */
+    private fun onJogFailure(why: String) {
+        jogFailures++
+        val h = phase as? StepPhase.Holding
+        if (h != null && jogFailures >= JOG_FAILS) {
+            endHold(h, "${h.step.label}: $why. Slowing to a stop; let go and press again")
+        } else if (jogFailures == 1) {
+            log("Speed command $why")
+        }
+        publish()
+    }
+
+    /**
+     * Ends the hold: the speed ramps down to zero, and the step lock holds until the robot is
+     * still. It sends STOP if the robot still moves [HOLD_COAST_MAX_MS] later (see [trackStep]).
+     * [stopNow]: the robot has already stopped (an obstacle, the e-stop), so the stream drops to
+     * zero at once rather than ramping down from a speed the robot isn't doing.
+     */
+    private fun endHold(h: StepPhase.Holding, message: String, stopNow: Boolean = false) {
+        log(message)
+        target = ZERO
+        if (stopNow) jumpToZero = true
+        val t = now()
+        phase = StepPhase.Stepping(
+            h.step, Tracking(t + HOLD_COAST_NO_MOTION_MS, t + HOLD_COAST_MAX_MS, sawMotion = h.track.sawMotion),
+        )
+    }
+
+    private fun jogRecent() = now() - lastJogAt < JOG_RECENT_MS
+
+    private fun holdStep(move: Move): Step {
+        val turn = move == Move.LEFT || move == Move.RIGHT
+        return Step(
+            "${move.word} (held)", SPEED_PATH, speedJson(holdVelocity(move)),
+            isTurn = turn, estimateMs = HOLD_NO_MOTION_MS, held = move,
+        )
+    }
+
+    private fun holdVelocity(move: Move) = when (move) {
+        Move.FORWARD -> Velocity(min(HOLD_FORWARD_SPEED, MAX_LINEAR), 0.0)
+        Move.BACK -> Velocity(-min(HOLD_BACK_SPEED, MAX_LINEAR), 0.0)
+        Move.LEFT -> Velocity(0.0, min(HOLD_TURN_SPEED, MAX_ANGULAR))
+        Move.RIGHT -> Velocity(0.0, -min(HOLD_TURN_SPEED, MAX_ANGULAR))
+        Move.AROUND -> error("Turn 180° is a fixed step")
     }
 
     /**
@@ -679,17 +887,24 @@ class DriveController(
      * started it (see [sendStop]). Then watches the robot for [STOP_GUARD_MS] and sends STOP
      * again if it moves (see [guardStop]).
      */
-    fun stop() {
+    fun stop() = halt("STOP pressed")
+
+    /** [stop], logged as [reason]. */
+    private fun halt(reason: String) {
         val p = phase
         val turnFirst = snapshot().running?.isTurn ?: (abs(vth) > MOVING_VTH && abs(vx) <= MOVING_VX)
-        log("STOP pressed")
+        log(reason)
         val t = now()
+        val jog = jogRecent()
+        if (driveJob?.isActive == true) jogStop = true // the stream ends; STOP's own zero goes out below
+        target = ZERO
         fun shorten(tr: Tracking) = tr.copy(
             noMotionDeadline = min(tr.noMotionDeadline, t + 4000),
             hardCap = min(tr.hardCap, t + 6000),
         )
         phase = when (p) {
             StepPhase.Idle -> p
+            is StepPhase.Holding -> StepPhase.Stopping(p.step, shorten(p.track))
             is StepPhase.Stepping -> StepPhase.Stopping(p.step, shorten(p.track))
             is StepPhase.Stopping -> p.copy(track = shorten(p.track))
         }
@@ -699,18 +914,21 @@ class DriveController(
         endDisinfection("STOP pressed")
         if (lampsOffOwed) sendLampsOff()
         publish()
-        sendStop(turnFirst, "STOP")
+        sendStop(turnFirst, "STOP", jog = jog)
     }
 
     /**
-     * Brakes with the stop bodies (the robot's motion type first), and cancels any navigation
+     * Brakes with the stop bodies (the robot's motion type first; a zero speed first of all if it
+     * was driven by speed lately), and cancels any navigation
      * (/cmd/cancel_goal) and any docking (/cmd/charge type 1), not only ones this app started.
      * The robot can start a task on its own (it went to charge by itself on 2026-10-05), and
      * the stop bodies alone only paused that trip: it carried on right after.
      */
-    private fun sendStop(turnFirst: Boolean, label: String, report: Boolean = true) {
+    private fun sendStop(turnFirst: Boolean, label: String, report: Boolean = true, jog: Boolean = false) {
         val a = api
         scope.launch {
+            // Driving by speed: zero it first. A hard stop, but STOP is for emergencies.
+            if (jog) a.post(SPEED_PATH, speedJson(ZERO))
             val first = if (turnFirst) a.post("/cmd/turn", TURN_STOP) else a.post("/cmd/move", MOVE_STOP)
             val nav = a.post(CANCEL_NAV_PATH, "{}")
             // GUESS: assumed harmless while charging on the pile (not tried on the real robot).
@@ -756,7 +974,10 @@ class DriveController(
             runaway = true
             log("ROBOT STILL MOVING AFTER STOP. USE THE PHYSICAL E-STOP")
         }
-        sendStop(turnFirst = abs(vth) > MOVING_VTH && abs(vx) <= MOVING_VX, "STOP (again)", report = n <= STOP_RESENDS)
+        sendStop(
+            turnFirst = abs(vth) > MOVING_VTH && abs(vx) <= MOVING_VX, "STOP (again)",
+            report = n <= STOP_RESENDS, jog = jogRecent(),
+        )
     }
 
     /** Notes, once each time, motion this app didn't ask for (for example the robot going to charge by itself). */
@@ -783,23 +1004,29 @@ class DriveController(
         val p = phase
         val (step, before) = when (p) {
             StepPhase.Idle -> return
+            is StepPhase.Holding -> return trackHold(p, speedValid)
             is StepPhase.Stepping -> p.step to p.track
             is StepPhase.Stopping -> p.step to p.track
         }
-        var tr = before
-        if (speedValid) {
-            val moving = abs(vx) > MOVING_VX || abs(vth) > MOVING_VTH
-            tr = when {
-                moving -> tr.copy(sawMotion = true, stillPolls = 0)
-                tr.sawMotion -> tr.copy(stillPolls = tr.stillPolls + 1)
-                else -> tr
-            }
-        }
+        val tr = track(before, speedValid)
         val t = now()
+
+        // Still moving well after a held arrow was let go: a renewal that reached the robot late,
+        // or steps the firmware queued instead of replacing. Never let that run on.
+        val moving = speedValid && (abs(vx) > MOVING_VX || abs(vth) > MOVING_VTH)
+        if (p is StepPhase.Stepping && step.held != null && t > tr.hardCap && moving) {
+            phase = p.copy(track = tr)
+            log("${step.label}: still moving ${HOLD_COAST_MAX_MS / 1000} s after it was let go")
+            halt("STOP sent by the app")
+            return
+        }
+
         val stopping = p is StepPhase.Stopping
+        // After letting go of an arrow, done only once the speed stream has reached zero.
+        val ramping = step.held != null && driveJob?.isActive == true && !stopping
         val onTheWay = !stopping && step.goal != null && planActive == true
         val message = when {
-            tr.sawMotion && tr.stillPolls >= step.stillPolls && !onTheWay -> when {
+            tr.sawMotion && tr.stillPolls >= step.stillPolls && !onTheWay && !ramping -> when {
                 stopping -> "${step.label}: stopped"
                 step.path == DOCK_PATH -> "${step.label}: done" + dockReport()
                 step.goal != null -> "${step.label}: " + navReport(step.goal)
@@ -839,6 +1066,39 @@ class DriveController(
         }
     }
 
+    /** Counts this poll: motion seen, or one more still poll after it. */
+    private fun track(tr: Tracking, speedValid: Boolean): Tracking {
+        if (!speedValid) return tr
+        val moving = abs(vx) > MOVING_VX || abs(vth) > MOVING_VTH
+        return when {
+            moving -> tr.copy(sawMotion = true, stillPolls = 0)
+            tr.sawMotion -> tr.copy(stillPolls = tr.stillPolls + 1)
+            else -> tr
+        }
+    }
+
+    /**
+     * While an arrow is held, lets go of it for the user when driving on would be wrong. The robot
+     * stopping by itself (an obstacle) ends the hold too, so the app never keeps pushing it into
+     * one; pressing again tries once more.
+     */
+    private fun trackHold(h: StepPhase.Holding, speedValid: Boolean) {
+        val tr = track(h.track, speedValid)
+        val cur = h.copy(track = tr)
+        val label = h.step.label
+        val t = now()
+        when {
+            link is Link.Disconnected -> endHold(cur, "$label: lost connection, robot slowing to a stop")
+            (link as? Link.Connected)?.estop == EStop.PRESSED -> endHold(cur, "$label: e-stop pressed", stopNow = true)
+            tr.sawMotion && tr.stillPolls >= h.step.stillPolls -> endHold(
+                cur, "$label: the robot stopped while held. Obstacle in the way? Let go and press again", stopNow = true,
+            )
+            !tr.sawMotion && t > tr.noMotionDeadline -> endHold(cur, "$label: the robot hasn't moved", stopNow = true)
+            t > tr.hardCap -> endHold(cur, "$label: held for ${HOLD_MAX_MS / 1000} s. Let go and press again to carry on")
+            else -> phase = cur
+        }
+    }
+
     /** chargeFlag is stale while the robot sits still, but motion refreshes it, so after a dock it is worth a line. */
     private fun dockReport() = ". Robot reports: " + when (chargeFlag) {
         2 -> "charging at the pile."
@@ -862,6 +1122,7 @@ class DriveController(
     private fun finishStep(step: Step, message: String) {
         val current = when (val p = phase) {
             StepPhase.Idle -> null
+            is StepPhase.Holding -> p.step
             is StepPhase.Stepping -> p.step
             is StepPhase.Stopping -> p.step
         }
@@ -1104,6 +1365,28 @@ class DriveController(
         const val MAX_LINEAR = 0.3      // m/s
         const val MAX_ANGULAR = 0.5     // rad/s
 
+        // ---- Hold-to-drive (see hold()): the speed stream and its ramp ----
+        const val HOLD_FORWARD_SPEED = 0.3  // m/s
+        const val HOLD_BACK_SPEED = 0.2     // m/s (lidar sees less behind)
+        const val HOLD_TURN_SPEED = 0.4     // rad/s (~23 deg/s)
+        // The ramp, both ways. Stopping from 0.3 m/s takes 0.75 s and ~11 cm (+ ~6 cm latency). The
+        // firmware's own planned braking is ~0.2-0.3 m/s^2; a jump to zero is 7-20 m/s^2.
+        const val JOG_ACCEL = 0.4           // m/s^2: 0.02 m/s per command
+        const val JOG_ANGULAR_ACCEL = 0.8   // rad/s^2: 0.04 rad/s per command
+        const val JOG_TICK_MS = 50L         // a command every 50 ms (the robot's watchdog needs < ~1 s)
+        const val JOG_FINAL_ZEROS = 1       // zeros sent again after the ramp reaches zero
+        const val JOG_FAILS = 3             // failed commands in a row before a hold ends
+        const val JOG_GIVE_UP = 8           // ...and before the stream stops trying
+        const val HOLD_ALIVE_MS = 100L      // the screen reports a held arrow this often...
+        const val HOLD_ALIVE_TIMEOUT_MS = 400L // ...and after this long without word, it counts as let go
+        const val HOLD_NO_MOTION_MS = 2500L
+        const val HOLD_MAX_MS = 30_000L     // one press drives this long at most
+        const val HOLD_COAST_NO_MOTION_MS = 2500L
+        const val HOLD_COAST_MAX_MS = 5000L // still moving this long after letting go: the app sends STOP
+        const val SPEED_PATH = "/cmd/speed"
+        private val ZERO = Velocity(0.0, 0.0)
+        private const val JOG_RECENT_MS = 30_000L // STOP zeroes the speed if it was streamed this recently
+
         // ---- Polling ----
         const val POLL_MS = 300L        // /reeman/speed
         const val BASE_EVERY = 5        // /reeman/base_encode every 5th poll (~1.5 s)
@@ -1191,6 +1474,20 @@ class DriveController(
         private fun isPile(w: Waypoint) = w.name == PILE_POINT || "charg" in w.type.lowercase(Locale.US)
 
         private fun fmt(format: String, vararg args: Any) = String.format(Locale.US, format, *args)
+
+        private fun speedJson(v: Velocity) = fmt("""{"vx":%.3f,"vth":%.3f}""", v.vx, v.vth)
+
+        private fun speedText(v: Velocity) =
+            if (v.vth != 0.0) fmt("%.2f rad/s", abs(v.vth)) else fmt("%.2f m/s", abs(v.vx))
+
+        /** One stair of the ramp: from [from] towards [to], by at most one command's worth. */
+        private fun ramp(from: Velocity, to: Velocity) = Velocity(
+            toward(from.vx, to.vx, JOG_ACCEL * JOG_TICK_MS / 1000.0),
+            toward(from.vth, to.vth, JOG_ANGULAR_ACCEL * JOG_TICK_MS / 1000.0),
+        )
+
+        private fun toward(a: Double, b: Double, step: Double) =
+            (if (abs(b - a) <= step + 1e-9) b else a + step * sign(b - a)) + 0.0 // + 0.0: never -0.0
 
         private fun round3(v: Double) = Math.round(v * 1000) / 1000.0
 

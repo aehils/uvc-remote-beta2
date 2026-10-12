@@ -1,9 +1,10 @@
 # Robot Control — beta 2
 
-Android remote for the Reeman Spark robot. Fixed-step driving only: every button
-sends one pre-planned step (`/cmd/move` or `/cmd/turn`), so the robot plans its own
-gentle braking. The app never streams velocity (`/cmd/speed`), which is the path
-that produced the hard stops (see `REEMAN_HANDOFF.txt`, sections 5–7).
+Android remote for the Reeman Spark robot. Every motion is a pre-planned step
+(`/cmd/move` or `/cmd/turn`), so the robot plans its own gentle braking, except
+holding a d-pad arrow. That streams velocity (`/cmd/speed`), the path that produced the
+hard stops (see `REEMAN_HANDOFF.txt`, sections 5–7), so the app ramps the speed itself,
+up and down, in small steps (see **Hold-to-drive**).
 
 Beta 2 starts from beta 0.1 (which drove the real robot successfully) and adds
 **demo mode**, so the app can be developed and shown with the robot switched off.
@@ -15,7 +16,7 @@ It is written in Kotlin with a Jetpack Compose (Material 3) screen, in light and
 
 ## What it does
 
-The screen has four tabs: **Remote** (the manual step pad and the robot address),
+The screen has four tabs: **Remote** (the drive pad and the robot address),
 **Tasks** (a list of tasks: **Disinfection Points** opens its own page), **Map** (a placeholder, not in this
 build yet), and **Activity** (the log). The robot's readings (e-stop badge, speed, battery) are pinned
 under the title on every tab, and **STOP is the red button in the centre of the nav bar**,
@@ -23,11 +24,11 @@ so it is on screen on every tab and on the DEMO controls page.
 
 | Button | Command sent | Speed |
 |---|---|---|
-| Forward 0.5 m | `/cmd/move` `{"distance":50,"direction":1,"speed":0.30}` | 0.3 m/s |
-| Back 0.5 m | `/cmd/move` `{"distance":50,"direction":0,"speed":0.20}` | 0.2 m/s |
-| Left 90° | `/cmd/turn` `{"direction":1,"angle":90,"speed":0.40}` | 0.4 rad/s |
-| Right 90° | `/cmd/turn` `{"direction":0,"angle":90,"speed":0.40}` | 0.4 rad/s |
-| Turn 180° | `/cmd/turn` `{"direction":1,"angle":180,"speed":0.40}` | 0.4 rad/s |
+| Forward (hold) | `/cmd/speed` `{"vx":…,"vth":0}` every 50 ms while held, ramping 0 → 0.3 m/s | 0.3 m/s |
+| Back (hold) | `/cmd/speed` ramping 0 → −0.2 m/s | 0.2 m/s |
+| Left / Right (hold) | `/cmd/speed` `{"vx":0,"vth":…}` ramping 0 → ±0.4 rad/s | 0.4 rad/s |
+| Letting go of an arrow | `/cmd/speed` ramping back down to 0, in 0.02 m/s (0.04 rad/s) steps, then one more 0 | — |
+| Turn 180° (tap) | `/cmd/turn` `{"direction":1,"angle":180,"speed":0.40}` | 0.4 rad/s |
 | GO TO CHARGER (Tasks tab) | `/reeman/position` + `/reeman/pose`, then `/cmd/charge` `{"type":0,…}` (pile close) or `{"type":2,…}` (pile far) | set by the firmware |
 | GO (Disinfection Points page) | `/cmd/nav_name` `{"point":"<name>"}` | set by the firmware |
 | START DISINFECTION (Disinfection Points page) | after the start delay, `/cmd/external_power_supply` `{"type":"24v","operation":"1"}`; at the end `"operation":"0"` | doesn't move the robot |
@@ -121,13 +122,59 @@ not by this app"), STOP pulses whenever the robot moves, and the drive buttons s
 until it is still. Still to confirm on the real robot: that `/cmd/charge` type 1 does nothing
 while the robot sits charging on the pile (STOP now sends it every time).
 
+## Hold-to-drive
+
+The four arrows drive for as long as they are held. Let go and the robot eases to a stop in
+under a second: about 20 cm from 0.3 m/s, about 10° turning. Turn 180° in the middle is still
+a single fixed step.
+
+**How.** While an arrow is held, the app sends `/cmd/speed` every 50 ms. The speed climbs from
+0 to the arrow's speed in small steps (0.02 m/s, or 0.04 rad/s, per command: 0.4 m/s², or
+0.8 rad/s²), and on letting go it falls back to 0 the same way. The robot applies each speed
+at once, with no smoothing of its own (the jog test: 0 to 0.35 m/s in 20 ms), so this ramp is
+what keeps the motion smooth: the app never jumps the speed while the robot moves. The ramp
+moves on only when the robot accepts a command, so a slow or lost request delays it rather
+than making a bigger step. STOP is the exception: an instant 0, for emergencies.
+
+**Why not the alternatives.**
+- *A bare 0 on letting go, or just stopping the commands:* both hard stops (7–20 m/s² and
+  5.6 m/s², handoff section 6), the second after ~1.2 s more at full speed.
+- *Halving the speed every tick:* the biggest step is the first one, at the moment of letting
+  go (from 0.3 m/s, a 0.15 m/s drop at once: 3–7 m/s²). A straight-line ramp spreads it evenly.
+- *Planned steps sent again and again while held* (tried 2026-10-07, dropped 2026-10-08): the
+  robot restarts a step from rest each time a new one arrives, so it shuffled along, and only
+  sped up on the last step, after letting go. Slow to answer and hard to predict.
+
+**The weak spot: the network.** The ramp only works while commands get through. If they stop
+mid-drive (Wi-Fi lost, phone frozen or switched off), the robot carries on at its last speed
+for ~1.2 s, then its watchdog stops it **hard**. Nothing in the app can soften that; the speed
+caps (0.3 m/s, 0.2 back) keep it small. The jog test found ~0.5 m/s "jerks noticeably" but
+does not threaten toppling. Drive with good Wi-Fi, and keep the physical e-stop in reach.
+
+**The rules:**
+- A hold starts only on a fresh press, with the same interlock as the other drive buttons.
+  While one arrow is held, the others do nothing. While the robot is still slowing down after
+  letting go, pressing any arrow carries on from the current speed (pressing Back after
+  Forward ramps through zero).
+- The screen reports the held button every 0.1 s. If it goes quiet for 0.4 s (screen frozen,
+  button gone mid-press), the app treats the arrow as let go. Sliding your finger off the
+  button does not: only lifting it lets go (a resting thumb drifts, and the page around the pad
+  scrolls; on the first real test that drift ended every hold after a moment).
+- The hold ends by itself (the speed ramps down, and you must let go and press again) on:
+  STOP, the e-stop, lost connection, three failed commands in a row, the robot stopping by
+  itself while held (an obstacle: the app never keeps pushing into one, and drops to 0 at once
+  since the robot has stopped already), or 30 s of holding.
+- If the robot is still moving 5 s after letting go, the app sends STOP.
+- STOP while holding sends 0 first, and again once any speed command still on its way has
+  landed, so a late one can't set the robot off again.
+
 Safety behaviour:
 - Drive buttons (and GO, GO TO CHARGER and START DISINFECTION) only work when: connected, e-stop released, no step running, the robot standing still, and the UV lamps off.
 - The **Ping** icon next to the address is the connection light: green when connected, orange when not.
-- One step at a time: buttons lock until the robot's measured speed has been ~0 for about a second.
+- One step at a time: buttons lock until the robot's measured speed has been ~0 for about a second (after letting go of an arrow, too).
 - STOP pulses with a red ring while a step is running.
 - Speeds are capped in code (`MAX_LINEAR` 0.3 m/s, `MAX_ANGULAR` 0.5 rad/s in `DriveController.kt`).
-- STOP is a hard stop. Use it for emergencies, not for routine stopping (steps end on their own).
+- STOP is a hard stop. Use it for emergencies, not for routine stopping (steps end on their own; to stop driving, let go of the arrow).
 - The UV lamps go off at the end of the set time, on STOP, the e-stop, the robot moving, lost connection, or leaving the app.
 - The physical e-stop remains the real backstop.
 
@@ -169,7 +216,8 @@ watch each event take effect. The first three are switches; the rest are buttons
 
 ### Demo mode limitations
 
-The simulator covers fixed-step driving, docking, trips to saved points and to the pile
+The simulator covers fixed-step driving, velocity streaming (`/cmd/speed`, with its ~200 ms
+latency, no ramp of its own, and the ~1.16 s watchdog), docking, trips to saved points and to the pile
 (`/cmd/charge` type 2), and the external power supplies (the DEMO controls page shows whether
 the simulated UV lamps are on). As on the real robot, a stop body only pauses a trip for ~1 s;
 `/cmd/cancel_goal` or `/cmd/charge` type 1 ends it. Its charging pile is against the
@@ -179,14 +227,15 @@ two steps back bring it within 1.5 m, and it docks straight away. On the pile th
 (Bed 1, Bed 2, Sink area) and the pile; points you add are kept until Reset robot. A trip turns to face the point, drives a straight
 line and turns to the point's heading. It does not plan around obstacles: a wall or the box
 in the way stops it short. These are answered with error `004`
-("Not simulated in DEMO mode"): velocity streaming (`/cmd/speed`), navigation to
+("Not simulated in DEMO mode"): navigation to
 coordinates (`/cmd/nav`), relocalisation, maps and
 restricted layers, speed limits, mode changes and shutdown. The room, obstacle and
 motion profile are a simple model, not the robot's real map or sensors.
 
 Things the simulator does **not** know about the real robot (marked `GUESS` in
 `FakeRobot.kt`): turn acceleration, what happens to a command sent with the e-stop
-pressed, how a new step pre-empts a running one, the success response body, and
+pressed, whether `/cmd/speed` cancels a step or a navigation, and whether the stop bodies end a
+`/cmd/speed` drive (both assumed yes), the success response body, and
 whether `/reeman/laser` points are in map or robot frame. Confirm these on the real
 robot before relying on them.
 
@@ -213,7 +262,8 @@ From a terminal (needs a JDK 17–21, e.g. `export JAVA_HOME=~/Library/Java/Java
 
 The unit tests (`app/src/test/`) run in virtual time against the simulated robot. They cover
 the simulator itself and the drive rules end to end: interlocks, the step lock, STOP,
-e-stop, Wi-Fi loss, docking, trips to points and to the pile, adding points, and STOP ending
+e-stop, Wi-Fi loss, hold-to-drive (the speed only ever changes at the ramp's rate, both
+ways), docking, trips to points and to the pile, adding points, and STOP ending
 a task the robot started by itself.
 
 ## Network
@@ -227,9 +277,11 @@ a task the robot started by itself.
 
 1. Robot off the charging dock, clear floor ~1 m on every side, you can reach the physical e-stop.
 2. Open the app → the Ping icon should be green, battery shown, grey **E** badge (e-stop released).
-3. Tap **Left 90°** → confirm it turns left and the buttons unlock after it stops.
-4. Then Right 90°, Forward 0.5 m, Back 0.5 m, Turn 180°.
-5. Test STOP once mid-turn at the slow speed.
+3. **Hold** Left for 2 s, let go → it should start turning within about half a second, then
+   ease to a stop within ~10°. Then Right, Back, Forward the same way, and Turn 180° (a tap).
+4. Hold Forward, then let go: note how far it runs on (should be ~20 cm) and whether the
+   mast rocks, starting or stopping.
+5. Test STOP once while holding Left (a hard stop, at the slow turning speed).
 
 Note anything odd from the **Activity** tab (long-press to select and copy).
 
@@ -260,9 +312,9 @@ low battery. These can now be rehearsed in demo mode first.
 
 All under `app/src/main/java/com/expiation/reemanremote/`:
 
-- `DriveController.kt`: **every drive rule lives here**: polling, interlocks, the step lock, STOP, trips to points, UV disinfection, demo switching.
+- `DriveController.kt`: **every drive rule lives here**: polling, interlocks, the step lock, hold-to-drive, STOP, trips to points, UV disinfection, demo switching.
   Plain Kotlin (no Android), with the state as explicit types: `Link` (Disconnected / Connected + e-stop),
-  `StepPhase` (Idle / Stepping / Stopping) and `Uv` (Countdown / Starting / On).
+  `StepPhase` (Idle / Holding / Stepping / Stopping) and `Uv` (Countdown / Starting / On).
 - `RobotApi.kt`: HTTP calls to the robot (or to the simulator in demo mode)
 - `FakeRobot.kt`: the simulated robot used by demo mode
 - `RemoteViewModel.kt`: keeps the controller alive across screen recreation; saves the address, demo choice and disinfection settings

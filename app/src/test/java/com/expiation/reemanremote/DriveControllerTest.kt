@@ -650,6 +650,227 @@ class DriveControllerTest {
         assertTrue(log(c), logged(c, "UV lamps ON for 1 min at Bed 1"))
     }
 
+    // ------------------------------------------------------------------ hold-to-drive
+
+    private fun vxNow(c: DriveController) =
+        Regex("\"vx\":(-?[0-9.]+)").find(c.demoRobot.handle("GET", "/reeman/speed", null)!!.body)!!.groupValues[1].toDouble()
+
+    /** Keeps [move] held, the way the screen reports it, for [ms]; returns the robot's speed every 100 ms. */
+    private fun TestScope.keepHolding(c: DriveController, move: Move, ms: Long): List<Double> {
+        val speeds = mutableListOf<Double>()
+        repeat((ms / DriveController.HOLD_ALIVE_MS).toInt()) {
+            advanceTimeBy(DriveController.HOLD_ALIVE_MS)
+            c.holdAlive(move)
+            speeds += vxNow(c)
+        }
+        return speeds
+    }
+
+    /** The fastest the speed fell (or, [up], rose) over any 0.2 s, in m/s² (0.2 s, so encoder noise doesn't count). */
+    private fun hardest(speeds: List<Double>, up: Boolean = false) =
+        speeds.windowed(3).maxOf { (if (up) it[2] - it[0] else it[0] - it[2]) / 0.2 }
+
+    @Test
+    fun holdRampsUpDrivesThenEasesToAStopWhenLetGo() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        assertEquals(Move.FORWARD, c.state.value.holding)
+        val speeds = keepHolding(c, Move.FORWARD, 3000).toMutableList()
+        assertTrue("moving within 0.5 s: $speeds", speeds[4] > 0.05)
+        assertTrue("at full speed within ~1 s: $speeds", speeds.drop(12).all { it > 0.28 })
+        val x = robotX(c)
+
+        c.release(Move.FORWARD)
+        assertTrue(c.state.value.phase is StepPhase.Stepping)
+        assertFalse("locked until still", c.state.value.canDrive)
+        val released = speeds.size
+        while (c.state.value.phase != StepPhase.Idle) {
+            advanceTimeBy(100)
+            speeds += vxNow(c)
+        }
+        assertTrue(log(c), logged(c, "Forward (held): let go after 3.0 s"))
+        assertTrue(log(c), logged(c, "Forward (held): done"))
+        assertTrue("stopped within ~1.1 s: $speeds", speeds.drop(released + 11).all { abs(it) < 0.02 })
+        val ranOn = robotX(c) - x
+        assertTrue("ran on $ranOn m", ranOn in 0.12..0.25)
+        // Never a jump: the speed only ever changed at the app's ramp (0.4 m/s²), both ways.
+        assertTrue("braked at ${hardest(speeds)} m/s²", hardest(speeds) < 0.5)
+        assertTrue("sped up at ${hardest(speeds, up = true)} m/s²", hardest(speeds, up = true) < 0.5)
+        assertFalse("letting go is not a STOP", logged(c, "STOP"))
+        assertTrue(c.state.value.canDrive)
+    }
+
+    @Test
+    fun aTapBarelyMovesTheRobot() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        advanceTimeBy(80)
+        c.release(Move.FORWARD)
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue("moved ${robotX(c)} m", robotX(c) < 0.03)
+    }
+
+    @Test
+    fun holdingTurnsAndBacksUp() = runTest {
+        val c = ready()
+        c.hold(Move.LEFT)
+        keepHolding(c, Move.LEFT, 2000)
+        assertEquals(DriveController.HOLD_TURN_SPEED, c.state.value.vth, 0.02)
+        c.release(Move.LEFT)
+        waitFor(c) { it.phase == StepPhase.Idle }
+        c.hold(Move.BACK)
+        keepHolding(c, Move.BACK, 2000)
+        assertEquals(-DriveController.HOLD_BACK_SPEED, c.state.value.vx, 0.02)
+        c.release(Move.BACK)
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), logged(c, "Back (held): done"))
+    }
+
+    @Test
+    fun aButtonThatStopsReportingCountsAsLetGo() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD) // and then nothing: the screen froze, say
+        advanceTimeBy(600)
+        assertTrue(log(c), logged(c, "lost track of the button"))
+        assertTrue(c.state.value.phase is StepPhase.Stepping)
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue("0.4 s of ramp up, then down: ${robotX(c)} m", robotX(c) < 0.12)
+    }
+
+    @Test
+    fun onlyTheHeldArrowCounts() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        c.hold(Move.LEFT) // a second finger
+        c.release(Move.LEFT)
+        c.holdAlive(Move.LEFT)
+        assertEquals(Move.FORWARD, c.state.value.holding)
+        c.release(Move.FORWARD)
+        assertEquals(null, c.state.value.holding)
+    }
+
+    @Test
+    fun stopWhileHeldStopsForGoodEvenWithTheFingerStillDown() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        keepHolding(c, Move.FORWARD, 1500)
+        c.stop()
+        assertTrue(c.state.value.phase is StepPhase.Stopping)
+        keepHolding(c, Move.FORWARD, 4000) // still pressed: must not drive again
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), logged(c, "Forward (held): stopped"))
+        assertEquals("one press, one drive", 1, c.state.value.log.count { "driving at" in it })
+        val x = robotX(c)
+        keepHolding(c, Move.FORWARD, 2000)
+        assertEquals("still stopped", x, robotX(c), 0.001)
+        c.release(Move.FORWARD)
+    }
+
+    @Test
+    fun holdEndsWhenTheRobotStopsByItself() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD) // towards the east wall, ~2.2 m ahead
+        var held = 0L
+        while (c.state.value.holding != null) {
+            check(held < 15_000) { log(c) }
+            keepHolding(c, Move.FORWARD, 500)
+            held += 500
+        }
+        assertTrue(log(c), logged(c, "the robot stopped while held. Obstacle in the way?"))
+        keepHolding(c, Move.FORWARD, 3000) // still pressed: no more pushing into the wall
+        assertEquals(StepPhase.Idle, c.state.value.phase)
+        assertEquals("not moving", 0.0, vxNow(c), 0.01)
+        c.release(Move.FORWARD)
+    }
+
+    @Test
+    fun wifiLostWhileHeldTheRobotsWatchdogStopsIt() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        keepHolding(c, Move.FORWARD, 2000)
+        val x = robotX(c)
+        c.demoToggleWifi()
+        repeat(60) { // 6 s, finger still down; nothing reaches the robot
+            advanceTimeBy(100)
+            c.holdAlive(Move.FORWARD)
+        }
+        assertEquals(null, c.state.value.holding)
+        assertTrue(log(c), logged(c, "Slowing to a stop; let go and press again"))
+        c.demoToggleWifi()
+        // The known weak spot: ~1.2 s more at full speed, then the watchdog's hard stop.
+        val ranOn = robotX(c) - x
+        assertTrue("ran on $ranOn m", ranOn <= 0.3 * 1.4 + 0.05)
+        keepHolding(c, Move.FORWARD, 2000)
+        assertEquals("doesn't set off again when Wi-Fi comes back", 0.0, vxNow(c), 0.01)
+        c.release(Move.FORWARD)
+    }
+
+    @Test
+    fun eStopWhileHeldEndsTheHold() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        keepHolding(c, Move.FORWARD, 1000)
+        c.demoToggleEstop()
+        keepHolding(c, Move.FORWARD, 2000)
+        assertEquals(null, c.state.value.holding)
+        assertTrue(log(c), logged(c, "Forward (held): e-stop pressed"))
+    }
+
+    @Test
+    fun pressingAgainWhileSlowingCarriesOnFromTheCurrentSpeed() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        keepHolding(c, Move.FORWARD, 2000)
+        c.release(Move.FORWARD)
+        advanceTimeBy(300)
+        assertTrue(c.state.value.canHold(Move.FORWARD))
+        c.hold(Move.FORWARD)
+        assertTrue(log(c), logged(c, "pressed while slowing"))
+        val speeds = keepHolding(c, Move.FORWARD, 1500)
+        assertTrue("no dip: $speeds", speeds.all { it > 0.12 })
+        c.release(Move.FORWARD)
+    }
+
+    @Test
+    fun forwardThenBackRampsThroughZero() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        val speeds = keepHolding(c, Move.FORWARD, 2000).toMutableList()
+        c.release(Move.FORWARD)
+        advanceTimeBy(100)
+        c.hold(Move.BACK)
+        speeds += keepHolding(c, Move.BACK, 2500)
+        assertEquals(-DriveController.HOLD_BACK_SPEED, speeds.last(), 0.02)
+        assertTrue("braked at ${hardest(speeds)} m/s²", hardest(speeds) < 0.5)
+        c.release(Move.BACK)
+    }
+
+    @Test
+    fun oneHoldLastsThirtySecondsAtMost() = runTest {
+        val c = ready()
+        c.hold(Move.LEFT) // turning on the spot, so no wall ends it first
+        keepHolding(c, Move.LEFT, DriveController.HOLD_MAX_MS + 1000)
+        assertEquals(null, c.state.value.holding)
+        assertTrue(log(c), logged(c, "Left (held): held for 30 s"))
+        c.release(Move.LEFT)
+    }
+
+    @Test
+    fun stillMovingLongAfterLetGoSendsStop() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        keepHolding(c, Move.FORWARD, 1000)
+        c.release(Move.FORWARD)
+        advanceTimeBy(1200) // the speed has ramped down; the lock waits for stillness
+        // A drive command reaching the robot late, say: it runs on.
+        c.demoRobot.handle("POST", "/cmd/move", """{"distance":300,"direction":1,"speed":0.30}""")
+        waitFor(c) { it.phase is StepPhase.Stopping }
+        assertTrue(log(c), logged(c, "still moving 5 s after it was let go"))
+        assertTrue(log(c), logged(c, "STOP sent by the app"))
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue("stopped short of 3 m: ${robotX(c)}", robotX(c) < 2.0)
+    }
+
     @Test
     fun uvSettingsAreKeptInRange() = runTest {
         val c = controller()

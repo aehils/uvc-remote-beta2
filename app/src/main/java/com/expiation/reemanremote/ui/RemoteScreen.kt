@@ -11,6 +11,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -68,6 +70,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -80,6 +83,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
@@ -120,6 +124,9 @@ data class RemoteActions(
     val onDemoChange: (Boolean) -> Unit = {},
     val onPing: (String) -> Unit = {},
     val onMove: (Move) -> Unit = {},
+    val onHold: (Move) -> Unit = {},
+    val onHoldAlive: (Move) -> Unit = {},
+    val onRelease: (Move) -> Unit = {},
     val onStop: () -> Unit = {},
     val onLoadPoints: () -> Unit = {},
     val onGoTo: (Waypoint) -> Unit = {},
@@ -771,7 +778,12 @@ private fun Reading(label: String, value: String, unit: String, valueColor: Colo
 private fun DriveCard(state: RemoteState, actions: RemoteActions) {
     Panel {
         BusyStatus(state)
-        DrivePad(state.canDrive, actions.onMove)
+        DrivePad(state, actions)
+        Text(
+            "Hold an arrow to drive. Let go and the robot eases to a stop in under a second (~20 cm).",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -787,7 +799,11 @@ private fun BusyStatus(state: RemoteState) {
                 trackColor = status.warnContainer,
             )
             Text(
-                (if (state.phase is StepPhase.Stopping) "Stopping: " else "Moving: ") + (state.busyLabel ?: "") + " …",
+                when (state.phase) {
+                    is StepPhase.Stopping -> "Stopping: "
+                    is StepPhase.Holding -> "Driving: "
+                    else -> "Moving: "
+                } + (state.busyLabel ?: "") + " …",
                 style = MaterialTheme.typography.labelLarge,
                 color = status.warn,
                 fontWeight = FontWeight.SemiBold,
@@ -1289,24 +1305,93 @@ private fun ChargerButton(enabled: Boolean, onDock: () -> Unit) {
     }
 }
 
+/** The arrows drive while held; Turn 180° in the middle is a fixed step. */
 @Composable
-private fun DrivePad(enabled: Boolean, onMove: (Move) -> Unit) {
+private fun DrivePad(state: RemoteState, actions: RemoteActions) {
     val gap = Arrangement.spacedBy(10.dp)
     Column(verticalArrangement = gap) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
             Spacer(Modifier.weight(1f))
-            PadButton(Move.FORWARD, "▲", enabled, onMove)
+            HoldButton(Move.FORWARD, "▲", state, actions)
             Spacer(Modifier.weight(1f))
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
-            PadButton(Move.LEFT, "↺", enabled, onMove)
-            PadButton(Move.AROUND, "↩", enabled, onMove, tonal = true)
-            PadButton(Move.RIGHT, "↻", enabled, onMove)
+            HoldButton(Move.LEFT, "↺", state, actions)
+            PadButton(Move.AROUND, "↩", state.canDrive, actions.onMove, tonal = true)
+            HoldButton(Move.RIGHT, "↻", state, actions)
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
             Spacer(Modifier.weight(1f))
-            PadButton(Move.BACK, "▼", enabled, onMove)
+            HoldButton(Move.BACK, "▼", state, actions)
             Spacer(Modifier.weight(1f))
+        }
+    }
+}
+
+/**
+ * An arrow that drives while held (see [DriveController.hold]). It reports the press, then a sign
+ * of life every [DriveController.HOLD_ALIVE_MS] while it lasts, then the release.
+ *
+ * Only lifting the finger lets go. A resting thumb always drifts, and the page around the pad
+ * scrolls: left alone, the scroll takes the touch over after a few millimetres, which used to
+ * count as letting go (2026-10-08, first real test: the robot only ever nudged). So the press
+ * keeps every move to itself, and drifting, even off the button, keeps driving. The button
+ * leaving the screen mid-press, or the system cancelling the touch, still lets go; and if the
+ * screen stops reporting at all, the controller lets go by itself.
+ */
+@Composable
+private fun RowScope.HoldButton(move: Move, glyph: String, state: RemoteState, actions: RemoteActions) {
+    val enabled = state.canHold(move)
+    val held = state.holding == move
+    // Read inside the gesture, which must not restart (and so let go) when these change mid-press.
+    val canStart by rememberUpdatedState(enabled)
+    val act by rememberUpdatedState(actions)
+    val colors = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(24.dp)
+    val content = when {
+        held -> colors.onPrimaryContainer
+        enabled -> colors.onPrimary
+        else -> colors.onSurface.copy(alpha = 0.38f)
+    }
+    Box(
+        Modifier
+            .weight(1f)
+            .height(92.dp)
+            .clip(shape)
+            .background(
+                when {
+                    held -> colors.primaryContainer
+                    enabled -> colors.primary
+                    else -> colors.onSurface.copy(alpha = 0.12f)
+                }
+            )
+            .then(if (held) Modifier.border(3.dp, colors.primary, shape) else Modifier)
+            .semantics { contentDescription = "${move.word}: hold to drive" }
+            .pointerInput(move) {
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    if (!canStart) return@awaitEachGesture
+                    down.consume()
+                    act.onHold(move)
+                    try {
+                        while (true) {
+                            // A still thumb sends no events: the timeout keeps the sign of life going.
+                            val event = withTimeoutOrNull(DriveController.HOLD_ALIVE_MS) { awaitPointerEvent() }
+                            val finger = event?.changes?.firstOrNull { it.id == down.id }
+                            finger?.consume() // so the scrolling page never takes the press over
+                            if (event != null && (finger == null || !finger.pressed)) break // lifted, or cancelled
+                            act.onHoldAlive(move)
+                        }
+                    } finally {
+                        act.onRelease(move)
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(glyph, fontSize = 26.sp, color = content)
+            Text(move.word, style = MaterialTheme.typography.labelLarge, color = content, textAlign = TextAlign.Center)
         }
     }
 }

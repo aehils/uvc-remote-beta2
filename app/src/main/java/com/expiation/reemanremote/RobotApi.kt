@@ -32,6 +32,12 @@ class RobotApi private constructor(host: String, private val fake: FakeRobot?) {
 
     suspend fun post(path: String, json: String): Result = request("POST", path, json, 2000, 4000)
 
+    /**
+     * For the speed stream (/cmd/speed, 20 a second): gives up fast, so one stalled request can't
+     * hold the ramp up. The robot stops by itself if they stop arriving.
+     */
+    suspend fun postQuick(path: String, json: String): Result = request("POST", path, json, 400, 600)
+
     private suspend fun request(method: String, path: String, json: String?, connectMs: Int, readMs: Int): Result {
         fake?.let { return simulate(it, method, path, json, connectMs) }
         return withContext(Dispatchers.IO) { blockingRequest(method, path, json, connectMs, readMs) }

@@ -22,6 +22,9 @@ import kotlin.math.sqrt
  *
  * Motion follows the measured /cmd/move behaviour (section 5): ~200 ms command
  * latency, then a trapezoid with accel/decel of about 0.36 * speed^0.40 m/s^2.
+ * Velocity streaming (/cmd/speed) follows the jog test (section 6): ~200 ms latency, then the
+ * wheels take the new speed at once (no ramp), and a watchdog hard-stops the robot ~1.16 s
+ * after the last command.
  * Anything marked GUESS was never measured on the real robot.
  *
  * No org.json, so it runs on a plain JVM.
@@ -95,6 +98,13 @@ class FakeRobot(
     private var blockNext = false
     private var power24 = false     // the power board's external supplies
     private var power36 = false
+    // Velocity streaming (/cmd/speed): the speed the wheels follow now, commands still inside their
+    // latency (applied at [JogCmd.atNs]), and when the last one took effect (for the watchdog).
+    private class JogCmd(val atNs: Long, val vx: Double, val vth: Double)
+    private var jogVx = 0.0
+    private var jogVth = 0.0
+    private val jogQueue = ArrayDeque<JogCmd>()
+    private var jogLastNs = 0L
     private var poseX = 0.0
     private var poseY = 0.0
     private var poseTheta = 0.0
@@ -135,7 +145,10 @@ class FakeRobot(
             val m = motion
             val v = if (m == null) 0.0 else m.sign * m.speedAt(now)
             val turning = m?.turn == true
-            fmt("""{"vx":%.4f,"vth":%.4f}""", (if (turning) 0.0 else v) + noise(), (if (turning) v else 0.0) + noise())
+            fmt(
+                """{"vx":%.4f,"vth":%.4f}""",
+                (if (turning) 0.0 else v) + jogVx + noise(), (if (turning) v else 0.0) + jogVth + noise(),
+            )
         }
         "/reeman/pose" -> {
             if (now - poseNs >= POSE_PERIOD_NS) {
@@ -159,6 +172,7 @@ class FakeRobot(
 
     private fun post(path: String, json: String, now: Long): String? = when (path) {
         "/cmd/move" -> move(json, now)
+        "/cmd/speed" -> speed(json, now)
         "/cmd/turn" -> turn(json, now)
         "/cmd/charge" -> charge(json, now)
         "/cmd/nav_name" -> navName(json, now)
@@ -184,6 +198,24 @@ class FakeRobot(
         if (distance < 0 || speed < 0) return error("004", "Internal service error")
         val v = min(speed, MAX_FIRMWARE_LINEAR)
         start(false, if (direction == 1.0) 1.0 else -1.0, distance / 100.0, v, 0.36 * v.pow(0.40), now)
+        return OK
+    }
+
+    /**
+     * {"vx":m/s,"vth":rad/s}: drive at this speed until told otherwise. Takes effect after the
+     * command latency, at once (the jog test: 0 to 0.35 m/s within 20 ms; to 0 within 20-70 ms).
+     * GUESS: a jog replaces a planned step or navigation, and the stop bodies (and an obstacle)
+     * end a jog. With the e-stop pressed it is accepted but the wheels never turn.
+     */
+    private fun speed(json: String, now: Long): String {
+        val vx = num(json, "vx")
+        val vth = num(json, "vth")
+        if (vx == null || vth == null) return error("004", "Internal service error")
+        if (motion != null || navGoal != null) halt()
+        if (!estopPressed) {
+            jogQueue.addLast(JogCmd(now + CMD_LATENCY_NS, vx.coerceIn(-MAX_FIRMWARE_LINEAR, MAX_FIRMWARE_LINEAR), vth))
+            chargeFlag = CHARGE_NONE
+        }
         return OK
     }
 
@@ -327,6 +359,9 @@ class FakeRobot(
     private fun halt() {
         motion = null
         legs.clear()
+        jogVx = 0.0
+        jogVth = 0.0
+        jogQueue.clear()
         navGoal = null
         navThen = null
         if (chargeFlag == CHARGE_DOCKING) chargeFlag = CHARGE_NONE
@@ -336,8 +371,8 @@ class FakeRobot(
         startLegs({ t -> Motion(turn, sign, amount, speed, accel, t) }, now = now)
 
     /**
-     * A new command replaces the running one outright (GUESS: the firmware's pre-emption
-     * behaviour is unmeasured). With the e-stop pressed or an obstacle simulated the
+     * A new command replaces the running one outright, from rest. Seen on the real robot
+     * (2026-10-08): a step sent again every 0.25 s restarted each time, so the robot shuffled. With the e-stop pressed or an obstacle simulated the
      * command is accepted but the wheels never turn (also a GUESS).
      */
     private fun startLegs(vararg plan: (Long) -> Motion, now: Long): Boolean {
@@ -360,15 +395,33 @@ class FakeRobot(
         }
         var t = lastNs
         while (t < now) {
-            val m = motion ?: break
             val next = min(now, t + STEP_NS)
-            val v = m.sign * m.speedAt((t + next) / 2)
+            while (jogQueue.isNotEmpty() && jogQueue.first().atNs <= next) {
+                val c = jogQueue.removeFirst()
+                jogVx = c.vx
+                jogVth = c.vth
+                jogLastNs = c.atNs
+            }
+            val jogging = jogVx != 0.0 || jogVth != 0.0
+            if (jogging && next - jogLastNs > JOG_WATCHDOG_NS) {
+                halt() // the watchdog: no command for too long, then a hard stop (section 6)
+                t = next
+                continue
+            }
+            val m = motion
+            if (m == null && !jogging) {
+                if (jogQueue.isEmpty()) break
+                t = next
+                continue
+            }
             val dt = (next - t) / 1e9
-            if (m.turn) {
-                theta = wrap(theta + v * dt)
-            } else {
-                val nx = x + v * dt * cos(theta)
-                val ny = y + v * dt * sin(theta)
+            val v = m?.let { it.sign * it.speedAt((t + next) / 2) } ?: 0.0
+            val turning = m?.turn == true
+            val forward = (if (turning) 0.0 else v) + jogVx
+            theta = wrap(theta + ((if (turning) v else 0.0) + jogVth) * dt)
+            if (forward != 0.0) {
+                val nx = x + forward * dt * cos(theta)
+                val ny = y + forward * dt * sin(theta)
                 if (collides(nx, ny)) {
                     halt() // obstacle brake: stops short, like the real safety brake
                 } else {
@@ -376,7 +429,7 @@ class FakeRobot(
                     y = ny
                 }
             }
-            if (v != 0.0) battery = maxOf(0.0, battery - dt / MOVING_SECONDS_PER_PERCENT)
+            if (v != 0.0 || jogging) battery = maxOf(0.0, battery - dt / MOVING_SECONDS_PER_PERCENT)
             if (motion?.finished(next) == true) {
                 motion = legs.removeFirstOrNull()?.invoke(next)
                 if (motion == null) {
@@ -479,7 +532,7 @@ class FakeRobot(
     }
 
     @get:Synchronized
-    val isBusy: Boolean get() = motion != null
+    val isBusy: Boolean get() = motion != null || jogVx != 0.0 || jogVth != 0.0
 
     /** Knocks 10% off the battery; wraps back to full below zero. */
     @Synchronized
@@ -499,6 +552,9 @@ class FakeRobot(
         poseNs = lastNs - POSE_PERIOD_NS
         motion = null
         legs.clear()
+        jogVx = 0.0
+        jogVth = 0.0
+        jogQueue.clear()
         navGoal = null
         navThen = null
         points.clear()
@@ -519,6 +575,7 @@ class FakeRobot(
 
         // ---- Motion model ----
         private const val CMD_LATENCY_NS = 200_000_000L  // measured ~200 ms command-to-wheel
+        private const val JOG_WATCHDOG_NS = 1_160_000_000L // measured: runs on this long after the last /cmd/speed
         private const val ANGULAR_ACCEL = 0.5            // rad/s^2, GUESS: turn ramps never measured
         private const val MAX_FIRMWARE_LINEAR = 1.0      // top of the /cmd/max_speed range
         private const val ROBOT_RADIUS = 0.30            // m, GUESS
@@ -576,7 +633,7 @@ class FakeRobot(
         // Real commands this simulator doesn't model. They answer 004 rather than 009
         // so a demo never suggests a real route doesn't exist.
         private val UNSIMULATED_CMDS = setOf(
-            "/cmd/speed", "/cmd/nav", "/cmd/max_speed",
+            "/cmd/nav", "/cmd/max_speed",
             "/cmd/reloc_pose", "/cmd/reloc_absolute", "/cmd/set_mode",
             "/cmd/save_map", "/cmd/apply_map", "/cmd/restrict_layer",
             "/cmd/shutdown",
