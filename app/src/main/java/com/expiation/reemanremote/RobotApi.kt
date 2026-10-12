@@ -11,7 +11,7 @@ import java.net.SocketTimeoutException
 import java.net.URL
 
 /**
- * Minimal HTTP client for the Reeman navigation computer (firmware RSNF1-v5.1.12_01).
+ * Minimal HTTP client for the Reeman navigation computer (firmware RSNF1-v5.1.20_01).
  *
  * Live requests run on Dispatchers.IO. A demo instance (see [demo]) answers from an
  * in-app [FakeRobot] and never opens a socket; its latency is a coroutine delay, so

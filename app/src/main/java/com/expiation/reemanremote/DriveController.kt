@@ -1440,9 +1440,9 @@ class DriveController(
         // {"type":"24v"|"36v"|"24v36","operation":"1"|"0"}: switches the power board's external
         // supply on or off. There is no way to read it back.
         const val UV_PATH = "/cmd/external_power_supply"
-        // GUESS: the lamps are on the 24 V supply. On the first live test (2026-10-06) they didn't
-        // come on with 36v (the manual's Debug page names a "36V external supply"). 24v not yet
-        // confirmed: test with the room cleared.
+        // The lamps are on the 24 V supply. Confirmed on the real robot 2026-10-12 (firmware
+        // RSNF1-v5.1.20_01): ON lit them, OFF switched them off. Firmware v5.1.12 accepted the
+        // same bodies but never switched the supply.
         const val UV_SUPPLY = "24v"
         private const val UV_ON = """{"type":"$UV_SUPPLY","operation":"1"}"""
         private const val UV_OFF = """{"type":"$UV_SUPPLY","operation":"0"}"""

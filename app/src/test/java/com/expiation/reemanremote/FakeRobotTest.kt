@@ -30,7 +30,7 @@ class FakeRobotTest {
     private fun vth() = num(get("/reeman/speed"), "vth")
     private fun pose(key: String) = num(get("/reeman/pose"), key)
 
-    private fun forward() = assertEquals("{}", post("/cmd/move", """{"distance":50,"direction":1,"speed":0.30}"""))
+    private fun forward() = assertEquals(FakeRobot.OK, post("/cmd/move", """{"distance":50,"direction":1,"speed":0.30}"""))
 
     @Test
     fun statusMatchesFirmwareShapes() {
@@ -58,7 +58,7 @@ class FakeRobotTest {
     }
 
     private fun chargeFlag() = num(get("/reeman/base_encode"), "chargeFlag")
-    private fun dock() = assertEquals("{}", post("/cmd/charge", """{"type":0,"point":"charging_pile"}"""))
+    private fun dock() = assertEquals(FakeRobot.OK, post("/cmd/charge", """{"type":0,"point":"charging_pile"}"""))
 
     @Test
     fun dockTurnsAwayFromThePileThenReversesOntoItAndCharges() {
@@ -97,7 +97,7 @@ class FakeRobotTest {
         dock()
         advance(3.0)
         assertTrue(vx() < -0.05)
-        assertEquals("{}", post("/cmd/charge", """{"type":1,"point":"charging_pile"}"""))
+        assertEquals(FakeRobot.OK, post("/cmd/charge", """{"type":1,"point":"charging_pile"}"""))
         assertEquals(0.0, vx(), 0.0)
         assertEquals(0.0, chargeFlag(), 0.0)
     }
@@ -115,7 +115,7 @@ class FakeRobotTest {
     @Test
     fun navTurnsDrivesAndSettlesOnThePointsHeading() {
         assertTrue("no plan while idle", !planning())
-        assertEquals("{}", nav("Bed 1"))
+        assertEquals(FakeRobot.OK, nav("Bed 1"))
         advance(1.0)
         assertTrue("turning to face the point first", abs(vth()) > 0.1)
         assertTrue(planning())
@@ -131,7 +131,7 @@ class FakeRobotTest {
         nav("Bed 2")
         advance(5.0)
         assertTrue(planning())
-        assertEquals("{}", post("/cmd/cancel_goal", "{}"))
+        assertEquals(FakeRobot.OK, post("/cmd/cancel_goal", "{}"))
         assertEquals(0.0, vx(), 0.0)
         assertEquals(0.0, vth(), 0.0)
         assertTrue(!planning())
@@ -139,7 +139,7 @@ class FakeRobotTest {
 
     @Test
     fun setPointSavesAPointTheRobotCanGoTo() {
-        assertEquals("{}", post("/cmd/position", """{"name":"Door","type":"delivery","pose":{"x":0.8,"y":-0.4,"theta":0.0}}"""))
+        assertEquals(FakeRobot.OK, post("/cmd/position", """{"name":"Door","type":"delivery","pose":{"x":0.8,"y":-0.4,"theta":0.0}}"""))
         assertTrue(get("/reeman/position").contains(""""name":"Door","type":"delivery","pose":{"x":0.8000,"y":-0.4000"""))
         assertTrue("type must be one the API lists",
             post("/cmd/position", """{"name":"X","type":"disinfect","pose":{"x":0,"y":0,"theta":0}}""").contains("004"))
@@ -169,7 +169,7 @@ class FakeRobotTest {
 
     @Test
     fun chargeType2NavigatesToThePileThenDocks() {
-        assertEquals("{}", post("/cmd/charge", """{"type":2,"point":"charging_pile"}"""))
+        assertEquals(FakeRobot.OK, post("/cmd/charge", """{"type":2,"point":"charging_pile"}"""))
         advance(2.0)
         assertTrue("a trip with a plan", planning())
         advance(60.0)
@@ -224,7 +224,7 @@ class FakeRobotTest {
         forward()
         advance(1.5)
         assertTrue(vx() > 0.1)
-        assertEquals("{}", post("/cmd/move", """{"distance":0,"direction":1,"speed":0}"""))
+        assertEquals(FakeRobot.OK, post("/cmd/move", """{"distance":0,"direction":1,"speed":0}"""))
         assertEquals(0.0, vx(), 1e-9)
         advance(1.0)
         assertEquals(0.0, vx(), 1e-9)

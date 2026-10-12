@@ -83,10 +83,10 @@ point". The **tune** button sets the time (1–30 min) and the start delay (15, 
 default 15 s, and there is no 0 s since START NOW does that); they are saved on the phone. While the lamps are on, or about to come on, a red banner with the
 time left is pinned on every page, and the drive buttons, GO and GO TO CHARGER are locked.
 
-The lamps are switched with the power board's external supply (`/cmd/external_power_supply`,
-from the Web API), now the **24 V** one. On the first live test (2026-10-06) the lamps did not
-come on with the 36 V supply (the manual's Debug page names a "36V external supply"); that they
-are on 24 V is still a GUESS until a test shows them light. The robot
+The lamps are on the power board's **24 V** external supply (`/cmd/external_power_supply`,
+from the Web API). Confirmed on the real robot on 2026-10-12, firmware RSNF1-v5.1.20_01: ON lit
+the lamps and OFF switched them off. (Firmware v5.1.12 accepted the same command but never
+switched the supply; Reeman's over-the-air update fixed it.) The robot
 can't report whether that supply is on, so the timer is the app's, and the app switches the
 lamps off (or cancels the countdown) on any of:
 - the set time running out, **LAMPS OFF** / **CANCEL** on the card, or **STOP**;
@@ -98,8 +98,7 @@ OFF is retried every 1.5 s until the robot accepts it. Until then the banner rea
 MAY STILL BE ON**, everything that moves the robot stays locked, and the app won't switch
 robot or mode (OFF has to go to the same robot). ON and OFF are sent one at a time, in order,
 so an OFF can't overtake an ON still in flight. STOP sends OFF only while this app has the
-lamps on (or owes an OFF), not every time like `/cmd/cancel_goal`, until the 24 V guess is
-confirmed. See "First UV test" below.
+lamps on (or owes an OFF).
 
 This relies on the loaded map matching the building (the robot's map was replaced after
 beta 0.1, whose map was from another site). Still to confirm on the real robot (marked
@@ -285,23 +284,17 @@ a task the robot started by itself.
 
 Note anything odd from the **Activity** tab (long-press to select and copy).
 
-## First UV test (real robot)
+## UV test from the phone (real robot)
 
-Which supply the lamps are on is still a guess: 36 V was tried first (2026-10-06) and the lamps
-did not come on; the app now uses 24 V. UV-C burns skin and eyes. Plan this test before running it:
+The command itself is confirmed (2026-10-12, sent from a Mac); the app's own run is not yet.
+UV-C burns skin and eyes: nobody in the room, door closed, watch from outside.
 
-1. Nobody in the room, door closed and signed. Watch from outside (through a window, or with
-   the lamps shielded), or have the lamps disconnected for the first try and check the 24 V
-   supply with a meter instead. Wear the manual's PPE if anyone has to be near.
-2. Set the time to **1 min** and the delay to **30 s** (tune button), then **START
-   DISINFECTION** and leave.
-3. Confirm the lamps come on after the delay, and off after 1 minute. Check the log shows
-   "robot accepted OFF".
-4. Repeat, pressing **STOP** while the lamps are on. Then once more, pressing the physical
-   e-stop: note whether the e-stop alone cuts the lamps.
-5. If the lamps don't come on, the 24 V guess is wrong too: try `24v36` (both supplies) in
-   `UV_SUPPLY` in `DriveController.kt` and repeat from 1, or check the lamp wiring.
-6. Once they work, try **START NOW** during the countdown: the lamps should come on straight away.
+1. Set the time to **1 min** and the delay to **30 s** (tune button), then **START
+   DISINFECTION** and leave. The lamps should come on after the delay and go off after 1
+   minute; the log should say "robot accepted OFF".
+2. Repeat, pressing **LAMPS OFF**, then **STOP**, then the physical e-stop while the lamps
+   are on (note whether the e-stop alone cuts them).
+3. Try **START NOW** during the countdown: the lamps should come on straight away.
 
 ### Still to confirm on the real robot (from beta 0.1)
 

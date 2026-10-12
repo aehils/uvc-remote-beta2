@@ -16,7 +16,7 @@ import kotlin.math.sqrt
 /**
  * Demo mode: a simulated Reeman navigation computer that lives inside the app.
  *
- * It answers the same paths with the same JSON shapes as firmware RSNF1-v5.1.12_01
+ * It answers the same paths with the same JSON shapes as firmware RSNF1-v5.1.12_01 and v5.1.20_01
  * (REEMAN_HANDOFF.txt section 4), so DriveController's polling, step lock and STOP
  * logic run unchanged, and nothing is sent over the network.
  *
@@ -571,7 +571,7 @@ class FakeRobot(
     private fun noise() = if (realistic) (rng.nextDouble() * 2 - 1) * SPEED_NOISE else 0.0
 
     companion object {
-        const val VERSION = "DEMO-SIM (mimics RSNF1-v5.1.12_01)"
+        const val VERSION = "DEMO-SIM (mimics RSNF1-v5.1.20_01)"
 
         // ---- Motion model ----
         private const val CMD_LATENCY_NS = 200_000_000L  // measured ~200 ms command-to-wheel
@@ -639,8 +639,9 @@ class FakeRobot(
             "/cmd/shutdown",
         )
 
-        // GUESS: the real success body was never recorded; the app only checks it isn't an error.
-        private const val OK = "{}"
+        // The success reply of /cmd/nav_name, /cmd/cancel_goal and /cmd/external_power_supply (seen on
+        // v5.1.20); assumed for the rest. The app only checks it isn't an error.
+        const val OK = """{"status":"success"}"""
 
         private fun collides(px: Double, py: Double): Boolean {
             val r = ROBOT_RADIUS
