@@ -532,9 +532,6 @@ class DriveController(
      * at 7-20 m/s²). Hence: never a bare jump to zero while the robot moves (STOP aside), and a
      * stalled request slows the ramp down rather than skipping a stair.
      *
-     * Planned steps sent again and again were tried first (2026-10-07) and dropped: the robot
-     * restarts a step from rest each time one arrives, so it shuffled, and felt slow.
-     *
      * The weak spot is the network. If commands stop arriving mid-drive (Wi-Fi lost, phone
      * frozen), the robot carries on for ~1.2 s, then its watchdog stops it hard. The speed caps
      * keep that stop small; nothing in the app can soften it.
@@ -652,7 +649,7 @@ class DriveController(
         if (stopNow) jumpToZero = true
         val t = now()
         phase = StepPhase.Stepping(
-            h.step, Tracking(t + HOLD_COAST_NO_MOTION_MS, t + HOLD_COAST_MAX_MS, sawMotion = h.track.sawMotion),
+            h.step, Tracking(t + HOLD_NO_MOTION_MS, t + HOLD_COAST_MAX_MS, sawMotion = h.track.sawMotion),
         )
     }
 
@@ -667,10 +664,10 @@ class DriveController(
     }
 
     private fun holdVelocity(move: Move) = when (move) {
-        Move.FORWARD -> Velocity(min(HOLD_FORWARD_SPEED, MAX_LINEAR), 0.0)
-        Move.BACK -> Velocity(-min(HOLD_BACK_SPEED, MAX_LINEAR), 0.0)
-        Move.LEFT -> Velocity(0.0, min(HOLD_TURN_SPEED, MAX_ANGULAR))
-        Move.RIGHT -> Velocity(0.0, -min(HOLD_TURN_SPEED, MAX_ANGULAR))
+        Move.FORWARD -> Velocity(min(FORWARD_SPEED, MAX_LINEAR), 0.0)
+        Move.BACK -> Velocity(-min(BACKWARD_SPEED, MAX_LINEAR), 0.0)
+        Move.LEFT -> Velocity(0.0, min(TURN_SPEED, MAX_ANGULAR))
+        Move.RIGHT -> Velocity(0.0, -min(TURN_SPEED, MAX_ANGULAR))
         Move.AROUND -> error("Turn 180° is a fixed step")
     }
 
@@ -1011,8 +1008,8 @@ class DriveController(
         val tr = track(before, speedValid)
         val t = now()
 
-        // Still moving well after a held arrow was let go: a renewal that reached the robot late,
-        // or steps the firmware queued instead of replacing. Never let that run on.
+        // Still moving well after a held arrow was let go (a speed command that landed late, or a
+        // ramp-down that isn't getting through): never let that run on.
         val moving = speedValid && (abs(vx) > MOVING_VX || abs(vth) > MOVING_VTH)
         if (p is StepPhase.Stepping && step.held != null && t > tr.hardCap && moving) {
             phase = p.copy(track = tr)
@@ -1365,10 +1362,7 @@ class DriveController(
         const val MAX_LINEAR = 0.3      // m/s
         const val MAX_ANGULAR = 0.5     // rad/s
 
-        // ---- Hold-to-drive (see hold()): the speed stream and its ramp ----
-        const val HOLD_FORWARD_SPEED = 0.3  // m/s
-        const val HOLD_BACK_SPEED = 0.2     // m/s (lidar sees less behind)
-        const val HOLD_TURN_SPEED = 0.4     // rad/s (~23 deg/s)
+        // ---- Hold-to-drive (see hold()): the speed stream and its ramp. Same speeds as the steps. ----
         // The ramp, both ways. Stopping from 0.3 m/s takes 0.75 s and ~11 cm (+ ~6 cm latency). The
         // firmware's own planned braking is ~0.2-0.3 m/s^2; a jump to zero is 7-20 m/s^2.
         const val JOG_ACCEL = 0.4           // m/s^2: 0.02 m/s per command
@@ -1379,9 +1373,8 @@ class DriveController(
         const val JOG_GIVE_UP = 8           // ...and before the stream stops trying
         const val HOLD_ALIVE_MS = 100L      // the screen reports a held arrow this often...
         const val HOLD_ALIVE_TIMEOUT_MS = 400L // ...and after this long without word, it counts as let go
-        const val HOLD_NO_MOTION_MS = 2500L
+        const val HOLD_NO_MOTION_MS = 2500L // no motion this long after a press (or a let-go): give up
         const val HOLD_MAX_MS = 30_000L     // one press drives this long at most
-        const val HOLD_COAST_NO_MOTION_MS = 2500L
         const val HOLD_COAST_MAX_MS = 5000L // still moving this long after letting go: the app sends STOP
         const val SPEED_PATH = "/cmd/speed"
         private val ZERO = Velocity(0.0, 0.0)

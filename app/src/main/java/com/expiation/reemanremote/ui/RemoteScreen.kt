@@ -194,12 +194,7 @@ private fun MainPage(
         topBar = {
             Column {
                 TopBar(state, actions.onDemoChange, onOpenDemoControls)
-                // Pinned above the scrolling content so it can never be scrolled away.
-                AnimatedVisibility(state.demo) { DemoStrip() }
-                Box(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) { Telemetry(state) }
-                AnimatedVisibility(state.runaway) { RunawayBanner() }
-                AnimatedVisibility(state.uv != null || state.lampsOffOwed) { UvBanner(state) }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                StatusHeader(state)
             }
         },
         bottomBar = { NavBar(tab, onTabChange, moving = state.busy || !state.still, actions.onStop) },
@@ -473,6 +468,19 @@ private fun DemoMenu(state: RemoteState, onDemoChange: (Boolean) -> Unit, onOpen
 }
 
 private const val DEMO_LIMITS_URL = "https://github.com/aehils/uvc-remote-beta2#demo-mode-limitations"
+
+/**
+ * Under every page's title bar, pinned so it never scrolls away: the DEMO strip, the robot's
+ * readings, and the runaway and UV banners.
+ */
+@Composable
+private fun StatusHeader(state: RemoteState) {
+    AnimatedVisibility(state.demo) { DemoStrip() }
+    Box(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) { Telemetry(state) }
+    AnimatedVisibility(state.runaway) { RunawayBanner() }
+    AnimatedVisibility(state.uv != null || state.lampsOffOwed) { UvBanner(state) }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+}
 
 @Composable
 private fun DemoStrip() {
@@ -840,9 +848,7 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
             title = "Disinfection Points",
             detail = when {
                 uv != null || state.lampsOffOwed -> uvStatus(state)
-                charging && count != null -> "$count saved. Send the robot to one, or add one."
-                charging -> "Send the robot to a saved point, or add one where it stands."
-                goal != null -> "On the way to ${goal.name}"
+                goal != null && !charging -> "On the way to ${goal.name}"
                 count != null -> "$count saved. Send the robot to one, or add one."
                 else -> "Send the robot to a saved point, or add one where it stands."
             },
@@ -920,11 +926,7 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () ->
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 )
-                AnimatedVisibility(state.demo) { DemoStrip() }
-                Box(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) { Telemetry(state) }
-                AnimatedVisibility(state.runaway) { RunawayBanner() }
-                AnimatedVisibility(state.uv != null || state.lampsOffOwed) { UvBanner(state) }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                StatusHeader(state)
             }
         },
         bottomBar = { StopBar(actions.onStop) },
@@ -1435,7 +1437,7 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
                     title = { Text("DEMO controls", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 )
-                DemoStrip()
+                StatusHeader(state)
             }
         },
         bottomBar = { StopBar(actions.onStop) },
@@ -1449,11 +1451,6 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Telemetry(state)
-            AnimatedVisibility(state.runaway) { RunawayBanner() }
-            AnimatedVisibility(state.uv != null || state.lampsOffOwed) { UvBanner(state) }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
             SectionLabel("Faults")
             DemoToggle("E-stop pressed", "As if the physical e-stop were pressed. Driving is blocked; pressing mid-step stops the robot.", demo.estopPressed, actions.onDemoEstop)
             DemoToggle("Wi-Fi dropped", "The robot stops answering. The Ping icon turns orange after about 3 missed polls.", demo.offline, actions.onDemoWifi)
@@ -1550,8 +1547,6 @@ private fun ActivityLog(lines: List<String>, modifier: Modifier) {
         }
     }
 }
-
-// ---------------------------------------------------------------------- helpers
 
 // ---------------------------------------------------------------------- previews
 

@@ -715,12 +715,12 @@ class DriveControllerTest {
         val c = ready()
         c.hold(Move.LEFT)
         keepHolding(c, Move.LEFT, 2000)
-        assertEquals(DriveController.HOLD_TURN_SPEED, c.state.value.vth, 0.02)
+        assertEquals(DriveController.TURN_SPEED, c.state.value.vth, 0.02)
         c.release(Move.LEFT)
         waitFor(c) { it.phase == StepPhase.Idle }
         c.hold(Move.BACK)
         keepHolding(c, Move.BACK, 2000)
-        assertEquals(-DriveController.HOLD_BACK_SPEED, c.state.value.vx, 0.02)
+        assertEquals(-DriveController.BACKWARD_SPEED, c.state.value.vx, 0.02)
         c.release(Move.BACK)
         waitFor(c) { it.phase == StepPhase.Idle }
         assertTrue(log(c), logged(c, "Back (held): done"))
@@ -840,7 +840,7 @@ class DriveControllerTest {
         advanceTimeBy(100)
         c.hold(Move.BACK)
         speeds += keepHolding(c, Move.BACK, 2500)
-        assertEquals(-DriveController.HOLD_BACK_SPEED, speeds.last(), 0.02)
+        assertEquals(-DriveController.BACKWARD_SPEED, speeds.last(), 0.02)
         assertTrue("braked at ${hardest(speeds)} m/s²", hardest(speeds) < 0.5)
         c.release(Move.BACK)
     }

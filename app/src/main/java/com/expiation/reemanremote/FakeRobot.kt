@@ -135,8 +135,6 @@ class FakeRobot(
 
     private fun get(path: String, now: Long): String? = when (path) {
         "/reeman/current_version" -> """{"version":"$VERSION"}"""
-        "/reeman/hostname" -> """{"hostname":"demo-robot"}"""
-        "/reeman/get_mode" -> """{"mode":2}"""
         "/reeman/base_encode" -> fmt(
             """{"battery":%d,"chargeFlag":%d,"emergencyButton":%d}""",
             batteryPercent(), chargeFlag, if (estopPressed) 0 else 1,
@@ -159,7 +157,6 @@ class FakeRobot(
             }
             fmt("""{"x":%.4f,"y":%.4f,"theta":%.4f}""", poseX, poseY, poseTheta)
         }
-        "/reeman/laser" -> laser()
         "/reeman/position" -> points.joinToString(",", """{"waypoints":[""", "]}") {
             fmt("""{"name":"%s","type":"%s","pose":{"x":%.4f,"y":%.4f,"theta":%.4f}}""", it.name, it.type, it.x, it.y, it.theta)
         }
@@ -182,7 +179,6 @@ class FakeRobot(
             if (navGoal != null) halt()
             OK
         }
-        in UNSIMULATED_CMDS -> error("004", "Not simulated in DEMO mode")
         else -> null
     }
 
@@ -442,18 +438,6 @@ class FakeRobot(
         lastNs = now
     }
 
-    /** Lidar hits as [[x,y],...] in metres. GUESS: map frame; confirm on the real robot. */
-    private fun laser(): String {
-        val points = (0 until LASER_BEAMS).mapNotNull { i ->
-            val a = theta + 2 * Math.PI * i / LASER_BEAMS
-            val dx = cos(a)
-            val dy = sin(a)
-            val best = WALLS.minOf { rayHit(x, y, dx, dy, it) }.coerceAtMost(LASER_RANGE)
-            if (best >= LASER_RANGE) null else fmt("[%.3f,%.3f]", x + dx * best, y + dy * best)
-        }
-        return points.joinToString(",", """{"coordinates":[""", "]}")
-    }
-
     /**
      * Switches the power board's external supply, as the API documents:
      * {"type":"24v"|"36v"|"24v36","operation":"0"|"1"}. GUESS: the reply to a bad body.
@@ -602,14 +586,6 @@ class FakeRobot(
         // DOCK_X/Y is where the robot's centre sits when it is on the pile.
         private const val DOCK_X = -ROOM_X + ROBOT_RADIUS + 0.05
         private const val DOCK_Y = 0.0
-        private val WALLS = arrayOf(
-            doubleArrayOf(-ROOM_X, -ROOM_Y, ROOM_X, -ROOM_Y), doubleArrayOf(ROOM_X, -ROOM_Y, ROOM_X, ROOM_Y),
-            doubleArrayOf(ROOM_X, ROOM_Y, -ROOM_X, ROOM_Y), doubleArrayOf(-ROOM_X, ROOM_Y, -ROOM_X, -ROOM_Y),
-            doubleArrayOf(BOX[0], BOX[1], BOX[2], BOX[1]), doubleArrayOf(BOX[2], BOX[1], BOX[2], BOX[3]),
-            doubleArrayOf(BOX[2], BOX[3], BOX[0], BOX[3]), doubleArrayOf(BOX[0], BOX[3], BOX[0], BOX[1]),
-        )
-        private const val LASER_BEAMS = 180  // every 2 degrees, GUESS
-        private const val LASER_RANGE = 8.0
 
         // ---- Navigation (/cmd/nav_name). Speeds are the firmware's choice on the real robot. ----
         private const val NAV_SPEED = 0.3                // m/s, GUESS
@@ -630,15 +606,6 @@ class FakeRobot(
             SavedPoint("charging_pile", "charge", DOCK_X, DOCK_Y, 0.0),
         )
 
-        // Real commands this simulator doesn't model. They answer 004 rather than 009
-        // so a demo never suggests a real route doesn't exist.
-        private val UNSIMULATED_CMDS = setOf(
-            "/cmd/nav", "/cmd/max_speed",
-            "/cmd/reloc_pose", "/cmd/reloc_absolute", "/cmd/set_mode",
-            "/cmd/save_map", "/cmd/apply_map", "/cmd/restrict_layer",
-            "/cmd/shutdown",
-        )
-
         // The success reply of /cmd/nav_name, /cmd/cancel_goal and /cmd/external_power_supply (seen on
         // v5.1.20); assumed for the rest. The app only checks it isn't an error.
         const val OK = """{"status":"success"}"""
@@ -647,19 +614,6 @@ class FakeRobot(
             val r = ROBOT_RADIUS
             if (abs(px) > ROOM_X - r || abs(py) > ROOM_Y - r) return true
             return px > BOX[0] - r && px < BOX[2] + r && py > BOX[1] - r && py < BOX[3] + r
-        }
-
-        /** Distance along the ray to segment w = {ax, ay, bx, by}, or infinity. */
-        private fun rayHit(ox: Double, oy: Double, dx: Double, dy: Double, w: DoubleArray): Double {
-            val ex = w[2] - w[0]
-            val ey = w[3] - w[1]
-            val den = dx * ey - dy * ex
-            if (abs(den) < 1e-12) return Double.POSITIVE_INFINITY
-            val wx = w[0] - ox
-            val wy = w[1] - oy
-            val t = (wx * ey - wy * ex) / den
-            val u = (wx * dy - wy * dx) / den
-            return if (t > 0 && u >= 0 && u <= 1) t else Double.POSITIVE_INFINITY
         }
 
         private fun wrap(a: Double): Double {

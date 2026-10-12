@@ -284,7 +284,6 @@ class FakeRobotTest {
         val r = robot.handle("GET", "/robot/get_mode", null)!!
         assertEquals(404, r.code)
         assertTrue(r.body.contains("\"error_code\":\"009\""))
-        assertTrue(post("/cmd/nav", """{"x":1,"y":0,"theta":0}""").contains("\"error_code\":\"004\""))
         assertTrue(
             "more than 180 degrees is rejected",
             post("/cmd/turn", """{"direction":1,"angle":270,"speed":0.4}""").contains("004"),
@@ -318,10 +317,5 @@ class FakeRobotTest {
         assertEquals(7, robot.batteryPercent())
         robot.drainBattery()
         assertEquals(100, robot.batteryPercent())
-    }
-
-    @Test
-    fun laserSeesTheWallAhead() {
-        assertTrue(get("/reeman/laser").startsWith("""{"coordinates":[[2.500,0.000]"""))
     }
 }
