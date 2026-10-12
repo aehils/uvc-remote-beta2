@@ -45,7 +45,7 @@ measures, on the map, how far the robot is from the pile's saved point (`chargin
 
 Docking is never tried from far away, since what the real routine does then is unknown.
 1.5 m is a guess (`DOCK_NEAR_M`): the routine's real range was never measured. It has the
-Tasks tab's own **DRIVE ENABLED** switch and the same rules as the drive buttons. STOP while
+same rules as the drive buttons. STOP while
 it is still measuring sends nothing. When it finishes, the log says what the robot reports
 (charging, or no pile found). That reading is normally stale, but the docking motion
 refreshes it. Docking speed is the firmware's, not the app's caps below.
@@ -54,8 +54,7 @@ refreshes it. Docking speed is the firmware's, not the app's caps below.
 page (STOP and the robot's readings stay on screen there). It lists the points saved on the
 robot's map (`/reeman/position`), except the charging pile, which has GO TO CHARGER. **GO**
 sends the robot there with `/cmd/nav_name`: the robot plans its own route and speed. It only
-drives there; it does not switch on the UV lamps. The page has its own **DRIVE ENABLED**
-switch (switched off when you leave the page) and the same rules as the drive buttons.
+drives there; it does not switch on the UV lamps. It has the same rules as the drive buttons.
 During a trip the app also reads `/reeman/global_plan` and `/reeman/pose` every ~1.5 s:
 - The robot can stop on its way (waiting for a person to pass), so being still only ends
   the trip once the robot reports no plan (`007`). Until then the buttons stay locked.
@@ -67,9 +66,8 @@ During a trip the app also reads `/reeman/global_plan` and `/reeman/pose` every 
 
 **Add point where the robot is** saves the robot's current spot, and the way it faces, as a
 new point: the app reads `/reeman/pose`, then sends `/cmd/position` (as the Web API says to)
-and reloads the list. A robot sent there later turns to face the same way. It needs no
-DRIVE ENABLED (the robot doesn't move), but the robot must be connected and standing still,
-with no step running. Names must be new: setting an existing name would move that point.
+and reloads the list. A robot sent there later turns to face the same way. The robot must be
+connected and standing still, with no step running. Names must be new: setting an existing name would move that point.
 Points are renamed or deleted in the robot's own app.
 
 This relies on the loaded map matching the building (the robot's map was replaced after
@@ -94,10 +92,9 @@ until it is still. Still to confirm on the real robot: that `/cmd/charge` type 1
 while the robot sits charging on the pile (STOP now sends it every time).
 
 Safety behaviour:
-- Drive buttons (and GO and GO TO CHARGER) only work when: connected, e-stop released, **DRIVE ENABLED** switched on, no step running, and the robot standing still.
+- Drive buttons (and GO and GO TO CHARGER) only work when: connected, e-stop released, no step running, and the robot standing still.
 - The **Ping** icon next to the address is the connection light: green when connected, orange when not.
 - One step at a time: buttons lock until the robot's measured speed has been ~0 for about a second.
-- Leaving the app (home button, screen off, switching apps) or changing tab switches Drive off.
 - STOP pulses with a red ring while a step is running.
 - Speeds are capped in code (`MAX_LINEAR` 0.3 m/s, `MAX_ANGULAR` 0.5 rad/s in `DriveController.kt`).
 - STOP is a hard stop. Use it for emergencies, not for routine stopping (steps end on their own).
@@ -118,8 +115,7 @@ app instead of the real one:
 - The DEMO menu's switch button is disabled (the pill still shows ON) while a step is running.
 - The emulator starts in demo mode until you choose a mode yourself, because the
   emulator shares the Mac's network and could otherwise reach the real robot.
-- You can't switch mode while a step is running, and switching always turns
-  **Drive enabled** off.
+- You can't switch mode while a step is running.
 
 The simulated robot mimics the real firmware: the same paths and JSON, the same
 error codes (`009`, `004`), ~200 ms command latency, and the measured acceleration
@@ -199,7 +195,7 @@ a task the robot started by itself.
 
 1. Robot off the charging dock, clear floor ~1 m on every side, you can reach the physical e-stop.
 2. Open the app → the Ping icon should be green, battery shown, grey **E** badge (e-stop released).
-3. Switch on **DRIVE ENABLED** → tap **Left 90°** → confirm it turns left and the buttons unlock after it stops.
+3. Tap **Left 90°** → confirm it turns left and the buttons unlock after it stops.
 4. Then Right 90°, Forward 0.5 m, Back 0.5 m, Turn 180°.
 5. Test STOP once mid-turn at the slow speed.
 
@@ -220,7 +216,7 @@ All under `app/src/main/java/com/expiation/reemanremote/`:
 - `RobotApi.kt`: HTTP calls to the robot (or to the simulator in demo mode)
 - `FakeRobot.kt`: the simulated robot used by demo mode
 - `RemoteViewModel.kt`: keeps the controller alive across screen recreation; saves the address and demo choice
-- `MainActivity.kt`: hosts the screen; leaving the app pauses polling and switches Drive off
+- `MainActivity.kt`: hosts the screen; leaving the app pauses polling
 - `ui/RemoteScreen.kt`: the Compose screen. It only draws `RemoteState` and forwards taps.
   Open it in Android Studio's Split/Design view to see the previews.
 - `ui/Theme.kt`: colours for light and dark themes, including the status colours

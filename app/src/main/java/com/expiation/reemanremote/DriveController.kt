@@ -104,7 +104,6 @@ data class RemoteState(
     val battery: Int?,
     val vx: Double,
     val vth: Double,
-    val armed: Boolean,
     val phase: StepPhase,
     val points: Points,
     val addingPoint: Boolean,
@@ -130,8 +129,8 @@ data class RemoteState(
     /** Saving the robot's spot as a point: connected, standing still, and the existing names known. */
     val canAddPoint: Boolean get() = connected && !busy && still && points is Points.Loaded && !addingPoint
 
-    /** The drive interlock: connected, e-stop known and released, armed, no step running, robot still. */
-    val canDrive: Boolean get() = estop == EStop.RELEASED && armed && !busy && still
+    /** The drive interlock: connected, e-stop known and released, no step running, robot still. */
+    val canDrive: Boolean get() = estop == EStop.RELEASED && !busy && still
 }
 
 // ---------------------------------------------------------------------- controller
@@ -166,7 +165,6 @@ class DriveController(
     private var chargeFlag: Int? = null
     private var vx = 0.0
     private var vth = 0.0
-    private var armed = false
     private var phase: StepPhase = StepPhase.Idle
     private var points: Points = Points.NotLoaded
     private var addingPoint = false
@@ -201,19 +199,11 @@ class DriveController(
         if (pollJob == null) pollJob = scope.launch { pollLoop() }
     }
 
-    /** Leaving the app stops polling and always disarms. A running step finishes by itself. */
+    /** Leaving the app stops polling. A running step finishes by itself. */
     fun pause() {
         pollJob?.cancel()
         pollJob = null
         chargerJob?.cancel()
-        setArmed(false)
-    }
-
-    fun setArmed(on: Boolean) {
-        if (armed == on) return
-        armed = on
-        log(if (on) "Drive enabled" else "Drive disabled")
-        publish()
     }
 
     /** Returns false (and changes nothing) if a step is running. */
@@ -225,7 +215,6 @@ class DriveController(
             publish()
             return false
         }
-        setArmed(false) // a mode change always disarms
         demo = on
         switchRobot()
         log(
@@ -430,9 +419,9 @@ class DriveController(
                 runCatching { JSONObject(r.body).let { Pose(it.getDouble("x"), it.getDouble("y"), 0.0) } }.getOrNull()
             }
             val d = if (pile != null && here != null) hypot(here.x - pile.x, here.y - pile.y) else null
-            // The robot may have been disarmed, moved or e-stopped while the app was asking.
+            // The robot may have moved or been e-stopped while the app was asking.
             if (!snapshot().canDrive) {
-                log("Go to charger: not sent (drive no longer enabled, or the robot is moving)")
+                log("Go to charger: not sent (e-stop pressed, or the robot is moving)")
                 publish()
                 return@launch
             }
@@ -510,8 +499,8 @@ class DriveController(
 
     /**
      * Saves the spot the robot is standing on as a new point (/cmd/position), as the API asks:
-     * read the pose first, then set the point with it. Doesn't move the robot, so it doesn't need
-     * Drive enabled, but the robot must be still so the pose (5 Hz) is where it really stands.
+     * read the pose first, then set the point with it. Doesn't move the robot, but the robot must
+     * be still so the pose (5 Hz) is where it really stands.
      * Refuses a name already in use, since setting it again would move that point.
      */
     fun addPointHere(name: String) {
@@ -877,7 +866,6 @@ class DriveController(
         battery = battery,
         vx = vx,
         vth = vth,
-        armed = armed,
         phase = phase,
         points = points,
         addingPoint = addingPoint,

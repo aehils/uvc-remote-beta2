@@ -27,7 +27,6 @@ class MainActivity : ComponentActivity() {
         val actions = RemoteActions(
             onDemoChange = vm::setDemo,
             onPing = vm::testConnection,
-            onArmChange = c::setArmed,
             onMove = c::drive,
             onStop = c::stop,
             onLoadPoints = c::loadPoints,
@@ -57,7 +56,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
-        // Safety: leaving the app always disarms. A step already running finishes by itself.
+        // Leaving the app stops polling. A step already running finishes by itself.
         vm.controller.pause()
     }
 }
