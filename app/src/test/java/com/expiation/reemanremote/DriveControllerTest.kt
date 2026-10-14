@@ -190,6 +190,77 @@ class DriveControllerTest {
         assertEquals(2, chargeFlag(c))
     }
 
+    /** Docked on the pile, and the app knows it (GO TO CHARGER has become UNDOCK). */
+    private fun TestScope.docked(): DriveController {
+        val c = nearThePile()
+        c.goToCharger()
+        waitFor(c, maxMs = 40_000) { it.docked && it.phase == StepPhase.Idle }
+        return c
+    }
+
+    @Test
+    fun undockEndsChargingThenPullsAway() = runTest {
+        val c = docked()
+        c.undock()
+        waitFor(c) { logged(c, "Undock: sending /cmd/move") }
+        val lines = c.state.value.log.reversed() // oldest first
+        val cancel = lines.indexOfFirst { "Undock: ending charging, sending /cmd/charge {\"type\":1" in it }
+        val move = lines.indexOfFirst { "Undock: sending /cmd/move {\"distance\":15,\"direction\":1" in it }
+        assertTrue(log(c), cancel in 0 until move)
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), logged(c, "Undock: done"))
+        assertEquals("15 cm off the pile", -2.00, robotX(c), 0.02)
+        assertFalse("the button is GO TO CHARGER again", c.state.value.docked)
+    }
+
+    @Test
+    fun dPadIsLockedUntilUndocked() = runTest {
+        val c = docked()
+        val s = c.state.value
+        assertFalse(s.canDriveByHand)
+        Move.entries.forEach { assertFalse(it.name, s.canHold(it)) }
+        c.hold(Move.FORWARD)
+        c.drive(Move.AROUND)
+        advanceTimeBy(2000)
+        assertEquals(StepPhase.Idle, c.state.value.phase)
+        assertEquals("still on the pile", -2.15, robotX(c), 0.02)
+
+        c.undock()
+        waitFor(c) { it.undocking }
+        assertFalse(c.state.value.canHold(Move.FORWARD))
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), c.state.value.canDriveByHand && c.state.value.canHold(Move.FORWARD))
+    }
+
+    @Test
+    fun goToWhileDockedUndocksFirst() = runTest {
+        val (c, points) = withPoints()
+        repeat(2) {
+            c.drive(Move.BACK)
+            waitFor(c) { it.phase == StepPhase.Idle && it.canDrive }
+        }
+        c.goToCharger()
+        waitFor(c, maxMs = 40_000) { it.docked && it.phase == StepPhase.Idle }
+        c.goTo(points[0])
+        waitFor(c) { logged(c, "Undock: done") }
+        val lines = c.state.value.log.reversed() // oldest first
+        val off = lines.indexOfFirst { "Undock: done" in it }
+        val go = lines.indexOfFirst { "Go to Bed 1: sending" in it }
+        assertTrue("the trip goes out once the robot is off the pile\n" + log(c), go > off)
+        waitFor(c, maxMs = 90_000) { logged(c, "Go to Bed 1: arrived") }
+    }
+
+    @Test
+    fun stopDuringUndockPauseNeverMoves() = runTest {
+        val c = docked()
+        c.undock()
+        waitFor(c) { logged(c, "charging ended, pulling away") }
+        c.stop()
+        advanceTimeBy(5000)
+        assertFalse(log(c), logged(c, "Undock: sending /cmd/move"))
+        assertEquals(-2.15, robotX(c), 0.02)
+    }
+
     @Test
     fun goToChargerNeedsTheInterlock() = runTest {
         val c = ready()

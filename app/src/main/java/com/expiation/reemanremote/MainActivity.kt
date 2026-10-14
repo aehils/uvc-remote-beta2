@@ -36,6 +36,7 @@ class MainActivity : ComponentActivity() {
             onGoTo = c::goTo,
             onAddPoint = c::addPointHere,
             onGoToCharger = c::goToCharger,
+            onUndock = c::undock,
             onStartDisinfection = c::startDisinfection,
             onStartDisinfectionNow = c::startDisinfectionNow,
             onStopDisinfection = c::stopDisinfection,
