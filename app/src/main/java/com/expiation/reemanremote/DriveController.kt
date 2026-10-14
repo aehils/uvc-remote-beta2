@@ -250,6 +250,12 @@ data class RemoteState(
     val pendingPoints: List<Waypoint> = emptyList(),
     /** Virtual walls drawn while mapping, saved the same way. */
     val pendingWalls: List<Wall> = emptyList(),
+    /**
+     * Charging on its pile, as far as the app can tell: GO TO CHARGER becomes UNDOCK. From
+     * chargeFlag, which can be stale, so it is dropped once the robot has been taken off the pile
+     * (see [DriveController.undock]).
+     */
+    val docked: Boolean = false,
 ) {
     val connected: Boolean get() = link is Link.Connected
     val estop: EStop? get() = (link as? Link.Connected)?.estop
@@ -264,6 +270,9 @@ data class RemoteState(
 
     /** The d-pad arrow being held down, if any. */
     val holding: Move? get() = (phase as? StepPhase.Holding)?.move
+
+    /** Leaving the pile (see [DriveController.undock]). */
+    val undocking: Boolean get() = running?.label == DriveController.UNDOCK_LABEL
 
     val still: Boolean get() = abs(vx) <= DriveController.MOVING_VX && abs(vth) <= DriveController.MOVING_VTH
 
@@ -282,11 +291,17 @@ data class RemoteState(
      */
     fun canHold(move: Move): Boolean {
         if (!move.holdable) return false
-        if (canDrive) return true
+        if (canDriveByHand) return true
         val p = phase
         return p is StepPhase.Stepping && p.step.held != null &&
             estop == EStop.RELEASED && uv == null && !lampsOffOwed
     }
+
+    /**
+     * The d-pad: the drive interlock, and off the charging pile. Docked, UNDOCK goes first, so
+     * the robot never pulls away with charging still on.
+     */
+    val canDriveByHand: Boolean get() = canDrive && !docked
 
     /** Starting UV disinfection takes the same interlock as a trip. */
     val canDisinfect: Boolean get() = canNavigate
@@ -348,6 +363,11 @@ class DriveController(
     private var version: String? = null
     private var battery: Int? = null
     private var chargeFlag: Int? = null
+    // Charging was ended (or the robot found far from its pile) since chargeFlag last changed, so
+    // its "docked" reading is old. A new reading, or a dock, trusts it again.
+    private var pileLeft = false
+    // GO pressed while docked: the trip goes out once the robot is off its pile (see undockThen).
+    private var goAfterUndock: Waypoint? = null
     private var vx = 0.0
     private var vth = 0.0
     private var phase: StepPhase = StepPhase.Idle
@@ -444,6 +464,7 @@ class DriveController(
         mapJob?.cancel()
         mapJob = null
         chargerJob?.cancel()
+        dropUndockPlan()
         (phase as? StepPhase.Holding)?.let { endHold(it, "${it.step.label}: app left, robot slowing to a stop") }
         endDisinfection("app left")
         publish()
@@ -517,6 +538,7 @@ class DriveController(
         pointsJob?.cancel()
         addJob?.cancel()
         chargerJob?.cancel()
+        dropUndockPlan()
         points = Points.NotLoaded // the other robot has its own map and points
         addingPoint = false
         pointMessage = null
@@ -529,6 +551,7 @@ class DriveController(
         version = null
         battery = null
         chargeFlag = null
+        pileLeft = false
         vx = 0.0
         vth = 0.0
         mapCommandJob?.cancel()
@@ -604,7 +627,11 @@ class DriveController(
             runCatching {
                 val o = JSONObject(b.body)
                 if (o.has("battery")) battery = o.getInt("battery")
-                if (o.has("chargeFlag")) chargeFlag = o.getInt("chargeFlag")
+                if (o.has("chargeFlag")) {
+                    val f = o.getInt("chargeFlag")
+                    if (f != chargeFlag) pileLeft = false
+                    chargeFlag = f
+                }
                 val l = link
                 if (o.has("emergencyButton") && l is Link.Connected) {
                     val e = if (o.getInt("emergencyButton") == 0) EStop.PRESSED else EStop.RELEASED
@@ -614,7 +641,8 @@ class DriveController(
                     link = Link.Connected(e)
                 }
                 // chargeFlag is stale on this firmware, so it is never shown as live state; only
-                // reported once a dock finishes, after motion has refreshed it (see dockReport).
+                // reported once a dock finishes, after motion has refreshed it (see dockReport),
+                // and used to offer UNDOCK, checked against the map when pressed (see undock).
             }
         }
 
@@ -640,7 +668,7 @@ class DriveController(
     // ------------------------------------------------------------------ commands
 
     fun drive(move: Move) {
-        if (!snapshot().canDrive) return
+        if (!snapshot().canDriveByHand) return
         val step = when (move) {
             Move.FORWARD, Move.BACK -> {
                 val forward = move == Move.FORWARD
@@ -879,7 +907,7 @@ class DriveController(
         publish()
         val a = api
         chargerJob = scope.launch {
-            val all = a.get(POINTS_PATH).takeIf { it.ok }?.let { r -> runCatching { parseWaypoints(r.body) }.getOrNull() }
+            val all = readWaypoints(a)
             val pilePoint = all?.firstOrNull { isPile(it) }
             val pile = pilePoint?.pose
             val here = readPose(a)
@@ -944,6 +972,91 @@ class DriveController(
         capMs = 15 * 60_000,
         stallHint = "Is the robot's own screen asking to confirm? Otherwise: already on the pile, or no route to it?",
         goal = Waypoint(pile, "charge", null),
+    )
+
+    /**
+     * UNDOCK (GO TO CHARGER while the robot is on its pile): leaves the pile the same clean way
+     * every time, rather than driving straight off it.
+     *  1. /cmd/charge type 1: ends charging (the serial SDK's dock:stop). GUESS: the same as
+     *     "stop charging" in the robot's ros-aging app, which clicks somewhere near the wheels.
+     *  2. a pause of [UNDOCK_SETTLE_MS] for the robot to let go of the pile.
+     *  3. a short planned step forward, [UNDOCK_CM] at [UNDOCK_SPEED], on the robot's own gentle
+     *     ramp. Docking reverses onto the pile, so forward is away from it.
+     * chargeFlag can be stale, so if the map puts the robot well away from its pile, nothing is
+     * sent and the button goes back to GO TO CHARGER.
+     *
+     * The d-pad is locked while docked (see [RemoteState.canDriveByHand]): driving by hand starts
+     * with this, never with a pull on the pile.
+     */
+    fun undock() = undockThen(null)
+
+    /** [undock], then GO to [goal] once the robot is off its pile: trips undock by themselves. */
+    private fun undockThen(goal: Waypoint?) {
+        val s = snapshot()
+        if (!s.docked || !s.canDrive || chargerJob?.isActive == true) return
+        goAfterUndock = goal
+        log("Undock: checking the robot is at its pile …" + (goal?.let { " (then Go to ${it.name})" } ?: ""))
+        publish()
+        val a = api
+        chargerJob = scope.launch {
+            val pilePoint = readWaypoints(a)?.firstOrNull { isPile(it) }
+            val pile = pilePoint?.pose
+            val here = readPose(a)
+            val d = if (pile != null && here != null) dist(here, pile) else null
+            if (d != null && d > DOCK_NEAR_M) {
+                pileLeft = true
+                log(fmt("Undock: not needed. The robot is %.1f m from its pile on the map, so it isn't docked", d))
+                carryOn()
+                publish()
+                return@launch
+            }
+            if (!snapshot().canDrive) {
+                log("Undock: not sent (e-stop pressed, or the robot is moving)")
+                dropUndockPlan()
+                publish()
+                return@launch
+            }
+            val cancel = chargeJson(1, pilePoint?.name ?: PILE_POINT)
+            send(undockStep()) { r ->
+                log("Undock: ending charging, sending $DOCK_PATH $cancel")
+                publish()
+                val c = r.post(DOCK_PATH, cancel)
+                val rejected = if (c.ok) robotError(c.body) else null
+                when {
+                    !c.ok || rejected != null -> {
+                        dropUndockPlan()
+                        if (!c.ok) "couldn't end charging (${c.error}), so it stayed on the pile"
+                        else "the robot refused to end charging ($rejected), so it stayed on the pile"
+                    }
+                    else -> {
+                        pileLeft = true
+                        log(fmt("Undock: charging ended, pulling away in %.1f s", UNDOCK_SETTLE_MS / 1000.0))
+                        publish()
+                        delay(UNDOCK_SETTLE_MS)
+                        null
+                    }
+                }
+            }
+        }
+    }
+
+    /** The trip GO asked for while docked, now the robot is off its pile. */
+    private fun carryOn() {
+        val goal = goAfterUndock ?: return
+        goAfterUndock = null
+        goTo(goal)
+    }
+
+    private fun dropUndockPlan() {
+        goAfterUndock = null
+    }
+
+    private fun undockStep() = Step(
+        UNDOCK_LABEL, "/cmd/move",
+        fmt("""{"distance":%d,"direction":1,"speed":%.2f}""", UNDOCK_CM, UNDOCK_SPEED),
+        isTurn = false,
+        estimateMs = UNDOCK_SETTLE_MS + (UNDOCK_CM / 100.0 / UNDOCK_SPEED * 1000).toLong() + RAMP_ALLOWANCE_MS,
+        stallHint = "Did charging end? Check the robot's own screen, and that nothing is in front of it.",
     )
 
     /** Reads the robot's saved points (/reeman/position) for the Tasks tab. Read-only: safe at any time. */
@@ -1138,7 +1251,9 @@ class DriveController(
      * the lock also holds while the robot still has a plan (see [trackStep]).
      */
     fun goTo(point: Waypoint) {
-        if (!snapshot().canNavigate) return
+        val s = snapshot()
+        if (!s.canNavigate) return
+        if (s.docked) return undockThen(point)
         planActive = null
         navPose = null
         send(
@@ -1154,7 +1269,12 @@ class DriveController(
         )
     }
 
-    private fun send(step: Step) {
+    /**
+     * Locks the step lock on [step], then sends it. [before], if given, runs first under the same
+     * lock (see [undock]); it returns null to go on, or what went wrong, which ends the step.
+     * STOP pressed meanwhile, or the robot already moving, means the step itself is not sent.
+     */
+    private fun send(step: Step, before: (suspend (RobotApi) -> String?)? = null) {
         // Lock before sending, so a double-tap can't send a second step.
         val t = now()
         stopGuard = null // a new command from the user: motion is expected now
@@ -1164,11 +1284,28 @@ class DriveController(
             navPose = null
         }
         phase = StepPhase.Stepping(step, Tracking(t + step.noMotionMs, t + step.capMs))
-        log("${step.label}: sending ${step.path} ${step.json}")
+        if (before == null) log("${step.label}: sending ${step.path} ${step.json}")
         publish()
 
         val a = api
         scope.launch {
+            if (before != null) {
+                val problem = before(a)
+                if (problem != null) {
+                    finishStep(step, "${step.label}: $problem")
+                    publish()
+                    return@launch
+                }
+                val p = phase
+                if (p !is StepPhase.Stepping || p.step !== step) return@launch
+                if (p.track.sawMotion) {
+                    log("${step.label}: the robot is already moving, so ${step.path} wasn't sent")
+                    publish()
+                    return@launch
+                }
+                log("${step.label}: sending ${step.path} ${step.json}")
+                publish()
+            }
             val r = a.post(step.path, step.json)
             val rejected = if (r.ok) robotError(r.body) else null
             when {
@@ -1207,7 +1344,8 @@ class DriveController(
             is StepPhase.Stepping -> StepPhase.Stopping(p.step, shorten(p.track))
             is StepPhase.Stopping -> p.copy(track = shorten(p.track))
         }
-        chargerJob?.cancel() // a GO TO CHARGER still deciding must not send after STOP
+        chargerJob?.cancel() // a GO TO CHARGER (or undock) still deciding must not send after STOP
+        dropUndockPlan()
         stopGuard = StopGuard(pressedAt = t, until = t + STOP_GUARD_MS, lastSent = t, resends = 0)
         runaway = false
         endDisinfection("STOP pressed")
@@ -1344,6 +1482,8 @@ class DriveController(
             val at = navPose
             if (at != null && goal.pose != null && dist(at, goal.pose) <= ARRIVED_M) atPoint = goal
         }
+        // Back on the pile: chargeFlag's "docked" counts again even if it never changed.
+        if (message != null && !stopping && step.path == DOCK_PATH && tr.sawMotion) pileLeft = false
         phase = when {
             message != null -> {
                 log(message)
@@ -1351,6 +1491,11 @@ class DriveController(
             }
             p is StepPhase.Stepping -> p.copy(track = tr)
             else -> (p as StepPhase.Stopping).copy(track = tr)
+        }
+
+        // Off the pile: a trip GO asked for while docked goes next. Not after STOP, a stall or a timeout.
+        if (message != null && step.label == UNDOCK_LABEL) {
+            if (!stopping && tr.sawMotion && t <= tr.hardCap) carryOn() else dropUndockPlan()
         }
 
         // A dock that found no pile (never moved, or reports chargeFlag 9): drive there instead.
@@ -2016,6 +2161,7 @@ class DriveController(
         walls = walls,
         pendingPoints = pendingPoints,
         pendingWalls = pendingWalls,
+        docked = chargeFlag == CHARGE_DOCKED && !pileLeft,
     )
 
     companion object {
@@ -2083,11 +2229,18 @@ class DriveController(
         private const val DOCK_CANCEL = """{"type":1,"point":"charging_pile"}"""
         /** /cmd/charge with the pile's point name on the map in use. */
         private fun chargeJson(type: Int, pile: String) = JSONObject().put("type", type).put("point", pile).toString()
+        private const val CHARGE_DOCKED = 2             // chargeFlag: charging on the pile
         private const val CHARGE_NOT_FOUND = 9          // chargeFlag: no pile found while docking
         // GO TO CHARGER docks straight away within this distance of the pile's point, else drives
         // there first. GUESS: the docking routine's real range was never measured; kept short.
         const val DOCK_NEAR_M = 1.5
         private const val AT_PILE_M = 0.3               // this close, the robot is already at the pile
+        // UNDOCK (see undock()). GUESS, all three: not yet tried on the real robot. Enough to clear
+        // the pile's contacts, slower than a d-pad step.
+        const val UNDOCK_CM = 15
+        const val UNDOCK_SPEED = 0.15                   // m/s
+        const val UNDOCK_SETTLE_MS = 1500L              // after ending charging, before moving
+        const val UNDOCK_LABEL = "Undock"
 
         // ---- After STOP ----
         const val STOP_GUARD_MS = 10_000L      // watch the robot this long after the last STOP sent
@@ -2273,6 +2426,10 @@ class DriveController(
             val o = JSONObject(body)
             Pose(o.getDouble("x"), o.getDouble("y"), o.optDouble("theta", 0.0))
         }.getOrNull()
+
+        /** Every saved point, the pile included, or null if they couldn't be read. */
+        private suspend fun readWaypoints(a: RobotApi): List<Waypoint>? =
+            a.get(POINTS_PATH).takeIf { it.ok }?.let { r -> runCatching { parseWaypoints(r.body) }.getOrNull() }
 
         private suspend fun readPose(a: RobotApi): Pose? = a.get("/reeman/pose").takeIf { it.ok }?.let { parsePose(it.body) }
 

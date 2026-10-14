@@ -40,6 +40,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -141,6 +142,7 @@ data class RemoteActions(
     val onGoTo: (Waypoint) -> Unit = {},
     val onAddPoint: (String) -> Unit = {},
     val onGoToCharger: () -> Unit = {},
+    val onUndock: () -> Unit = {},
     val onStartDisinfection: () -> Unit = {},
     val onStartDisinfectionNow: () -> Unit = {},
     val onStopDisinfection: () -> Unit = {},
@@ -852,11 +854,6 @@ private fun DriveCard(state: RemoteState, actions: RemoteActions) {
     Panel {
         BusyStatus(state)
         DrivePad(state, actions)
-        Text(
-            "Hold an arrow to drive; let go and it stops within ~10 cm. Tap for a small nudge (5 cm, or 5° turning).",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
@@ -881,7 +878,7 @@ internal fun BusyStatus(state: RemoteState) {
     }
 }
 
-private fun busyText(state: RemoteState) = when (state.phase) {
+private fun busyText(state: RemoteState) = if (state.undocking && state.phase is StepPhase.Stepping) "Undocking …" else when (state.phase) {
     is StepPhase.Stopping -> "Stopping: "
     is StepPhase.Holding -> "Driving: "
     else -> "Moving: "
@@ -939,6 +936,7 @@ internal fun DriveSheet(state: RemoteState, actions: RemoteActions, sheet: Drive
                     when {
                         state.busy -> busyText(state)
                         !state.connected -> "Not connected"
+                        state.docked -> "Docked"
                         state.estop == EStop.PRESSED -> "E-stop pressed"
                         state.uv != null || state.lampsOffOwed -> "Locked while the UV lamps may be on"
                         else -> ""
@@ -961,7 +959,7 @@ internal fun DriveSheet(state: RemoteState, actions: RemoteActions, sheet: Drive
 
 // ---------------------------------------------------------------------- tasks
 
-/** The Tasks tab: GO TO CHARGER, and a list of tasks, each opening its own page. */
+/** The Tasks tab: GO TO CHARGER (UNDOCK while docked), and a list of tasks, each opening its own page. */
 @Composable
 private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: () -> Unit, modifier: Modifier) {
     val goal = state.running?.goal
@@ -975,11 +973,8 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
     ) {
         AnimatedVisibility(state.busy) { Panel { BusyStatus(state) } }
         if (state.mapping) TasksNote("The robot is mapping. Trips and disinfection wait until the map is saved or discarded on the Map tab.")
-        ChargerButton(state.canNavigate, actions.onGoToCharger)
-        TasksNote(
-            "Docks straight away if the charging pile is close (within ${DriveController.DOCK_NEAR_M} m on the map); " +
-                "otherwise drives there on the robot's own route first, then docks."
-        )
+        if (state.docked) ChargerButton("UNDOCK", state.canDrive, actions.onUndock)
+        else ChargerButton("GO TO CHARGER", state.canNavigate, actions.onGoToCharger)
 
         SectionLabel("Tasks")
         val uv = state.uv
@@ -1109,10 +1104,6 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, drive: DriveS
                     points == Points.Loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
                     !state.connected -> TasksNote("Connect to the robot to see its points.")
                 }
-                TasksNote(
-                    "GO sends the robot to the point on its own: it plans its route and speed. " +
-                        "STOP cancels the trip. Once it arrives, START DISINFECTION switches on the UV lamps."
-                )
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 SectionLabel("Add a point")
@@ -1130,15 +1121,12 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, drive: DriveS
                         fontWeight = FontWeight.Bold,
                     )
                 }
-                TasksNote(
-                    state.pointMessage ?: when {
-                        !state.connected -> "Connect to the robot first."
-                        state.mapping -> "The robot is mapping. Save the map first."
-                        state.busy || !state.still -> "The robot must be standing still."
-                        else -> "Saves the spot the robot is on, and the way it faces, as a new point on its map. " +
-                            "Pull up DRIVE below to move it there first."
-                    }
-                )
+                (state.pointMessage ?: when {
+                    !state.connected -> "Connect to the robot first."
+                    state.mapping -> "The robot is mapping. Save the map first."
+                    state.busy || !state.still -> "The robot must be standing still."
+                    else -> null
+                })?.let { TasksNote(it) }
             }
         }
     }
@@ -1345,7 +1333,6 @@ private fun UvSettingsDialog(current: UvSettings, onDismiss: () -> Unit, onSave:
                         FilterChip(selected = delay == d, onClick = { delay = d }, label = { Text("$d s") })
                     }
                 }
-                TasksNote("Time to leave the room after you press START. START NOW skips it.")
             }
         },
         confirmButton = { TextButton(onClick = { onSave(UvSettings(minutes, delay)) }) { Text("Save") } },
@@ -1438,11 +1425,11 @@ internal fun TasksNote(text: String) {
     Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
-/** GO TO CHARGER. It moves the robot, so it is held to the drive pad's interlock. */
+/** GO TO CHARGER, or UNDOCK. Either moves the robot, so it is held to the drive pad's interlock. */
 @Composable
-private fun ChargerButton(enabled: Boolean, onDock: () -> Unit) {
+private fun ChargerButton(label: String, enabled: Boolean, onClick: () -> Unit) {
     FilledTonalButton(
-        onClick = onDock,
+        onClick = onClick,
         enabled = enabled,
         modifier = Modifier
             .fillMaxWidth()
@@ -1451,11 +1438,14 @@ private fun ChargerButton(enabled: Boolean, onDock: () -> Unit) {
     ) {
         Icon(painterResource(R.drawable.ic_dock), contentDescription = null, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(8.dp))
-        Text("GO TO CHARGER", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+        Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
     }
 }
 
-/** The arrows drive while held; Turn 180° in the middle is a fixed step. */
+/**
+ * The arrows drive while held; Turn 180° in the middle is a fixed step. On the charging pile the
+ * arrows are locked and the middle is UNDOCK instead: driving by hand starts with leaving the pile.
+ */
 @Composable
 private fun DrivePad(state: RemoteState, actions: RemoteActions, buttonHeight: Dp = 92.dp) {
     val gap = Arrangement.spacedBy(if (buttonHeight < 80.dp) 8.dp else 10.dp)
@@ -1467,7 +1457,8 @@ private fun DrivePad(state: RemoteState, actions: RemoteActions, buttonHeight: D
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
             HoldButton(Move.LEFT, "↺", state, actions, buttonHeight)
-            PadButton(Move.AROUND, "↩", state.canDrive, actions.onMove, buttonHeight, tonal = true)
+            if (state.docked || state.undocking) UndockPadButton(state, actions.onUndock, buttonHeight)
+            else PadButton(Move.AROUND, "↩", state.canDriveByHand, actions.onMove, buttonHeight, tonal = true)
             HoldButton(Move.RIGHT, "↻", state, actions, buttonHeight)
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
@@ -1546,6 +1537,30 @@ private fun RowScope.HoldButton(move: Move, glyph: String, state: RemoteState, a
     }
 }
 
+/** UNDOCK in the d-pad's middle while docked; a spinner while it runs. */
+@Composable
+private fun RowScope.UndockPadButton(state: RemoteState, onUndock: () -> Unit, height: Dp) {
+    Button(
+        onClick = onUndock,
+        enabled = state.docked && state.canDrive,
+        modifier = Modifier
+            .weight(1f)
+            .height(height),
+        shape = RoundedCornerShape(24.dp),
+        contentPadding = PaddingValues(4.dp),
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            if (state.undocking) {
+                CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.5.dp, color = RemoteTheme.status.warn)
+            } else {
+                Icon(painterResource(R.drawable.ic_dock), contentDescription = null, modifier = Modifier.size(22.dp))
+            }
+            Spacer(Modifier.height(4.dp))
+            Text("UNDOCK", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+        }
+    }
+}
+
 @Composable
 private fun RowScope.PadButton(move: Move, glyph: String, enabled: Boolean, onMove: (Move) -> Unit, height: Dp, tonal: Boolean = false) {
     Button(
@@ -1618,22 +1633,12 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
                 enabled = !demo.robotBusy,
                 shape = RoundedCornerShape(10.dp),
             ) { Text("Robot goes to charge by itself") }
-            Text(
-                "As if the robot started a trip to the pile on its own. STOP must end it for good, not just pause it.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
             OutlinedButton(
                 actions.onDemoPerson,
                 Modifier.fillMaxWidth(),
                 enabled = demo.navigating,
                 shape = RoundedCornerShape(10.dp),
             ) { Text("Person in the way") }
-            Text(
-                "During a trip to a point (Tasks tab): the robot waits 5 s, then carries on. The trip stays locked while it waits.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             SectionLabel("Robot")
@@ -1648,11 +1653,6 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
                 OutlinedButton(actions.onDemoBattery, Modifier.weight(1f), shape = RoundedCornerShape(10.dp)) { Text("Battery −10%") }
                 OutlinedButton(actions.onDemoReset, Modifier.weight(1f), shape = RoundedCornerShape(10.dp)) { Text("Reset robot") }
             }
-            Text(
-                "Battery wraps back to 100% below zero. Reset puts the robot back in the room centre and clears all faults.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }

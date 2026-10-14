@@ -744,7 +744,6 @@ internal fun MapsPage(
             if (state.mapping) {
                 Panel(color = RemoteTheme.status.goodContainer) {
                     Text("The robot is mapping", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    TasksNote("Save or discard the scan on the Map tab before switching maps or starting another.")
                     Button(onClick = onShowMap, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
                         Text("Open the map")
                     }
@@ -769,15 +768,12 @@ internal fun MapsPage(
                     ) { Text("Extend this map", fontWeight = FontWeight.Bold) }
                 }
             }
-            TasksNote(
-                state.mapStep ?: state.mapMessage ?: when {
-                    !state.connected -> "Connect to the robot first."
-                    state.busy || !state.still -> "The robot must be standing still to change maps."
-                    state.uv != null || state.lampsOffOwed -> "Switch the UV lamps off first."
-                    else -> "A new map starts from nothing; extending adds to the map in use. " +
-                        "Either way you drive the robot round with DRIVE, then save on the Map tab."
-                }
-            )
+            (state.mapStep ?: state.mapMessage ?: when {
+                !state.connected -> "Connect to the robot first."
+                state.busy || !state.still -> "The robot must be standing still to change maps."
+                state.uv != null || state.lampsOffOwed -> "Switch the UV lamps off first."
+                else -> null
+            })?.let { TasksNote(it) }
             state.trashed?.let { t ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
