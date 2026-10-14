@@ -1,7 +1,7 @@
 # Robot Control — beta 2
 
-Android remote for the Reeman Spark UVC robot: drive it, send it to saved points or the
-charger, and run UV disinfection. Kotlin, Jetpack Compose (Material 3), light and dark themes.
+Android remote for the Reeman Spark UVC robot: drive it, map its surroundings, send it to saved
+points or the charger, and run UV disinfection. Kotlin, Jetpack Compose (Material 3), light and dark themes.
 **Demo mode** runs the whole app against a simulated robot, so it can be developed and shown
 with the robot switched off.
 
@@ -11,20 +11,37 @@ with the robot switched off.
 
 ## What it does
 
-Four tabs: **Remote** (drive pad, robot address), **Tasks** (GO TO CHARGER, and **Disinfection
-Points**, which opens its own page), **Map** (placeholder) and **Activity** (the log). The
-robot's readings (e-stop badge, speed, battery) are pinned under the title on every page, and
-**STOP** is the red button in the centre of the nav bar (a full-width bar on the other pages).
+Four tabs: **Remote** (the drive pad), **Tasks** (GO TO CHARGER, and **Disinfection Points**,
+which opens its own page), **Map** (the robot on its map; the map's name opens the **Maps** page)
+and **Activity** (the log). The robot's readings (e-stop badge and speed; on the Map tab, the
+mode and the map in use) are pinned at the top of every page, the battery sits in the title bar, and **STOP** is the red button in the centre of the nav bar (a
+full-width bar on the other pages).
+
+**Driving from anywhere.** There is one drive pad. On the Remote tab it is the page; everywhere
+else (the other tabs, and the Points, Maps and DEMO pages) a **DRIVE** handle sits just above the
+nav bar or STOP: tap it, or flick it up, to pull the pad up under whatever is on screen, and tap
+or flick down to put it away. Only the handle takes that gesture, so a held arrow keeps its
+press. Closed, the handle still says what the robot is doing. Starting a map pulls it up by itself.
+
+**The robot pill** (top right, after the battery) shows which robot the app talks to (its address, or DEMO) and a
+connection light: green answering, orange not. Its menu holds the address and Ping, the DEMO
+switch and the firmware version.
 
 | Button | Command sent | Speed |
 |---|---|---|
 | Forward / Back (hold) | `/cmd/speed` `{"vx":…,"vth":0}` every 50 ms while held, ramping up and back down | 0.3 / 0.2 m/s |
 | Left / Right (hold) | `/cmd/speed` `{"vx":0,"vth":…}`, the same way | 0.4 rad/s |
+| An arrow, tapped | a zero `/cmd/speed`, then `/cmd/move` 5 cm or `/cmd/turn` 5° | 0.15 m/s / 0.3 rad/s |
 | Turn 180° (tap) | `/cmd/turn` `{"direction":1,"angle":180,"speed":0.40}` | 0.4 rad/s |
 | GO TO CHARGER | `/reeman/position` + `/reeman/pose`, then `/cmd/charge` type 0 (pile close) or type 2 (pile far) | the firmware's |
 | GO (a saved point) | `/cmd/nav_name` `{"point":"<name>"}` | the firmware's |
 | Add point where the robot is | `/reeman/pose`, then `/cmd/position` `{"name","type":"delivery","pose":{x,y,theta}}` | doesn't move |
 | START DISINFECTION | after the start delay, `/cmd/external_power_supply` `{"type":"24v","operation":"1"}`; at the end `"0"` | doesn't move |
+| New map / Extend this map | `/cmd/set_mode` `{"mode":1}` / `{"mode":3}` | doesn't move; you drive |
+| Save map | `/cmd/save_map`, `/cmd/set_mode` `{"mode":2}`, then `/cmd/rename_map` with the name | doesn't move |
+| Discard | `/cmd/set_mode` `{"mode":2}` | doesn't move |
+| Use this map / Rename / Delete / Undo | `/cmd/apply_map`, `/cmd/rename_map`, `/cmd/trash_map`, `/cmd/restore_map` | doesn't move |
+| Set position | `/cmd/reloc_pose` `{"x","y","theta"}` | doesn't move |
 | STOP | stop body, `/cmd/cancel_goal`, `/cmd/charge` type 1, the other stop body, UV lamps OFF | always active |
 
 ## Safety rules
@@ -41,18 +58,31 @@ robot's readings (e-stop badge, speed, battery) are pinned under the title on ev
   sends STOP again every 1.5 s if it moves. After 3 tries a red **USE THE PHYSICAL E-STOP**
   banner appears. STOP is a hard stop: for emergencies. Steps end on their own; to stop
   driving, let go of the arrow.
+- **Mapping is its own job.** While the robot scans a map, GO, GO TO CHARGER, START
+  DISINFECTION and adding points are locked (the Map tab's readings say "Mapping", and the Tasks
+  tab says why); the pad and STOP still work. Map commands never move the robot, but they need it connected,
+  standing still, the lamps off, and one at a time. The map in use can't be deleted.
 - **The log notes motion the app didn't ask for** ("Robot is moving, but not by this app"),
   and STOP pulses while anything moves.
 - **The physical e-stop is the real backstop.**
 
 ## Hold-to-drive
 
-The arrows drive while held. Let go and the robot eases to a stop in under a second (~20 cm
-from 0.3 m/s, ~10° turning).
+The arrows drive while held. Let go and the robot stops within about a third of a second
+(~10 cm from 0.3 m/s, ~7° turning). A **tap** (let go within 0.25 s) is a **nudge**: 5 cm, or 5°
+turning, every time.
 
-**How.** While an arrow is held the app sends `/cmd/speed` every 50 ms, stepping the speed
-0.02 m/s (0.04 rad/s) per command: a 0.4 m/s² (0.8 rad/s²) ramp, up on press and down on
-release. The robot applies each speed at once, with no ramp of its own, so the app's ramp is
+**How.** While an arrow is held the app sends `/cmd/speed` every 50 ms. From rest the first
+command is 0.05 m/s (0.1 rad/s): less barely turns the wheels and only delays the start. Then it
+speeds up 0.02 m/s (0.04 rad/s) per command, a 0.4 m/s² (0.8 rad/s²) ramp. Letting go slows it
+twice as fast (0.8 m/s², 1.6 rad/s²) and, once at 0.05 m/s (0.1 rad/s) or less, straight to 0.
+On 2026-10-14 the old, symmetric ramp made short presses run on well past where the finger
+lifted: every command reaches the wheels ~0.2 s late, so most of a short press's movement came
+after it.
+
+**Taps.** A tap's speed is still tiny when the finger lifts, so instead of a ramp it gets a
+zero, then a planned 5 cm move (or 5° turn) that the robot measures itself (`NUDGE_CM`,
+`NUDGE_DEG` in `DriveController.kt`). Pressing again during a nudge takes over at once. The robot applies each speed at once, with no ramp of its own, so the app's ramp is
 what keeps it smooth. The ramp only moves on when the robot accepts a command, so a slow request
 delays it rather than making a bigger step. STOP is the exception: an instant 0.
 
@@ -81,6 +111,9 @@ robot carries on ~1.2 s, then stops hard. The speed caps keep that small. Drive 
 robot's own routine (`/cmd/charge` type 0), falling back to driving there if that finds no
 pile. Further away, or if either position is unknown, it drives there and docks (type 2).
 Docking is never tried from far away. When it finishes, the log says what the robot reports.
+The pile is found by name or by its type (`charge`), and the command uses the name it has on the
+map in use, since the robot's own app may not call it `charging_pile`. On a map with no pile,
+nothing is sent and the log says to mark one.
 
 **Disinfection Points** lists the robot's saved points (except the pile). **GO** sends the robot
 to one with `/cmd/nav_name`; it plans its own route and speed. During a trip the app also reads
@@ -105,6 +138,47 @@ it; until then the banner reads **UV LAMPS MAY STILL BE ON**, nothing that moves
 works, and the app won't switch robot or mode. ON and OFF go out one at a time, in order, so an
 OFF can never overtake an ON.
 
+## Maps
+
+**The Map tab** shows the map the robot navigates on, its saved points, and the robot (a disc with
+a pointer the way it faces). Pinch to zoom, drag to look around, **Fit** to see it all. The
+robot's pose (`/reeman/pose`) is read twice a second and the image (`/reeman/map`, a PNG) when it
+changes, but only while the tab is open, and in a loop of their own, so the speed and e-stop reads
+never wait behind a big image. The robot's mode (`/reeman/get_mode`) and map in use
+(`/reeman/current_map`) are read every ~3 s whatever is on screen.
+
+The map shows the disinfection points (dots), the **charging pile** (a green square) and the
+**virtual walls** (red lines). The buttons under it are icons, to leave the map the room. The
+**add** button (pin, left) opens a menu:
+- **Disinfection point here**: saves where the robot stands, as on the Disinfection Points page.
+- **Charging pile here**: with the robot docked on its pile; saves `charging_pile` (type
+  `charge`), replacing any pile already marked. GO TO CHARGER drives to it.
+- **Virtual wall**: drag from one end to the other, then the tick. A line the robot won't cross.
+- **Remove a virtual wall**: tap it, then the bin.
+
+Walls are read from `/reeman/restrict_layer` and written with `/cmd/restrict_layer`, which
+replaces the whole set, so the app reads the walls, adds or removes one, and sends them all back.
+**Set position** (crosshair): tap where the robot really is, drag the way it faces, then the tick. While mapping they are **discard** (bin)
+and **save** (disk). What a map command did shows on the map for a few seconds (tap to hide),
+and stays in the Activity tab. The map's name in the readings opens the Maps page.
+  Needed after switching maps away from the pile (see below).
+
+**Mapping.** On the **Maps** page, **+ New map** starts a fresh scan and **Extend this map** adds
+to the map in use (the robot must know where it is on it first). Either way the app goes to the
+Map tab with the drive pad up: drive slowly round the whole area, come back past where you
+started so the map closes up, and watch the scan grow (refreshed every 2 s). The add menu works
+while mapping too (the charging pile, points, walls): the robot can't store them on a map that
+isn't saved yet, so they wait in the app (drawn dashed) and are written onto the map straight
+after it is saved, and only if the new map is the one in use. Discarding drops them. Then save
+(asks for a name) or discard. If the app is left mid-scan, the robot keeps mapping and the app
+shows it on return.
+
+**The Maps page** lists the robot's maps with a picture of each, the one in use first; an
+untitled map shows the start of its id, and the Activity log lists every map's name and id. Its menu:
+**Use this map** (the robot then assumes it is on that map's charging pile, as the API documents,
+so set its position unless it is), **Rename**, and **Delete** (to the robot's bin, kept 30 days;
+**Undo** brings it back). Points belong to a map, so switching maps switches points.
+
 ## Status: what is known, and what isn't
 
 Checked against the real robot (address `192.168.1.228`, firmware **RSNF1-v5.1.20_01** since an
@@ -117,6 +191,10 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
   `004` when idle.
 - Fixed steps (`/cmd/move`, `/cmd/turn`) drive it, with the firmware's own gentle ramps.
 - The stop bodies are a hard stop, but only pause a navigation.
+- **`/cmd/charge` brings up a confirmation on the robot's own screen** (2026-10-14): the robot's
+  tablet app asks before it acts, so GO TO CHARGER needs someone at the robot to press Confirm.
+  On that first try the robot still didn't move after Confirm; cause not yet known (see GO TO
+  CHARGER under Tasks: the pile's name on the map is the first suspect).
 - `/cmd/speed` is applied at once with no ramp, and the robot stops itself ~1.16 s after the
   last one (the jog test). Re-sent planned steps restart from rest (2026-10-08).
 - **UV lamps** (2026-10-12, v5.1.20): `{"type":"24v","operation":"1"}` lit them, `"0"` switched
@@ -132,12 +210,29 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
   own app, with the robot on the pile).
 - A trip to a point (`/cmd/nav_name`): what `/reeman/global_plan` returns on the way, and
   whether `/cmd/cancel_goal` ends it.
+- **All of Maps and mapping.** The robot couldn't be reached while it was built. The reads come
+  from the 2026-09-23 probe on v5.1.12: the documented `/robot/get_mode`, `/robot/map` and
+  `/robot/history_map` answered 404, and the same reads answered under `/reeman/` (mode 2; map
+  263 × 519 px at 0.05 m with an origin and a PNG data URL; maps with small pictures). The
+  commands (`/cmd/set_mode`, `save_map`, `apply_map`, `rename_map`, `trash_map`, `restore_map`,
+  `reloc_pose`) are as documented and have never been sent. See "First mapping test".
 
 **Guesses** (marked `GUESS` in the code)
 - How close counts as arrived (0.3 m), and how far away docking can find the pile (1.5 m).
 - That `/cmd/charge` type 1, sent on every STOP, does nothing while the robot sits on the pile.
 - Which point `type` the robot's own app uses (the app saves `delivery`).
 - Whether the e-stop alone cuts the lamps.
+- How the map image lines up with the robot's coordinates: the app assumes the ROS map_server
+  way (pixel row 0 is the top edge, `origin_x/y` the bottom-left corner). If the robot shows
+  mirrored or off its map, this is why.
+- That a newly saved map comes into use straight away. The app only names it if the map in use
+  changed, so it never renames the old map by mistake.
+- That a pose read while mapping is in the frame of the map that gets saved, so points and walls
+  marked during a scan land in the right place. Writing walls (`/cmd/restrict_layer`) has never
+  been tried; reading them has.
+- That `/cmd/reloc_pose` (not `reloc_absolute`) lets the robot refine a set position with its
+  laser; and what the robot does with trips, docking or a map switch while mapping (the app
+  doesn't send them).
 - In the simulator: turn acceleration, docking and navigation shapes, and what a command does
   with the e-stop pressed (see `FakeRobot.kt`).
 
@@ -157,6 +252,23 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
    the e-stop alone cuts the lamps).
 3. **START NOW** during the countdown: the lamps come on straight away.
 
+**First mapping test.** Robot off the pile, room clear, physical e-stop in reach.
+1. Read-only first, from a laptop on the robot's Wi-Fi (nothing here moves or changes the robot):
+
+   ```bash
+   for p in get_mode current_map history_map map pose; do echo "== $p"; curl -s -m 3 http://192.168.1.228/reeman/$p | cut -c1-300; echo; done
+   ```
+
+   Expect `{"mode":2}`, the map's name, a list of maps, and a map with `resolution`, `origin_x/y`
+   and `image_url`. If these answer 404 on v5.1.20, stop: the paths moved.
+2. Open the Map tab: the robot should sit on the map where it really is, pointing the right way,
+   with the points where they belong. Hold Forward: it should move forward on the map.
+3. Maps → **+ New map**: the green MAPPING banner, the pad up. Drive a small loop; the scan
+   should grow every 2 s. Note whether walls line up as you go.
+4. **Save map** as "Test 1". The log should say "Map saved as Test 1"; check the robot's own app
+   shows it too. Then **Use this map** to go back to the old one, with the robot on its pile.
+5. Try **Set position** once with the robot off the pile, and **Delete** then **Undo** on "Test 1".
+
 Copy anything odd from the **Activity** tab (long-press to select).
 
 ## Demo mode
@@ -174,6 +286,10 @@ a trip. It sits in a 5 m × 4 m room with a box obstacle, three saved points and
 2.15 m behind the start (back up ~0.7 m to be within docking range). Trips drive straight lines
 and stop short at walls; it doesn't plan around obstacles.
 
+It has two maps, "Demo room" (with the points) and "Old scan" (no points), both the same fixed
+picture of the room: enough to check the map screens. Map commands are accepted, but mapping
+isn't simulated (the picture doesn't grow, and Set position changes nothing).
+
 The **DEMO controls** page (sliders button in the DEMO menu) simulates events that are hard to
 set up on the real robot:
 
@@ -185,7 +301,7 @@ set up on the real robot:
 | Robot goes to charge by itself | "moving, but not by this app"; STOP ends the trip for good |
 | Person in the way (during a trip) | robot waits 5 s then carries on; the trip stays locked |
 | Battery −10% | battery figure amber at 20%, red at 10% |
-| Reset robot | back to the room centre, faults cleared, added points removed |
+| Reset robot | back to the room centre, faults cleared, added points and maps removed |
 
 ## Build and install
 
@@ -202,7 +318,8 @@ JAVA_HOME=~/Library/Java/JavaVirtualMachines/jbr-21.0.11/Contents/Home ./gradlew
 
 The unit tests run in virtual time against the simulated robot and cover the simulator and the
 drive rules end to end: interlocks, the step lock, STOP, e-stop, Wi-Fi loss, hold-to-drive
-(the speed only changes at the ramp's rate), docking, trips, adding points and UV runs.
+(the speed only changes at the ramp's rate), docking, trips, adding points, UV runs, and maps
+(mapping locks trips but not the pad, saving names the new map, switching maps).
 
 ## Network
 
@@ -218,15 +335,17 @@ drive rules end to end: interlocks, the step lock, STOP, e-stop, Wi-Fi loss, hol
 Under `app/src/main/java/com/expiation/reemanremote/`:
 
 - `DriveController.kt`: **every rule lives here**: polling, interlocks, the step lock,
-  hold-to-drive, STOP, tasks, UV runs, demo switching. Plain Kotlin (no Android), with the state
+  hold-to-drive, STOP, tasks, UV runs, maps and mapping, demo switching. Plain Kotlin (no Android), with the state
   as explicit types: `Link`, `StepPhase` (Idle / Holding / Stepping / Stopping) and `Uv`
   (Countdown / Starting / On).
 - `RobotApi.kt`: HTTP to the robot, or to the simulator in demo mode.
-- `FakeRobot.kt`: the simulated robot.
+- `FakeRobot.kt`: the simulated robot (DEMO mode).
 - `RemoteViewModel.kt`: keeps the controller across screen recreation; saves the address, demo
   choice and UV settings.
 - `MainActivity.kt`: hosts the screen; leaving the app pauses polling and switches the lamps off.
 - `ui/RemoteScreen.kt`: the Compose screen. It only draws `RemoteState` and forwards taps.
+  The tabs, the drive sheet, the robot pill, the Tasks and Points pages.
+- `ui/MapScreen.kt`: the Map tab (map view, set position, save/discard) and the Maps page.
 - `ui/Theme.kt`: colours, including the status colours.
 
 Tests are in `app/src/test/java/com/expiation/reemanremote/`.

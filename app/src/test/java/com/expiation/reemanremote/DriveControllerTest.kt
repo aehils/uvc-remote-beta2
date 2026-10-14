@@ -184,7 +184,7 @@ class DriveControllerTest {
         waitFor(c, maxMs = 40_000) { logged(c, "charging at the pile") && it.phase == StepPhase.Idle }
         c.goToCharger() // again, already docked
         waitFor(c, maxMs = 20_000) { logged(c, "no motion seen") }
-        assertTrue(log(c), logged(c, "Already docked, or no charging pile within range?"))
+        assertTrue(log(c), logged(c, "already docked, or no charging pile within range?"))
         advanceTimeBy(5000)
         assertFalse(log(c), logged(c, "driving to the pile first"))
         assertEquals(2, chargeFlag(c))
@@ -702,22 +702,38 @@ class DriveControllerTest {
         assertTrue(log(c), logged(c, "Forward (held): done"))
         assertTrue("stopped within ~1.1 s: $speeds", speeds.drop(released + 11).all { abs(it) < 0.02 })
         val ranOn = robotX(c) - x
-        assertTrue("ran on $ranOn m", ranOn in 0.12..0.25)
-        // Never a jump: the speed only ever changed at the app's ramp (0.4 m/s²), both ways.
-        assertTrue("braked at ${hardest(speeds)} m/s²", hardest(speeds) < 0.5)
-        assertTrue("sped up at ${hardest(speeds, up = true)} m/s²", hardest(speeds, up = true) < 0.5)
+        assertTrue("ran on $ranOn m", ranOn in 0.06..0.15)
+        // Never a jump: the speed only changed at the app's ramps (0.4 m/s² up from a 0.05 m/s
+        // start, 0.8 m/s² down), never a bare stop from speed.
+        assertTrue("braked at ${hardest(speeds)} m/s²", hardest(speeds) < 1.1)
+        assertTrue("sped up at ${hardest(speeds, up = true)} m/s²", hardest(speeds, up = true) < 0.7)
         assertFalse("letting go is not a STOP", logged(c, "STOP"))
         assertTrue(c.state.value.canDrive)
     }
 
     @Test
-    fun aTapBarelyMovesTheRobot() = runTest {
+    fun aTapNudgesTheRobotAFixedShortWay() = runTest {
         val c = ready()
         c.hold(Move.FORWARD)
         advanceTimeBy(80)
         c.release(Move.FORWARD)
+        assertTrue(log(c), logged(c, "Forward: tapped, nudging 5 cm"))
         waitFor(c) { it.phase == StepPhase.Idle }
-        assertTrue("moved ${robotX(c)} m", robotX(c) < 0.03)
+        assertTrue(log(c), logged(c, "Forward nudge: sending /cmd/move"))
+        assertEquals("moved ${robotX(c)} m", 0.05, robotX(c), 0.02)
+        assertFalse(logged(c, "STOP"))
+
+        // Tapping again during a nudge takes over at once.
+        c.hold(Move.LEFT)
+        advanceTimeBy(80)
+        c.release(Move.LEFT)
+        advanceTimeBy(300)
+        assertTrue(c.state.value.canHold(Move.LEFT))
+        c.hold(Move.LEFT)
+        advanceTimeBy(80)
+        c.release(Move.LEFT)
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertEquals(2, c.state.value.log.count { "Left nudge: sending" in it })
     }
 
     @Test
@@ -832,7 +848,7 @@ class DriveControllerTest {
         c.hold(Move.FORWARD)
         keepHolding(c, Move.FORWARD, 2000)
         c.release(Move.FORWARD)
-        advanceTimeBy(300)
+        advanceTimeBy(100)
         assertTrue(c.state.value.canHold(Move.FORWARD))
         c.hold(Move.FORWARD)
         assertTrue(log(c), logged(c, "pressed while slowing"))
@@ -851,7 +867,7 @@ class DriveControllerTest {
         c.hold(Move.BACK)
         speeds += keepHolding(c, Move.BACK, 2500)
         assertEquals(-DriveController.BACKWARD_SPEED, speeds.last(), 0.02)
-        assertTrue("braked at ${hardest(speeds)} m/s²", hardest(speeds) < 0.5)
+        assertTrue("braked at ${hardest(speeds)} m/s²", hardest(speeds) < 1.1)
         c.release(Move.BACK)
     }
 
@@ -871,7 +887,7 @@ class DriveControllerTest {
         c.hold(Move.FORWARD)
         keepHolding(c, Move.FORWARD, 1000)
         c.release(Move.FORWARD)
-        advanceTimeBy(1200) // the speed has ramped down; the lock waits for stillness
+        advanceTimeBy(500) // the speed has ramped down; the lock waits for stillness
         // A drive command reaching the robot late, say: it runs on.
         c.demoRobot.handle("POST", "/cmd/move", """{"distance":300,"direction":1,"speed":0.30}""")
         waitFor(c) { it.phase is StepPhase.Stopping }
@@ -879,6 +895,248 @@ class DriveControllerTest {
         assertTrue(log(c), logged(c, "STOP sent by the app"))
         waitFor(c) { it.phase == StepPhase.Idle }
         assertTrue("stopped short of 3 m: ${robotX(c)}", robotX(c) < 2.0)
+    }
+
+    // ------------------------------------------------------------------ maps
+
+    /** Ready to drive, with the map on screen and read. */
+    private fun TestScope.mapReady(): DriveController {
+        val c = ready()
+        c.setMapVisible(true)
+        waitFor(c) { it.mode == RobotMode.NAVIGATION && it.currentMap != null && it.mapImage != null && it.robotPose != null }
+        return c
+    }
+
+    private fun TestScope.loadedMaps(c: DriveController): List<SavedMap> {
+        c.loadMaps()
+        waitFor(c) { it.maps is Maps.Loaded }
+        return (c.state.value.maps as Maps.Loaded).list
+    }
+
+    private fun TestScope.mapCommandDone(c: DriveController) = waitFor(c) { it.mapStep == null }
+
+    @Test
+    fun readsTheModeTheMapInUseItsImageAndThePose() = runTest {
+        val c = mapReady()
+        val s = c.state.value
+        assertEquals("Demo room", s.currentMap!!.label)
+        assertTrue(s.mapImage!!.placeable)
+        assertEquals(0.0, s.robotPose!!.x, 0.05)
+        assertFalse(s.mapping)
+        assertTrue(s.canNavigate)
+    }
+
+    @Test
+    fun mappingBlocksTripsAndDisinfectionButNotTheDPad() = runTest {
+        val (c, points) = withPoints()
+        c.startMapping(extend = false)
+        assertEquals("Starting a new map …", c.state.value.mapStep)
+        mapCommandDone(c)
+        val s = c.state.value
+        assertTrue(log(c), s.mapping)
+        assertFalse(s.canNavigate)
+        assertFalse(s.canDisinfect)
+        assertFalse(s.canAddPoint)
+        c.goTo(points[0])
+        c.goToCharger()
+        c.startDisinfection()
+        assertEquals(StepPhase.Idle, c.state.value.phase)
+        assertEquals(null, c.state.value.uv)
+
+        assertTrue(c.state.value.canHold(Move.FORWARD))
+        c.hold(Move.FORWARD)
+        keepHolding(c, Move.FORWARD, 1500)
+        c.release(Move.FORWARD)
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue("drove while mapping: ${robotX(c)}", robotX(c) > 0.1)
+    }
+
+    @Test
+    fun savingANewMapNamesItAndPutsItInUse() = runTest {
+        val c = mapReady()
+        val before = c.state.value.currentMap!!.id
+        c.startMapping(extend = false)
+        mapCommandDone(c)
+        waitFor(c) { it.mapImage != null }
+        c.saveMap("  Ward 3 ")
+        mapCommandDone(c)
+        val s = c.state.value
+        assertFalse(log(c), s.mapping)
+        assertEquals("Ward 3", s.currentMap!!.alias)
+        assertTrue(s.currentMap!!.id != before)
+        assertEquals("the new map's own points are read next", Points.NotLoaded, s.points)
+        assertTrue(log(c), logged(c, "Map saved as Ward 3"))
+        assertEquals(listOf("Demo room", "Old scan", "Ward 3"), loadedMaps(c).map { it.label })
+    }
+
+    @Test
+    fun discardingAScanKeepsTheOldMap() = runTest {
+        val c = mapReady()
+        val before = c.state.value.currentMap
+        c.startMapping(extend = true)
+        mapCommandDone(c)
+        assertEquals(RobotMode.EXTENDING, c.state.value.mode)
+        c.discardMapping()
+        mapCommandDone(c)
+        assertEquals(RobotMode.NAVIGATION, c.state.value.mode)
+        assertEquals(before, c.state.value.currentMap)
+        assertEquals(2, loadedMaps(c).size)
+        assertTrue(log(c), logged(c, "Demo room is as it was"))
+    }
+
+    @Test
+    fun switchingMapsReadsItsPoints() = runTest {
+        val (c, _) = withPoints()
+        val (_, old) = loadedMaps(c)
+        c.useMap(old)
+        mapCommandDone(c)
+        assertEquals(old.id, c.state.value.currentMap!!.id)
+        assertEquals(Points.NotLoaded, c.state.value.points)
+        assertTrue(log(c), logged(c, "assumes it's on its charging pile"))
+        c.loadPoints()
+        waitFor(c) { it.points is Points.Loaded }
+        assertEquals(emptyList<Waypoint>(), (c.state.value.points as Points.Loaded).list)
+    }
+
+    @Test
+    fun mapCommandsWaitForAStillRobotAndNeverDeleteTheMapInUse() = runTest {
+        val c = mapReady()
+        c.drive(Move.FORWARD)
+        c.startMapping(extend = false)
+        assertEquals("Wait for the robot to stand still.", c.state.value.mapMessage)
+        assertFalse(c.state.value.mapping)
+        waitFor(c) { it.phase == StepPhase.Idle }
+
+        val (room, old) = loadedMaps(c)
+        c.deleteMap(room)
+        assertEquals("Switch to another map before deleting Demo room.", c.state.value.mapMessage)
+        c.deleteMap(old)
+        mapCommandDone(c)
+        assertEquals(old, c.state.value.trashed)
+        assertEquals(listOf(room), (c.state.value.maps as Maps.Loaded).list)
+        c.restoreMap()
+        mapCommandDone(c)
+        assertEquals(null, c.state.value.trashed)
+        assertEquals(2, loadedMaps(c).size)
+
+        c.renameMap(old, "Ward 3")
+        mapCommandDone(c)
+        assertEquals("Ward 3", (c.state.value.maps as Maps.Loaded).list.single { it.id == old.id }.alias)
+    }
+
+    @Test
+    fun aRobotAlreadyMappingShowsAsMapping() = runTest {
+        val c = controller()
+        c.demoRobot.handle("POST", "/cmd/set_mode", """{"mode":1}""")
+        c.resume()
+        advanceTimeBy(4000)
+        assertTrue(log(c), c.state.value.mapping)
+        assertTrue(logged(c, "The robot is in mapping mode"))
+        assertFalse(c.state.value.canNavigate)
+    }
+
+    @Test
+    fun switchingToDemoForgetsTheOtherRobotsMaps() = runTest {
+        val c = mapReady()
+        loadedMaps(c)
+        c.setDemo(false)
+        val s = c.state.value
+        assertEquals(null, s.mode)
+        assertEquals(null, s.currentMap)
+        assertEquals(null, s.mapImage)
+        assertEquals(Maps.NotLoaded, s.maps)
+    }
+
+    @Test
+    fun theChargingPileIsKeptApartFromTheDisinfectionPoints() = runTest {
+        val (c, points) = withPoints()
+        val loaded = c.state.value.points as Points.Loaded
+        assertTrue(points.none { it.name == "charging_pile" })
+        assertEquals("charging_pile", loaded.pile!!.name)
+        assertEquals(emptyList<Wall>(), c.state.value.walls)
+    }
+
+    @Test
+    fun markingTheChargingPileHereMovesIt() = runTest {
+        val (c, _) = withPoints()
+        c.drive(Move.FORWARD)
+        waitFor(c) { it.phase == StepPhase.Idle }
+        c.addChargingPileHere()
+        waitFor(c) { !it.addingPoint && (it.points as? Points.Loaded)?.pile?.pose?.x?.let { x -> x > 0.4 } == true }
+        assertTrue(log(c), logged(c, "Added the charging pile"))
+    }
+
+    @Test
+    fun virtualWallsAreAddedAndRemoved() = runTest {
+        val (c, _) = withPoints()
+        val wall = Wall(1.0, -1.0, 1.0, 1.0)
+        c.addWall(Wall(0.0, 0.0, 0.05, 0.0))
+        assertEquals("Draw a longer wall.", c.state.value.mapMessage)
+        c.addWall(wall)
+        mapCommandDone(c)
+        assertEquals(listOf(wall), c.state.value.walls)
+        c.loadPoints()
+        waitFor(c) { it.points is Points.Loaded }
+        assertEquals("read back from the robot", listOf(wall), c.state.value.walls)
+        c.removeWall(wall)
+        mapCommandDone(c)
+        assertEquals(emptyList<Wall>(), c.state.value.walls)
+    }
+
+    @Test
+    fun whatIsMarkedWhileMappingIsSavedOntoTheNewMap() = runTest {
+        val c = mapReady()
+        c.startMapping(extend = false)
+        mapCommandDone(c)
+        c.addPointHere("Bed 9")
+        waitFor(c) { !it.addingPoint }
+        c.addChargingPileHere()
+        waitFor(c) { !it.addingPoint }
+        c.addWall(Wall(1.0, -1.0, 1.0, 1.0))
+        val s = c.state.value
+        assertEquals(listOf("Bed 9", "charging_pile"), s.pendingPoints.map { it.name })
+        assertEquals(1, s.pendingWalls.size)
+
+        c.saveMap("Ward 3")
+        mapCommandDone(c)
+        assertTrue(log(c), logged(c, "3 marked spot(s) saved on it"))
+        assertEquals(emptyList<Waypoint>(), c.state.value.pendingPoints)
+        c.loadPoints()
+        waitFor(c) { it.points is Points.Loaded }
+        val loaded = c.state.value.points as Points.Loaded
+        assertEquals(listOf("Bed 9"), loaded.list.map { it.name })
+        assertTrue(loaded.pile != null)
+        assertEquals(1, c.state.value.walls!!.size)
+    }
+
+    @Test
+    fun discardingDropsWhatWasMarked() = runTest {
+        val c = mapReady()
+        c.startMapping(extend = false)
+        mapCommandDone(c)
+        c.addPointHere("Bed 9")
+        waitFor(c) { !it.addingPoint }
+        c.discardMapping()
+        mapCommandDone(c)
+        assertEquals(emptyList<Waypoint>(), c.state.value.pendingPoints)
+    }
+
+    @Test
+    fun goToChargerUsesThePilesOwnNameAndRefusesAMapWithoutOne() = runTest {
+        val (c, _) = withPoints()
+        val (_, old) = loadedMaps(c)
+        c.useMap(old) // no points at all
+        mapCommandDone(c)
+        c.goToCharger()
+        waitFor(c) { st -> st.log.any { "not sent" in it } }
+        assertEquals(StepPhase.Idle, c.state.value.phase)
+        assertTrue(log(c), logged(c, "has no charging pile"))
+
+        // A pile saved by the robot's own app under its own name.
+        c.demoRobot.handle("POST", "/cmd/position", """{"name":"Dock A","type":"charge","pose":{"x":-2.15,"y":0,"theta":0}}""")
+        c.goToCharger()
+        waitFor(c) { it.phase != StepPhase.Idle }
+        assertTrue(log(c), logged(c, """/cmd/charge {"type":2,"point":"Dock A"}"""))
     }
 
     @Test

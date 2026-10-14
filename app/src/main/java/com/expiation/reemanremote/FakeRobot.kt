@@ -1,7 +1,10 @@
 package com.expiation.reemanremote
 
+import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.Random
+import java.util.zip.CRC32
+import java.util.zip.Deflater
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.ceil
@@ -25,6 +28,8 @@ import kotlin.math.sqrt
  * Velocity streaming (/cmd/speed) follows the jog test (section 6): ~200 ms latency, then the
  * wheels take the new speed at once (no ramp), and a watchdog hard-stops the robot ~1.16 s
  * after the last command.
+ * Maps are just enough to show the map screens in DEMO: one fixed picture of the room, a list of
+ * maps, and map commands that are accepted. Nothing about mapping itself is simulated.
  * Anything marked GUESS was never measured on the real robot.
  *
  * No org.json, so it runs on a plain JVM.
@@ -90,7 +95,16 @@ class FakeRobot(
     private val legs = ArrayDeque<(Long) -> Motion>()
     private var navGoal: SavedPoint? = null // set while navigating
     private var navThen: ((Long) -> Motion)? = null // what follows the navigation: docking, for charge type 2
-    private val points = DEFAULT_POINTS.toMutableList() // saved on the robot's map
+    // The maps saved on the robot, the one in use, and its bin. Points belong to a map.
+    private class SimMap(val id: String, var alias: String, val grid: ByteArray, val points: MutableList<SavedPoint>) {
+        var walls = """{"waypoints":[]}""" // kept as sent: DEMO only echoes it back
+    }
+    private val maps = mutableListOf<SimMap>()
+    private val bin = mutableListOf<SimMap>()
+    private lateinit var current: SimMap
+    private val points: MutableList<SavedPoint> get() = current.points // saved on the map in use
+    private var mode = MODE_NAVIGATION
+    private var mapCount = 0
     private var chargeFlag = CHARGE_NONE
     private var battery = 0.0
     private var estopPressed = false
@@ -164,6 +178,14 @@ class FakeRobot(
         // The API's documented shape (points ~30 cm apart); here just where the robot is.
         "/reeman/global_plan" -> if (navGoal != null) fmt("""{"coordinates":[[%.3f,%.3f]]}""", x, y)
         else error("007", "Can't get plan data")
+        "/reeman/get_mode" -> """{"mode":$mode}"""
+        "/reeman/restrict_layer" -> current.walls
+        "/reeman/current_map" -> """{"name":"${current.id}","alias":"${current.alias}"}"""
+        "/reeman/map" -> mapJson(current.grid, GRID_RES)
+        // Each map with a small image of it; the real robot sends these with resolution 0.
+        "/reeman/history_map" -> maps.joinToString(",", """{"maps":[""", "]}") {
+            """{"name":"${it.id}","alias":"${it.alias}","map":${mapJson(it.grid, 0.0)}}"""
+        }
         else -> null
     }
 
@@ -179,7 +201,75 @@ class FakeRobot(
             if (navGoal != null) halt()
             OK
         }
+        "/cmd/set_mode" -> setMode(json)
+        "/cmd/save_map" -> saveMap()
+        "/cmd/apply_map" -> applyMap(json)
+        "/cmd/rename_map" -> {
+            val m = maps.firstOrNull { it.id == str(json, "name") }
+            val alias = str(json, "alias")
+            if (m == null || alias == null) error("004", "Internal service error") else {
+                m.alias = alias
+                OK
+            }
+        }
+        "/cmd/trash_map" -> {
+            val m = maps.firstOrNull { it.id == str(json, "name") }
+            when {
+                m == null -> error("004", "Internal service error")
+                m === current -> error("004", "The current map cannot be moved to the trash") // as documented; GUESS: the reply
+                else -> {
+                    maps.remove(m)
+                    bin.add(m)
+                    OK
+                }
+            }
+        }
+        "/cmd/restore_map" -> {
+            val m = bin.firstOrNull { it.id == str(json, "name") }
+            if (m == null) error("004", "Internal service error") else {
+                bin.remove(m)
+                maps.add(m)
+                OK
+            }
+        }
+        "/cmd/restrict_layer" -> {
+            current.walls = json
+            OK
+        }
+        "/cmd/reloc_pose" -> if (mode == MODE_NAVIGATION) OK else error("004", "Internal service error") // accepted, nothing moves
         else -> null
+    }
+
+    // ------------------------------------------------------------------ maps
+
+    /** {"mode":1} new map, {"mode":3} extend the map in use, {"mode":2} back to navigating. */
+    private fun setMode(json: String): String {
+        val m = num(json, "mode")?.toInt()
+        if (m != MODE_MAPPING && m != MODE_NAVIGATION && m != MODE_EXTENDING) return error("004", "Internal service error")
+        mode = m
+        return OK
+    }
+
+    /** A new map is saved as a copy of the room, with no name or points, and comes into use. */
+    private fun saveMap(): String {
+        if (mode == MODE_NAVIGATION) return error("004", "Internal service error")
+        if (mode == MODE_MAPPING) {
+            current = SimMap(newMapId(), "", roomGrid(), mutableListOf())
+            maps.add(current)
+        }
+        return OK
+    }
+
+    private fun applyMap(json: String): String {
+        val m = maps.firstOrNull { it.id == str(json, "name") } ?: return error("004", "Internal service error")
+        if (mode != MODE_NAVIGATION) return error("004", "Internal service error")
+        current = m
+        return OK
+    }
+
+    private fun newMapId(): String {
+        mapCount++
+        return String.format(Locale.US, "%032x", 0x5eed0000L + mapCount)
     }
 
     private fun move(json: String, now: Long): String {
@@ -272,6 +362,7 @@ class FakeRobot(
                 OK
             }
             2.0 -> {
+                if (mode != MODE_NAVIGATION) return error("004", "Internal service error") // GUESS, as for trips
                 goCharge(now)
                 OK
             }
@@ -305,6 +396,7 @@ class FakeRobot(
      * them, and a wall or the box in the way stops it short (and ends the navigation).
      */
     private fun navName(json: String, now: Long): String {
+        if (mode != MODE_NAVIGATION) return error("004", "Internal service error") // GUESS: no trips while mapping
         val goal = points.firstOrNull { it.name == str(json, "point") }
             ?: return error("004", "Internal service error") // GUESS: the real reply to an unknown point
         if (startLegs(*navLegs(goal), now = now)) navGoal = goal
@@ -541,8 +633,13 @@ class FakeRobot(
         jogQueue.clear()
         navGoal = null
         navThen = null
-        points.clear()
-        points.addAll(DEFAULT_POINTS)
+        maps.clear()
+        bin.clear()
+        mapCount = 0
+        current = SimMap(newMapId(), "Demo room", roomGrid(), DEFAULT_POINTS.toMutableList())
+        maps.add(current)
+        maps.add(SimMap(newMapId(), "Old scan", roomGrid(), mutableListOf())) // something to switch to
+        mode = MODE_NAVIGATION
         chargeFlag = CHARGE_NONE
         battery = 87.0
         estopPressed = false
@@ -605,6 +702,97 @@ class FakeRobot(
             SavedPoint("Sink area", "delivery", -1.4, -1.3, Math.PI),
             SavedPoint("charging_pile", "charge", DOCK_X, DOCK_Y, 0.0),
         )
+
+        // ---- Maps: an occupancy grid over the room, row 0 at the top (north), as a ROS map image. ----
+        private const val MODE_MAPPING = 1
+        private const val MODE_NAVIGATION = 2
+        private const val MODE_EXTENDING = 3
+        private const val GRID_RES = 0.05                // m per pixel, as on the real robot
+        private const val GRID_X0 = -ROOM_X - 0.25       // map-frame corner of the bottom-left pixel
+        private const val GRID_Y0 = -ROOM_Y - 0.25
+        private val GRID_W = Math.round((2 * ROOM_X + 0.5) / GRID_RES).toInt()
+        private val GRID_H = Math.round((2 * ROOM_Y + 0.5) / GRID_RES).toInt()
+        private const val WALL = 0.1                     // m
+        private val UNKNOWN = 205.toByte()               // map_server's grey, white and black
+        private val FREE = 254.toByte()
+        private val OCCUPIED = 0.toByte()
+
+        /** Is this map-frame spot a wall or the box? */
+        private fun solid(px: Double, py: Double): Boolean {
+            if (abs(px) >= ROOM_X || abs(py) >= ROOM_Y) return abs(px) < ROOM_X + WALL && abs(py) < ROOM_Y + WALL
+            return px >= BOX[0] && px <= BOX[2] && py >= BOX[1] && py <= BOX[3]
+        }
+
+        /** The whole room as a finished map: free inside, walls and the box's sides occupied. */
+        private fun roomGrid(): ByteArray {
+            val g = ByteArray(GRID_W * GRID_H) { UNKNOWN }
+            for (row in 0 until GRID_H) for (col in 0 until GRID_W) {
+                val px = GRID_X0 + (col + 0.5) * GRID_RES
+                val py = GRID_Y0 + (GRID_H - row - 0.5) * GRID_RES
+                val inBox = solid(px, py) && abs(px) < ROOM_X && abs(py) < ROOM_Y
+                val boxEdge = inBox && (px - BOX[0] < GRID_RES || BOX[2] - px < GRID_RES || py - BOX[1] < GRID_RES || BOX[3] - py < GRID_RES)
+                g[row * GRID_W + col] = when {
+                    inBox -> if (boxEdge) OCCUPIED else UNKNOWN // the lidar never sees inside the box
+                    solid(px, py) -> OCCUPIED
+                    abs(px) < ROOM_X && abs(py) < ROOM_Y -> FREE
+                    else -> UNKNOWN
+                }
+            }
+            return g
+        }
+
+        /** /reeman/map's shape: size, metres per pixel, the bottom-left corner, and a PNG data URL. */
+        private fun mapJson(grid: ByteArray, resolution: Double) = fmt(
+            """{"width":%d,"height":%d,"resolution":%s,"origin_x":%s,"origin_y":%s,"image_url":"data:image/png;base64,%s"}""",
+            GRID_W, GRID_H, resolution.toString(),
+            if (resolution == 0.0) "0" else GRID_X0.toString(), if (resolution == 0.0) "0" else GRID_Y0.toString(),
+            base64(png(GRID_W, GRID_H, grid)),
+        )
+
+        /** An 8-bit greyscale PNG. Written by hand: android.graphics isn't on the test JVM. */
+        private fun png(w: Int, h: Int, grey: ByteArray): ByteArray {
+            val raw = ByteArrayOutputStream()
+            for (row in 0 until h) {
+                raw.write(0) // filter: none
+                raw.write(grey, row * w, w)
+            }
+            val deflater = Deflater()
+            deflater.setInput(raw.toByteArray())
+            deflater.finish()
+            val idat = ByteArrayOutputStream()
+            val buf = ByteArray(8192)
+            while (!deflater.finished()) idat.write(buf, 0, deflater.deflate(buf))
+            deflater.end()
+            val out = ByteArrayOutputStream()
+            out.write(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
+            fun int(v: Int) = byteArrayOf((v ushr 24).toByte(), (v ushr 16).toByte(), (v ushr 8).toByte(), v.toByte())
+            fun chunk(type: String, data: ByteArray) {
+                val t = type.toByteArray(Charsets.US_ASCII)
+                out.write(int(data.size))
+                out.write(t)
+                out.write(data)
+                out.write(int(CRC32().apply { update(t); update(data) }.value.toInt()))
+            }
+            chunk("IHDR", int(w) + int(h) + byteArrayOf(8, 0, 0, 0, 0)) // 8-bit greyscale
+            chunk("IDAT", idat.toByteArray())
+            chunk("IEND", ByteArray(0))
+            return out.toByteArray()
+        }
+
+        /** java.util.Base64 needs Android 8; the app runs on 7. */
+        private fun base64(bytes: ByteArray): String {
+            val abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+            val sb = StringBuilder((bytes.size + 2) / 3 * 4)
+            for (i in bytes.indices step 3) {
+                val n = (bytes[i].toInt() and 0xff shl 16) or
+                    ((if (i + 1 < bytes.size) bytes[i + 1].toInt() and 0xff else 0) shl 8) or
+                    (if (i + 2 < bytes.size) bytes[i + 2].toInt() and 0xff else 0)
+                sb.append(abc[n shr 18 and 63]).append(abc[n shr 12 and 63])
+                sb.append(if (i + 1 < bytes.size) abc[n shr 6 and 63] else '=')
+                sb.append(if (i + 2 < bytes.size) abc[n and 63] else '=')
+            }
+            return sb.toString()
+        }
 
         // The success reply of /cmd/nav_name, /cmd/cancel_goal and /cmd/external_power_supply (seen on
         // v5.1.20); assumed for the rest. The app only checks it isn't an error.

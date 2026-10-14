@@ -47,6 +47,19 @@ class MainActivity : ComponentActivity() {
             onDemoChargeOnItsOwn = c::demoChargeOnItsOwn,
             onDemoBattery = c::demoDrainBattery,
             onDemoReset = c::demoReset,
+            onMapVisible = c::setMapVisible,
+            onLoadMaps = c::loadMaps,
+            onStartMapping = c::startMapping,
+            onSaveMap = c::saveMap,
+            onDiscardMapping = c::discardMapping,
+            onUseMap = c::useMap,
+            onRenameMap = c::renameMap,
+            onDeleteMap = c::deleteMap,
+            onRestoreMap = c::restoreMap,
+            onSetPosition = c::setPosition,
+            onAddChargingPile = c::addChargingPileHere,
+            onAddWall = c::addWall,
+            onRemoveWall = c::removeWall,
         )
         setContent {
             val state by c.state.collectAsStateWithLifecycle()

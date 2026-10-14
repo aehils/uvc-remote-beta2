@@ -4,7 +4,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.util.Base64
 import java.util.Random
+import java.util.zip.Inflater
 import kotlin.math.abs
 
 /** Drives the demo robot on a fake clock, checking it behaves like the real firmware. */
@@ -309,6 +313,106 @@ class FakeRobotTest {
         assertEquals(0.4, vth(), 1e-9)
         post("/cmd/move", """{"distance":0,"direction":1,"speed":0}""")
         assertEquals("a stop body ends it", 0.0, vth(), 1e-9)
+    }
+
+    // ------------------------------------------------------------------ maps
+
+    /** An 8-bit greyscale image; [at] is the value at column x, row y (row 0 at the top). */
+    private class Grey(val width: Int, val height: Int, private val px: ByteArray) {
+        fun at(x: Int, y: Int) = px[y * width + x].toInt() and 0xff
+    }
+
+    /**
+     * Decodes the map's PNG by hand (javax.imageio isn't on Android's class path), so the
+     * simulator's encoder is checked by a separate reader: signature, chunks, unfiltered rows.
+     */
+    private fun png(body: String): Grey {
+        val b64 = Regex("base64,([A-Za-z0-9+/=]+)").find(body)!!.groupValues[1]
+        val buf = ByteBuffer.wrap(Base64.getDecoder().decode(b64))
+        val sig = ByteArray(8).also { buf.get(it) }
+        assertTrue("PNG signature", sig.contentEquals(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)))
+        var w = 0
+        var h = 0
+        val idat = ByteArrayOutputStream()
+        while (buf.hasRemaining()) {
+            val len = buf.int
+            val type = String(ByteArray(4).also { buf.get(it) }, Charsets.US_ASCII)
+            val data = ByteArray(len).also { buf.get(it) }
+            buf.int // CRC
+            when (type) {
+                "IHDR" -> {
+                    val d = ByteBuffer.wrap(data)
+                    w = d.int
+                    h = d.int
+                    assertEquals("8-bit", 8, d.get().toInt())
+                    assertEquals("greyscale", 0, d.get().toInt())
+                }
+                "IDAT" -> idat.write(data)
+            }
+        }
+        val raw = ByteArray((w + 1) * h)
+        Inflater().apply {
+            setInput(idat.toByteArray())
+            assertEquals(raw.size, inflate(raw))
+            end()
+        }
+        val px = ByteArray(w * h)
+        for (row in 0 until h) {
+            assertEquals("filter none", 0, raw[row * (w + 1)].toInt())
+            System.arraycopy(raw, row * (w + 1) + 1, px, row * w, w)
+        }
+        return Grey(w, h, px)
+    }
+
+    /** The grey value at a map-frame spot, read the way the app places it (row 0 at the top). */
+    private fun cellAt(body: String, x: Double, y: Double): Int {
+        val img = png(body)
+        val res = num(body, "resolution")
+        val col = ((x - num(body, "origin_x")) / res).toInt()
+        val row = img.height - 1 - ((y - num(body, "origin_y")) / res).toInt()
+        return img.at(col, row)
+    }
+
+    private fun mapIds() = Regex("\"name\":\"([0-9a-f]{32})\"").findAll(get("/reeman/history_map")).map { it.groupValues[1] }.toList()
+    private fun currentId() = Regex("\"name\":\"([0-9a-f]{32})\"").find(get("/reeman/current_map"))!!.groupValues[1]
+
+    @Test
+    fun mapIsAPngOfTheRoomWithItsScaleAndOrigin() {
+        val body = get("/reeman/map")
+        val img = png(body)
+        assertEquals(num(body, "width").toInt(), img.width)
+        assertEquals(num(body, "height").toInt(), img.height)
+        assertEquals(0.05, num(body, "resolution"), 1e-9)
+        assertEquals("free where the robot starts", 254, cellAt(body, 0.0, 0.0))
+        assertEquals("the east wall", 0, cellAt(body, 2.53, 0.0))
+        assertEquals("the north wall", 0, cellAt(body, 0.0, 2.03))
+        assertEquals("outside the room", 205, cellAt(body, 0.0, -2.22))
+        assertTrue(get("/reeman/current_map").contains("\"alias\":\"Demo room\""))
+        assertEquals(2, mapIds().size)
+    }
+
+    @Test
+    fun savingAScanAddsANewMapInUse() {
+        val before = currentId()
+        post("/cmd/set_mode", """{"mode":1}""")
+        assertEquals(1.0, num(get("/reeman/get_mode"), "mode"), 0.0)
+        assertEquals(FakeRobot.OK, post("/cmd/save_map", "{}"))
+        post("/cmd/set_mode", """{"mode":2}""")
+        assertTrue(currentId() != before)
+        assertEquals(3, mapIds().size)
+        assertEquals("""{"waypoints":[]}""", get("/reeman/position"))
+    }
+
+    @Test
+    fun mapsCanBeRenamedBinnedAndRestoredButNotTheOneInUse() {
+        val (room, old) = mapIds()
+        assertTrue(post("/cmd/trash_map", """{"name":"$room"}""").contains("error_code"))
+        assertEquals(FakeRobot.OK, post("/cmd/rename_map", """{"name":"$old","alias":"Ward 3"}"""))
+        assertTrue(get("/reeman/history_map").contains("\"alias\":\"Ward 3\""))
+        assertEquals(FakeRobot.OK, post("/cmd/trash_map", """{"name":"$old"}"""))
+        assertEquals(listOf(room), mapIds())
+        assertEquals(FakeRobot.OK, post("/cmd/restore_map", """{"name":"$old"}"""))
+        assertEquals(2, mapIds().size)
     }
 
     @Test

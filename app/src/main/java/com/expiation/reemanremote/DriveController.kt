@@ -76,12 +76,68 @@ data class Velocity(val vx: Double, val vth: Double)
 /** A point saved on the robot's map (/reeman/position). [pose] is null if the robot sent none. */
 data class Waypoint(val name: String, val type: String, val pose: Pose?)
 
-/** The disinfection points read from the robot: its saved points, without the charging pile. */
+/**
+ * The points saved on the robot's map: the disinfection points in [Loaded.list], the charging
+ * pile apart (it has its own button, and is never a disinfection point).
+ */
 sealed interface Points {
     data object NotLoaded : Points
     data object Loading : Points
-    data class Loaded(val list: List<Waypoint>) : Points
+    data class Loaded(val list: List<Waypoint>, val pile: Waypoint? = null) : Points
     data class Failed(val error: String) : Points
+}
+
+/** A virtual wall on the map (/reeman/restrict_layer): a line the robot never crosses. Map frame, metres. */
+data class Wall(val x1: Double, val y1: Double, val x2: Double, val y2: Double) {
+    val length: Double get() = hypot(x2 - x1, y2 - y1)
+}
+
+/** What the robot is doing with its map (/reeman/get_mode). */
+enum class RobotMode(val code: Int) {
+    /** Scanning a new map. */
+    MAPPING(1),
+    NAVIGATION(2),
+    /** Scanning more of the map in use (the API's "incremental mapping"). */
+    EXTENDING(3);
+
+    companion object {
+        fun of(code: Int) = entries.firstOrNull { it.code == code }
+    }
+}
+
+/**
+ * A map image (/reeman/map): a PNG (base64), [resolution] metres per pixel, and the map-frame
+ * position of its bottom-left corner. GUESS: the ROS map_server convention (pixel row 0 is the
+ * top edge, the origin is the bottom-left corner); not yet checked against the real robot.
+ */
+data class MapImage(
+    val width: Int,
+    val height: Int,
+    val resolution: Double,
+    val originX: Double,
+    val originY: Double,
+    val png: String,
+) {
+    /** Has a scale and an origin, so the robot and points can be placed on it. The list's thumbnails don't. */
+    val placeable: Boolean get() = resolution > 0
+
+    fun pixelX(x: Double) = (x - originX) / resolution
+    fun pixelY(y: Double) = height - (y - originY) / resolution
+    fun mapX(px: Double) = originX + px * resolution
+    fun mapY(py: Double) = originY + (height - py) * resolution
+}
+
+/** A map saved on the robot. [id] is the robot's unique name for it, [alias] the name people gave it. */
+data class SavedMap(val id: String, val alias: String, val thumbnail: MapImage? = null) {
+    val label: String get() = alias.ifBlank { "Untitled map" }
+}
+
+/** The maps saved on the robot (/reeman/history_map). */
+sealed interface Maps {
+    data object NotLoaded : Maps
+    data object Loading : Maps
+    data class Loaded(val list: List<SavedMap>) : Maps
+    data class Failed(val error: String) : Maps
 }
 
 /** How the step lock decides a step is over (see [DriveController.trackStep]). */
@@ -171,6 +227,29 @@ data class RemoteState(
     val lampsOffOwed: Boolean,
     val demoStatus: DemoStatus?,
     val log: List<String>,
+    /** null until read, or if the firmware doesn't say. */
+    val mode: RobotMode? = null,
+    /** The map the robot navigates on (no image: see [mapImage]). */
+    val currentMap: SavedMap? = null,
+    /** The map in use, or while mapping, the scan so far. Read while a map is on screen. */
+    val mapImage: MapImage? = null,
+    /** Why [mapImage] couldn't be read, if it couldn't. */
+    val mapProblem: String? = null,
+    /** Where the robot believes it is on the map. Read while a map is on screen. */
+    val robotPose: Pose? = null,
+    val maps: Maps = Maps.NotLoaded,
+    /** A map command on its way ("Saving the map …"). */
+    val mapStep: String? = null,
+    /** The outcome of the last map command, shown with the map. */
+    val mapMessage: String? = null,
+    /** The last map moved to the robot's bin, so it can be brought back. */
+    val trashed: SavedMap? = null,
+    /** The virtual walls on the map in use; null until read. */
+    val walls: List<Wall>? = null,
+    /** Points marked while mapping, saved onto the map once it is saved (see [DriveController.saveMap]). */
+    val pendingPoints: List<Waypoint> = emptyList(),
+    /** Virtual walls drawn while mapping, saved the same way. */
+    val pendingWalls: List<Wall> = emptyList(),
 ) {
     val connected: Boolean get() = link is Link.Connected
     val estop: EStop? get() = (link as? Link.Connected)?.estop
@@ -188,8 +267,8 @@ data class RemoteState(
 
     val still: Boolean get() = abs(vx) <= DriveController.MOVING_VX && abs(vth) <= DriveController.MOVING_VTH
 
-    /** Saving the robot's spot as a point: connected, standing still, and the existing names known. */
-    val canAddPoint: Boolean get() = connected && !busy && still && points is Points.Loaded && !addingPoint
+    /** Saving the robot's spot as a point: connected, standing still, on a map, and the existing names known. */
+    val canAddPoint: Boolean get() = connected && !busy && still && !mapping && points is Points.Loaded && !addingPoint
 
     /**
      * The drive interlock: connected, e-stop known and released, no step running, robot still,
@@ -209,8 +288,33 @@ data class RemoteState(
             estop == EStop.RELEASED && uv == null && !lampsOffOwed
     }
 
-    /** Starting UV disinfection takes the same interlock as driving. */
-    val canDisinfect: Boolean get() = canDrive
+    /** Starting UV disinfection takes the same interlock as a trip. */
+    val canDisinfect: Boolean get() = canNavigate
+
+    /** The robot is scanning a map (new, or extending the one in use). */
+    val mapping: Boolean get() = mode == RobotMode.MAPPING || mode == RobotMode.EXTENDING
+
+    /**
+     * Trips the robot plans on its map (GO, GO TO CHARGER): the drive interlock, and the robot
+     * navigating on a map rather than scanning one. Driving by hand works either way.
+     */
+    val canNavigate: Boolean get() = canDrive && !mapping
+
+    /**
+     * Map commands (mode, save, switch, position): connected, nothing running, the robot standing
+     * still, the lamps off, and one command at a time. None of them moves the robot.
+     */
+    val canChangeMap: Boolean get() = connected && !busy && still && uv == null && !lampsOffOwed && mapStep == null
+
+    /**
+     * Marking a point, the charging pile or a wall on the map: connected, the robot still, nothing
+     * else on its way. While mapping they wait in the app until the map is saved.
+     */
+    val canMark: Boolean get() = connected && !busy && still && !addingPoint && mapStep == null &&
+        (mapping || points is Points.Loaded)
+
+    /** Starting a map, switching maps and setting the position: not while a scan is in progress. */
+    val canStartMapping: Boolean get() = canChangeMap && !mapping
 }
 
 // ---------------------------------------------------------------------- controller
@@ -279,6 +383,8 @@ class DriveController(
     private var jumpToZero = false
     private var jogFailures = 0
     private var lastJogAt = Long.MIN_VALUE / 2
+    // A tap's nudge (see [release]): sent once the speed stream has put the robot back to zero.
+    private var nudgeNext: Step? = null
 
     private var atPoint: Waypoint? = null
     private var uv: Uv? = null
@@ -291,6 +397,29 @@ class DriveController(
     // must not reach the robot first (live requests run on separate IO threads).
     private val lampLock = Mutex()
 
+    // Maps (see [mapLoop]): the robot's mode and map in use, the image and pose while a map is on
+    // screen, the saved maps, and one map command at a time.
+    private var mapJob: Job? = null
+    private var mapCommandJob: Job? = null
+    private var mapsJob: Job? = null
+    private var mode: RobotMode? = null
+    private var modeStale = true
+    private var currentMap: SavedMap? = null
+    private var mapBefore: String? = null // the map in use when mapping started
+    private var mapImage: MapImage? = null
+    private var mapProblem: String? = null
+    private var robotPose: Pose? = null
+    private var mapVisible = false
+    private var wantImage = true
+    private var imageAt = Long.MIN_VALUE / 2
+    private var maps: Maps = Maps.NotLoaded
+    private var mapStep: String? = null
+    private var mapMessage: String? = null
+    private var trashed: SavedMap? = null
+    private var walls: List<Wall>? = null
+    private var pendingPoints: List<Waypoint> = emptyList()
+    private var pendingWalls: List<Wall> = emptyList()
+
     private val logLines = ArrayDeque<String>()
     private val clock = SimpleDateFormat("HH:mm:ss", Locale.US)
 
@@ -301,6 +430,7 @@ class DriveController(
 
     fun resume() {
         if (pollJob == null) pollJob = scope.launch { pollLoop() }
+        if (mapJob == null) mapJob = scope.launch { mapLoop() }
     }
 
     /**
@@ -311,6 +441,8 @@ class DriveController(
     fun pause() {
         pollJob?.cancel()
         pollJob = null
+        mapJob?.cancel()
+        mapJob = null
         chargerJob?.cancel()
         (phase as? StepPhase.Holding)?.let { endHold(it, "${it.step.label}: app left, robot slowing to a stop") }
         endDisinfection("app left")
@@ -399,9 +531,28 @@ class DriveController(
         chargeFlag = null
         vx = 0.0
         vth = 0.0
+        mapCommandJob?.cancel()
+        mapsJob?.cancel()
+        mode = null
+        modeStale = true
+        currentMap = null // the other robot has its own maps
+        mapBefore = null
+        mapImage = null
+        mapProblem = null
+        robotPose = null
+        maps = Maps.NotLoaded
+        mapStep = null
+        mapMessage = null
+        trashed = null
+        walls = null
+        pendingPoints = emptyList()
+        pendingWalls = emptyList()
+        refreshImage()
         if (pollJob != null) {
             pollJob?.cancel()
             pollJob = scope.launch { pollLoop() }
+            mapJob?.cancel()
+            mapJob = scope.launch { mapLoop() }
         }
         publish()
     }
@@ -547,6 +698,7 @@ class DriveController(
         phase = StepPhase.Holding(move, step, Tracking(t + HOLD_NO_MOTION_MS, t + HOLD_MAX_MS, sawMotion), since = t)
         holdAliveAt = t
         jogStop = false
+        nudgeNext = null // pressed again before the last tap's nudge went out: this press wins
         target = holdVelocity(move)
         log(
             "${step.label}: " + (if (p is StepPhase.Stepping) "pressed while slowing, " else "") +
@@ -562,12 +714,42 @@ class DriveController(
         if (h.move == move) holdAliveAt = now()
     }
 
-    /** The held arrow was let go: the speed ramps down to zero. */
+    /**
+     * The held arrow was let go: the speed ramps down to zero. A tap (let go within [TAP_MS])
+     * is a nudge instead: the stream drops to zero (the speed is still tiny), then a fixed small
+     * step goes out ([NUDGE_CM] or [NUDGE_DEG]), planned by the robot, so a tap always moves it
+     * the same short way rather than whatever the ramp had reached.
+     */
     fun release(move: Move) {
         val h = phase as? StepPhase.Holding ?: return
         if (h.move != move) return
-        endHold(h, fmt("%s: let go after %.1f s, slowing to a stop", h.step.label, (now() - h.since) / 1000.0))
+        val held = now() - h.since
+        if (held < TAP_MS) {
+            nudgeNext = nudgeStep(move)
+            endHold(h, "${move.word}: tapped, nudging " + if (move == Move.FORWARD || move == Move.BACK) "$NUDGE_CM cm" else "$NUDGE_DEG°", stopNow = true)
+        } else {
+            endHold(h, fmt("%s: let go after %.1f s, slowing to a stop", h.step.label, held / 1000.0))
+        }
         publish()
+    }
+
+    /** A tap's small fixed step. Marked as held, so pressing an arrow again takes over straight away. */
+    private fun nudgeStep(move: Move): Step = when (move) {
+        Move.FORWARD, Move.BACK -> Step(
+            "${move.word} nudge", "/cmd/move",
+            fmt("""{"distance":%d,"direction":%d,"speed":%.2f}""", NUDGE_CM, if (move == Move.FORWARD) 1 else 0, NUDGE_SPEED),
+            isTurn = false,
+            estimateMs = (NUDGE_CM / 100.0 / NUDGE_SPEED * 1000).toLong() + RAMP_ALLOWANCE_MS,
+            held = move,
+        )
+        Move.LEFT, Move.RIGHT -> Step(
+            "${move.word} nudge", "/cmd/turn",
+            fmt("""{"direction":%d,"angle":%d,"speed":%.2f}""", if (move == Move.RIGHT) 0 else 1, NUDGE_DEG, NUDGE_TURN_SPEED),
+            isTurn = true,
+            estimateMs = (Math.toRadians(NUDGE_DEG.toDouble()) / NUDGE_TURN_SPEED * 1000).toLong() + RAMP_ALLOWANCE_MS,
+            held = move,
+        )
+        Move.AROUND -> error("Turn 180° is a fixed step")
     }
 
     /**
@@ -607,6 +789,7 @@ class DriveController(
                     sent = next
                     if (next == ZERO) jumpToZero = false
                     jogFailures = 0
+                    if (next == ZERO && nudgeNext != null) break // the tap's nudge goes next (below)
                 } else {
                     onJogFailure(if (!r.ok) "FAILED ${r.error}" else "robot rejected: $rejected")
                     if (jogFailures >= JOG_GIVE_UP) {
@@ -621,6 +804,16 @@ class DriveController(
             }
             sent = if (jogStop) ZERO else sent
             jogStop = false
+            val nudge = nudgeNext
+            nudgeNext = null
+            // Only if nothing has happened since the tap: no STOP, no new press, no e-stop or lamps.
+            val p = phase
+            val s = snapshot()
+            if (nudge != null && p is StepPhase.Stepping && p.step.held == nudge.held && p.step.path == SPEED_PATH &&
+                s.estop == EStop.RELEASED && s.uv == null && !s.lampsOffOwed
+            ) {
+                send(nudge)
+            }
             publish()
         }
     }
@@ -681,22 +874,35 @@ class DriveController(
      * Docking is never tried from far away: what the real routine does then is unknown.
      */
     fun goToCharger() {
-        if (!snapshot().canDrive || chargerJob?.isActive == true) return
+        if (!snapshot().canNavigate || chargerJob?.isActive == true) return
         log("Go to charger: checking how far the charging pile is …")
         publish()
         val a = api
         chargerJob = scope.launch {
             val all = a.get(POINTS_PATH).takeIf { it.ok }?.let { r -> runCatching { parseWaypoints(r.body) }.getOrNull() }
-            val pile = all?.firstOrNull { isPile(it) }?.pose
+            val pilePoint = all?.firstOrNull { isPile(it) }
+            val pile = pilePoint?.pose
             val here = readPose(a)
             val d = if (pile != null && here != null) dist(here, pile) else null
+            if (all != null && pilePoint == null) {
+                // Sending charge type 2 then would ask for a point the map doesn't have.
+                log(
+                    "Go to charger: not sent. The robot's map in use has no charging pile. " +
+                        "Mark it on the Map tab (add > Charging pile here) with the robot docked."
+                )
+                publish()
+                return@launch
+            }
             // The robot may have moved or been e-stopped while the app was asking.
-            if (!snapshot().canDrive) {
+            if (!snapshot().canNavigate) {
                 log("Go to charger: not sent (e-stop pressed, or the robot is moving)")
                 publish()
                 return@launch
             }
-            val drive = chargeNavStep()
+            // The pile by its name on this map: the robot's own app may not call it "charging_pile".
+            val name = pilePoint?.name ?: PILE_POINT
+            if (name != PILE_POINT) log("Go to charger: the pile on this map is called \"$name\"")
+            val drive = chargeNavStep(name)
             when {
                 d == null -> {
                     log("Go to charger: couldn't tell where the pile is, so driving there first")
@@ -705,7 +911,7 @@ class DriveController(
                 d <= DOCK_NEAR_M -> {
                     log(fmt("Go to charger: pile %.1f m away, docking straight away", d))
                     // At the pile already: a failed dock means "already docked", not "too far".
-                    send(dockStep(fallback = if (d > AT_PILE_M) drive else null))
+                    send(dockStep(name, fallback = if (d > AT_PILE_M) drive else null))
                 }
                 else -> {
                     log(fmt("Go to charger: pile %.1f m away, driving there first", d))
@@ -716,13 +922,13 @@ class DriveController(
     }
 
     /** The firmware's own docking routine (/cmd/charge type 0): finds the pile nearby and reverses onto it. */
-    private fun dockStep(fallback: Step?) = Step(
-        "Go to charger (docking)", DOCK_PATH, DOCK_START, isTurn = false,
+    private fun dockStep(pile: String, fallback: Step?) = Step(
+        "Go to charger (docking)", DOCK_PATH, chargeJson(0, pile), isTurn = false,
         estimateMs = 30_000,     // GUESS: never timed on the real robot
         stillPolls = 10,         // ~3 s: the routine may pause between aligning and reversing
         noMotionMs = 8_000,
         capMs = 120_000,
-        stallHint = "Already docked, or no charging pile within range?",
+        stallHint = "Is the robot's own screen asking to confirm? Otherwise: already docked, or no charging pile within range?",
         fallback = fallback,
     )
 
@@ -730,14 +936,14 @@ class DriveController(
      * /cmd/charge type 2: navigate to the pile's point, then dock. The lock holds while the robot
      * has a plan, and a pause between arriving and docking is allowed for.
      */
-    private fun chargeNavStep() = Step(
-        "Go to charger", DOCK_PATH, CHARGE_NAV, isTurn = false,
+    private fun chargeNavStep(pile: String) = Step(
+        "Go to charger", DOCK_PATH, chargeJson(2, pile), isTurn = false,
         estimateMs = 90_000,     // unknown: depends on the route
         stillPolls = 17,         // ~5 s: GUESS, room for a pause between the trip and docking
         noMotionMs = 15_000,
         capMs = 15 * 60_000,
-        stallHint = "Already on the pile, or no route to it?",
-        goal = Waypoint(PILE_POINT, "charge", null),
+        stallHint = "Is the robot's own screen asking to confirm? Otherwise: already on the pile, or no route to it?",
+        goal = Waypoint(pile, "charge", null),
     )
 
     /** Reads the robot's saved points (/reeman/position) for the Tasks tab. Read-only: safe at any time. */
@@ -750,21 +956,26 @@ class DriveController(
         pointsJob = scope.launch {
             val r = a.get(POINTS_PATH)
             val rejected = if (r.ok) robotError(r.body) else null
-            val loaded = if (r.ok && rejected == null) runCatching { parsePoints(r.body) }.getOrNull() else null
+            val all = if (r.ok && rejected == null) runCatching { parseWaypoints(r.body) }.getOrNull() else null
+            val loaded = all?.filterNot { isPile(it) }
+            // The map's virtual walls, read alongside. Not fatal if they can't be.
+            walls = readWalls(a) ?: walls
             // Is the robot already standing on one of them (say, after the app was restarted)?
             if (loaded != null && atPoint == null && phase == StepPhase.Idle && snapshot().still) {
                 val here = readPose(a)
                 if (here != null) atPoint = loaded.firstOrNull { it.pose != null && dist(here, it.pose) <= ARRIVED_M }
             }
             points = when {
-                loaded != null -> Points.Loaded(loaded)
+                loaded != null -> Points.Loaded(loaded, all.firstOrNull { isPile(it) })
                 !r.ok -> Points.Failed(r.error ?: "no answer")
                 rejected != null -> Points.Failed("robot error $rejected")
                 else -> Points.Failed("unexpected reply: ${r.body.take(80)}")
             }
             log(
                 when (val p = points) {
-                    is Points.Loaded -> "Loaded ${p.list.size} disinfection point(s)"
+                    is Points.Loaded -> "Loaded ${p.list.size} disinfection point(s)" +
+                        (if (p.pile != null) ", the charging pile" else ", no charging pile") +
+                        (walls?.let { ", ${it.size} virtual wall(s)" } ?: "")
                     is Points.Failed -> "Couldn't load points: ${p.error}"
                     else -> "Points: ?"
                 }
@@ -778,19 +989,32 @@ class DriveController(
      * read the pose first, then set the point with it. Doesn't move the robot, but the robot must
      * be still so the pose (5 Hz) is where it really stands.
      * Refuses a name already in use, since setting it again would move that point.
+     * While mapping, the point waits in the app and is saved with the map (see [saveMap]).
      */
-    fun addPointHere(name: String) {
+    fun addPointHere(name: String) = markHere(name.trim(), NEW_POINT_TYPE)
+
+    /**
+     * Marks the charging pile where the robot stands: done with the robot docked on its pile, so
+     * the point is where the robot's centre sits on it (what GO TO CHARGER measures against).
+     * Replaces any pile already marked.
+     */
+    fun addChargingPileHere() = markHere(PILE_POINT, PILE_TYPE)
+
+    private fun markHere(clean: String, type: String) {
         val s = snapshot()
-        val clean = name.trim()
+        val pile = type == PILE_TYPE
         val loaded = (s.points as? Points.Loaded)?.list
+        // A new map starts with no points: only the ones marked during this scan count.
+        val taken = pendingPoints.map { it.name } + if (s.mode == RobotMode.MAPPING) emptyList() else loaded.orEmpty().map { it.name }
         val problem = when {
             s.addingPoint -> return
             !s.connected -> "Not connected to the robot."
             s.busy || !s.still -> "Wait for the robot to stand still."
-            loaded == null -> "Load the points first."
+            s.mapStep != null -> "Wait for \"${s.mapStep}\" to finish."
+            !s.mapping && loaded == null -> "Load the points first."
             clean.isEmpty() -> "Give the point a name."
             clean.length > MAX_POINT_NAME -> "Use a name of $MAX_POINT_NAME characters or fewer."
-            clean == PILE_POINT || loaded.any { it.name == clean } -> "A point called \"$clean\" already exists."
+            !pile && (clean == PILE_POINT || clean in taken) -> "A point called \"$clean\" already exists."
             else -> null
         }
         if (problem != null) {
@@ -798,37 +1022,114 @@ class DriveController(
             publish()
             return
         }
+        val label = if (pile) "the charging pile" else "\"$clean\""
 
         addingPoint = true
-        pointMessage = "Saving \"$clean\" …"
+        pointMessage = "Saving $label …"
         publish()
         val a = api
+        val mapping = s.mapping
         addJob = scope.launch {
-            val p = a.get("/reeman/pose")
+            val p = a.get(POSE_PATH)
             val pose = if (p.ok) parsePose(p.body) else null
-            val result = if (pose == null) {
-                "Couldn't read where the robot is: ${p.error ?: "unexpected reply ${p.body.take(80)}"}"
-            } else {
-                val body = JSONObject()
-                    .put("name", clean)
-                    .put("type", NEW_POINT_TYPE)
-                    .put("pose", JSONObject().put("x", round3(pose.x)).put("y", round3(pose.y)).put("theta", round3(pose.theta)))
-                    .toString()
-                log("Add point: sending $ADD_POINT_PATH $body")
-                val r = a.post(ADD_POINT_PATH, body)
-                val rejected = if (r.ok) robotError(r.body) else null
-                when {
-                    !r.ok -> "Couldn't add \"$clean\": ${r.error}"
-                    rejected != null -> "Robot rejected \"$clean\": $rejected"
-                    else -> String.format(Locale.US, "Added \"%s\" at x %.2f, y %.2f", clean, pose.x, pose.y)
+            val result = when {
+                pose == null -> "Couldn't read where the robot is: ${p.error ?: "unexpected reply ${p.body.take(80)}"}"
+                mapping -> {
+                    pendingPoints = pendingPoints.filterNot { it.name == clean } + Waypoint(clean, type, pose)
+                    fmt("Marked %s at x %.2f, y %.2f. It's saved with the map.", label, pose.x, pose.y)
                 }
+                else -> savePoint(a, Waypoint(clean, type, pose))?.let { "Couldn't add $label: $it" }
+                    ?: fmt("Added %s at x %.2f, y %.2f", label, pose.x, pose.y)
             }
             log(result)
             pointMessage = result
             addingPoint = false
             publish()
-            loadPoints() // shows the new point, and confirms the robot kept it
+            if (!mapping && pose != null) loadPoints() // shows the new point, and confirms the robot kept it
         }
+    }
+
+    /** /cmd/position for [w] (its pose is required). Null if the robot took it, else what went wrong. */
+    private suspend fun savePoint(a: RobotApi, w: Waypoint): String? {
+        val pose = w.pose ?: return "no position"
+        val body = JSONObject()
+            .put("name", w.name)
+            .put("type", w.type)
+            .put("pose", JSONObject().put("x", round3(pose.x)).put("y", round3(pose.y)).put("theta", round3(pose.theta)))
+            .toString()
+        log("Add point: sending $ADD_POINT_PATH $body")
+        val r = a.post(ADD_POINT_PATH, body)
+        val rejected = if (r.ok) robotError(r.body) else null
+        return when {
+            !r.ok -> r.error
+            rejected != null -> "robot rejected it: $rejected"
+            else -> null
+        }
+    }
+
+    // ---- virtual walls (/reeman/restrict_layer, /cmd/restrict_layer: the whole set is sent each time)
+
+    /** Adds a virtual wall to the map in use; while mapping, it waits and is saved with the map. */
+    fun addWall(wall: Wall) {
+        if (wall.length < MIN_WALL_M) {
+            mapMessage = "Draw a longer wall."
+            publish()
+            return
+        }
+        if (snapshot().mapping) {
+            pendingWalls = pendingWalls + wall
+            mapMessage = fmt("Virtual wall marked (%.1f m). It's saved with the map.", wall.length)
+            log(mapMessage!!)
+            publish()
+            return
+        }
+        runMapCommand("Adding a virtual wall …", mapProblemNow(mapping = false)) { a ->
+            val now = readWalls(a) ?: return@runMapCommand "Couldn't read the map's virtual walls, so nothing was changed."
+            writeWalls(a, now + wall)?.let { return@runMapCommand "Couldn't add the wall: $it" }
+            walls = now + wall
+            fmt("Virtual wall added (%.1f m)", wall.length)
+        }
+    }
+
+    /** Removes a virtual wall (one waiting to be saved, or one on the map in use). */
+    fun removeWall(wall: Wall) {
+        if (wall in pendingWalls) {
+            pendingWalls = pendingWalls - wall
+            mapMessage = "Virtual wall removed."
+            publish()
+            return
+        }
+        runMapCommand("Removing a virtual wall …", mapProblemNow(mapping = false)) { a ->
+            val now = readWalls(a) ?: return@runMapCommand "Couldn't read the map's virtual walls, so nothing was changed."
+            val left = now.filterNot { sameWall(it, wall) }
+            if (left.size == now.size) return@runMapCommand "That wall is no longer on the map."
+            writeWalls(a, left)?.let { return@runMapCommand "Couldn't remove the wall: $it" }
+            walls = left
+            "Virtual wall removed"
+        }
+    }
+
+    private suspend fun readWalls(a: RobotApi): List<Wall>? {
+        val r = a.get(WALLS_PATH)
+        if (!r.ok || robotError(r.body) != null) return null
+        return runCatching { parseWalls(r.body) }.getOrNull()
+    }
+
+    private suspend fun writeWalls(a: RobotApi, list: List<Wall>): String? = mapCommand(a, SET_WALLS_PATH, wallsJson(list))
+
+    /**
+     * Writes what was marked during the scan onto the map now in use: the points, then the walls
+     * (added to any the map already has). Returns a line for the outcome.
+     */
+    private suspend fun saveMarks(a: RobotApi): String {
+        var failed = 0
+        pendingPoints.forEach { if (savePoint(a, it) != null) failed++ }
+        if (pendingWalls.isNotEmpty()) {
+            val now = readWalls(a).orEmpty()
+            if (writeWalls(a, now + pendingWalls) != null) failed += pendingWalls.size
+        }
+        val total = pendingPoints.size + pendingWalls.size
+        return if (failed == 0) "$total marked spot(s) saved on it" else "$failed of $total marked spot(s) couldn't be saved"
     }
 
     /**
@@ -837,7 +1138,7 @@ class DriveController(
      * the lock also holds while the robot still has a plan (see [trackStep]).
      */
     fun goTo(point: Waypoint) {
-        if (!snapshot().canDrive) return
+        if (!snapshot().canNavigate) return
         planActive = null
         navPose = null
         send(
@@ -895,6 +1196,7 @@ class DriveController(
         val jog = jogRecent()
         if (driveJob?.isActive == true) jogStop = true // the stream ends; STOP's own zero goes out below
         target = ZERO
+        nudgeNext = null
         fun shorten(tr: Tracking) = tr.copy(
             noMotionDeadline = min(tr.noMotionDeadline, t + 4000),
             hardCap = min(tr.hardCap, t + 6000),
@@ -1056,7 +1358,7 @@ class DriveController(
         val fallback = step.fallback
         val noPile = !tr.sawMotion || chargeFlag == CHARGE_NOT_FOUND
         if (message != null && fallback != null && !stopping && noPile && t <= tr.hardCap) {
-            if (snapshot().canDrive) {
+            if (snapshot().canNavigate) {
                 log("Go to charger: couldn't dock from here, driving to the pile first")
                 send(fallback)
             } else {
@@ -1256,6 +1558,353 @@ class DriveController(
         if (lampsOffOwed && link is Link.Connected && t - lampsOffLastSent >= LAMPS_OFF_RETRY_MS) sendLampsOff()
     }
 
+    // ------------------------------------------------------------------ maps
+
+    /** A map is on screen (or not). The robot's pose and the map image are only read while one is. */
+    fun setMapVisible(visible: Boolean) {
+        mapVisible = visible
+        if (visible && mapImage == null) refreshImage()
+    }
+
+    /**
+     * Every [MAP_TICK_MS]: the robot's mode and map in use every [MODE_EVERY] ticks, and while a
+     * map is on screen, the robot's pose, plus the image when it changes (every [MAP_REFRESH_MS]
+     * while mapping: the scan grows). A loop of its own, so a big image never holds up
+     * [pollLoop]'s speed and e-stop reads.
+     */
+    private suspend fun CoroutineScope.mapLoop() {
+        var tick = 0
+        while (isActive) {
+            val started = now()
+            val a = api
+            if (link is Link.Connected) {
+                // Not while a map command runs: it sets the mode itself, and an answer read just
+                // before the command landed would undo that.
+                if ((tick % MODE_EVERY == 0 || modeStale) && mapStep == null) readMode(a)
+                if (mapVisible) {
+                    a.get(POSE_PATH).takeIf { it.ok }?.let { r -> parsePose(r.body)?.let { robotPose = it } }
+                    if ((snapshot().mapping || wantImage) && started - imageAt >= MAP_REFRESH_MS) readImage(a)
+                }
+                publish()
+            }
+            tick++
+            delay((MAP_TICK_MS - (now() - started)).coerceAtLeast(0))
+        }
+    }
+
+    private suspend fun readMode(a: RobotApi) {
+        modeStale = false
+        val wasMapping = snapshot().mapping
+        val m = a.get(MODE_PATH)
+        if (m.ok) mode = parseMode(m.body) // null if this firmware doesn't say
+        val c = a.get(CURRENT_MAP_PATH)
+        val inUse = if (c.ok) parseCurrentMap(c.body) else null
+        val before = currentMap
+        if (inUse != null) {
+            // Keep a name already known from the list if the robot sends none here.
+            currentMap = if (inUse.alias.isBlank() && before?.id == inUse.id) before else inUse
+            if (before == null) log("Map in use: ${inUse.label} (${inUse.id.take(8)})")
+            if (before != null && before.id != inUse.id) {
+                log("The robot's map in use is now ${inUse.label}")
+                onMapChanged()
+            }
+        }
+        val mapping = snapshot().mapping
+        if (mapping != wasMapping) {
+            log(if (mapping) "The robot is in mapping mode" else "The robot is navigating on its map")
+            refreshImage()
+        }
+    }
+
+    private suspend fun readImage(a: RobotApi) {
+        val r = a.get(MAP_PATH)
+        imageAt = now()
+        val rejected = if (r.ok) robotError(r.body) else null
+        val image = if (r.ok && rejected == null) runCatching { parseMapImage(JSONObject(r.body)) }.getOrNull() else null
+        if (image != null) {
+            mapImage = image
+            mapProblem = null
+            wantImage = false
+        } else {
+            mapProblem = when {
+                !r.ok -> "Couldn't read the map: ${r.error}"
+                rejected != null -> "The robot has no map to show ($rejected)"
+                else -> "Unexpected map reply: ${r.body.take(80)}"
+            }
+        }
+    }
+
+    /** Read the image again at the next tick. */
+    private fun refreshImage() {
+        wantImage = true
+        imageAt = Long.MIN_VALUE / 2
+    }
+
+    /** Another map came into use: its image, and its own points. */
+    private fun onMapChanged() {
+        mapImage = null
+        mapProblem = null
+        refreshImage()
+        pointsJob?.cancel()
+        points = Points.NotLoaded
+        walls = null
+        atPoint = null
+    }
+
+    /** Reads the maps saved on the robot (/reeman/history_map). Read-only: safe at any time. */
+    fun loadMaps() {
+        if (maps == Maps.Loading) return
+        maps = Maps.Loading
+        publish()
+        val a = api
+        mapsJob?.cancel()
+        mapsJob = scope.launch {
+            val r = a.get(MAPS_PATH)
+            val rejected = if (r.ok) robotError(r.body) else null
+            val list = if (r.ok && rejected == null) runCatching { parseMaps(r.body) }.getOrNull() else null
+            maps = when {
+                list != null -> Maps.Loaded(list)
+                !r.ok -> Maps.Failed(r.error ?: "no answer")
+                rejected != null -> Maps.Failed("robot error $rejected")
+                else -> Maps.Failed("unexpected reply: ${r.body.take(80)}")
+            }
+            // The map in use may come without its name (/reeman/current_map); the list may have it.
+            val inUse = currentMap
+            val listed = list?.firstOrNull { it.id == inUse?.id }
+            if (inUse != null && inUse.alias.isBlank() && listed != null && listed.alias.isNotBlank()) {
+                currentMap = inUse.copy(alias = listed.alias)
+            }
+            log(
+                when (val m = maps) {
+                    // Each map's name and the start of its id, so untitled ones can be told apart.
+                    is Maps.Loaded -> "Loaded ${m.list.size} map(s): " +
+                        m.list.joinToString { (if (it.alias.isBlank()) "untitled" else "\"${it.alias}\"") + " " + it.id.take(8) } +
+                        when {
+                            inUse == null -> ""
+                            listed == null -> ". The map in use (${inUse.id.take(8)}) isn't in the list"
+                            else -> ". In use: ${inUse.id.take(8)}"
+                        }
+                    is Maps.Failed -> "Couldn't load the maps: ${m.error}"
+                    else -> "Maps: ?"
+                }
+            )
+            publish()
+        }
+    }
+
+    /**
+     * Starts mapping (/cmd/set_mode): a new map from nothing, or [extend] the map in use (which
+     * needs the robot to know where it is on it). The robot doesn't move by itself: it is driven
+     * round by hand, then the scan is saved ([saveMap]) or dropped ([discardMapping]).
+     */
+    fun startMapping(extend: Boolean) {
+        val target = currentMap
+        val problem = mapProblemNow(mapping = false)
+            ?: if (extend && target == null) "The map in use isn't known yet." else null
+        runMapCommand(if (extend) "Extending ${target?.label} …" else "Starting a new map …", problem) { a ->
+            val m = if (extend) RobotMode.EXTENDING else RobotMode.MAPPING
+            mapCommand(a, SET_MODE_PATH, modeJson(m))?.let { return@runMapCommand "Couldn't start mapping: $it" }
+            mode = m
+            mapBefore = currentMap?.id
+            atPoint = null
+            mapImage = null
+            refreshImage()
+            if (extend) "Extending ${target?.label}: drive the robot into the new area, then save."
+            else "Mapping: drive the robot slowly round the whole area, then save."
+        }
+    }
+
+    /**
+     * Saves the scan (/cmd/save_map), goes back to navigating (/cmd/set_mode 2, as the API
+     * asks), then names the map (/cmd/rename_map): a new map always, an extended one if [name]
+     * changed. A new map is only named if the robot now reports a different map in use than
+     * before mapping, so the old map is never renamed by mistake.
+     */
+    fun saveMap(name: String) {
+        val clean = name.trim()
+        val extending = mode == RobotMode.EXTENDING
+        val problem = mapProblemNow(mapping = true)
+            ?: if (clean.length > MAX_MAP_NAME) "Use a name of $MAX_MAP_NAME characters or fewer." else null
+        runMapCommand("Saving the map …", problem) { a ->
+            mapCommand(a, SAVE_MAP_PATH, "{}")?.let { return@runMapCommand "Couldn't save the map: $it. The robot is still mapping." }
+            log("Map: saved")
+            val nav = mapCommand(a, SET_MODE_PATH, modeJson(RobotMode.NAVIGATION))
+            if (nav == null) mode = RobotMode.NAVIGATION
+            onMapChanged()
+            val inUse = a.get(CURRENT_MAP_PATH).takeIf { it.ok }?.let { parseCurrentMap(it.body) }
+            if (inUse != null) currentMap = inUse
+            val naming = when {
+                clean.isEmpty() || inUse == null || clean == inUse.alias -> null
+                !extending && inUse.id == mapBefore -> "the robot kept its old map in use, so the new one wasn't named. Find it in Maps"
+                else -> mapCommand(a, RENAME_MAP_PATH, JSONObject().put("name", inUse.id).put("alias", clean).toString())
+                    ?.let { "naming it failed: $it" }
+                    ?: run {
+                        currentMap = inUse.copy(alias = clean)
+                        null
+                    }
+            }
+            maps = Maps.NotLoaded
+            // Marks go only onto the map that was scanned: the new one, once it is the one in use.
+            val marks = when {
+                pendingPoints.isEmpty() && pendingWalls.isEmpty() -> null
+                !extending && (inUse == null || inUse.id == mapBefore) ->
+                    "the ${pendingPoints.size + pendingWalls.size} marked spot(s) weren't saved, since the new map isn't in use"
+                else -> saveMarks(a)
+            }
+            pendingPoints = emptyList()
+            pendingWalls = emptyList()
+            buildString {
+                append("Map saved")
+                currentMap?.let { append(" as ${it.label}") }
+                if (naming != null) append("; $naming")
+                if (marks != null) append("; $marks")
+                if (nav != null) append(". Couldn't go back to navigating: $nav")
+            }
+        }
+    }
+
+    /** Leaves mapping without saving (/cmd/set_mode 2): the scan is dropped, the map in use unchanged. */
+    fun discardMapping() {
+        val extending = mode == RobotMode.EXTENDING
+        runMapCommand("Leaving mapping …", mapProblemNow(mapping = true)) { a ->
+            mapCommand(a, SET_MODE_PATH, modeJson(RobotMode.NAVIGATION))?.let { return@runMapCommand "Couldn't leave mapping: $it" }
+            mode = RobotMode.NAVIGATION
+            mapImage = null
+            refreshImage()
+            pendingPoints = emptyList()
+            pendingWalls = emptyList()
+            if (extending) "Mapping stopped. ${currentMap?.label ?: "The map"} is as it was." else "Mapping stopped. The scan wasn't saved."
+        }
+    }
+
+    /**
+     * Switches the robot to [map] (/cmd/apply_map). The robot then assumes it stands on that map's
+     * charging pile (as documented), so unless it does, its position must be set after.
+     */
+    fun useMap(map: SavedMap) {
+        val problem = mapProblemNow(mapping = false)
+            ?: if (map.id == currentMap?.id) "${map.label} is already in use." else null
+        runMapCommand("Switching to ${map.label} …", problem) { a ->
+            mapCommand(a, APPLY_MAP_PATH, JSONObject().put("name", map.id).toString())
+                ?.let { return@runMapCommand "Couldn't switch to ${map.label}: $it" }
+            currentMap = map.copy(thumbnail = null)
+            onMapChanged()
+            "Now using ${map.label}. The robot assumes it's on its charging pile: if it isn't, set its position."
+        }
+    }
+
+    fun renameMap(map: SavedMap, name: String) {
+        val clean = name.trim()
+        val problem = mapProblemNow(mapping = null) ?: when {
+            clean.isEmpty() -> "Give the map a name."
+            clean.length > MAX_MAP_NAME -> "Use a name of $MAX_MAP_NAME characters or fewer."
+            else -> null
+        }
+        runMapCommand("Renaming ${map.label} …", problem) { a ->
+            mapCommand(a, RENAME_MAP_PATH, JSONObject().put("name", map.id).put("alias", clean).toString())
+                ?.let { return@runMapCommand "Couldn't rename ${map.label}: $it" }
+            if (currentMap?.id == map.id) currentMap = currentMap?.copy(alias = clean)
+            (maps as? Maps.Loaded)?.let { m -> maps = Maps.Loaded(m.list.map { if (it.id == map.id) it.copy(alias = clean) else it }) }
+            "Renamed ${map.label} to $clean"
+        }
+    }
+
+    /**
+     * Moves [map] to the robot's bin (/cmd/trash_map), where the robot keeps it 30 days;
+     * [restoreMap] brings it back. Never the map in use (the robot refuses that too).
+     */
+    fun deleteMap(map: SavedMap) {
+        val problem = mapProblemNow(mapping = null)
+            ?: if (map.id == currentMap?.id) "Switch to another map before deleting ${map.label}." else null
+        runMapCommand("Deleting ${map.label} …", problem) { a ->
+            mapCommand(a, TRASH_MAP_PATH, JSONObject().put("name", map.id).toString())
+                ?.let { return@runMapCommand "Couldn't delete ${map.label}: $it" }
+            trashed = map
+            (maps as? Maps.Loaded)?.let { m -> maps = Maps.Loaded(m.list.filterNot { it.id == map.id }) }
+            "Moved ${map.label} to the robot's bin. It stays there 30 days."
+        }
+    }
+
+    /** Brings back the last map moved to the bin (/cmd/restore_map). */
+    fun restoreMap() {
+        val map = trashed ?: return
+        runMapCommand("Restoring ${map.label} …", mapProblemNow(mapping = null)) { a ->
+            mapCommand(a, RESTORE_MAP_PATH, JSONObject().put("name", map.id).toString())
+                ?.let { return@runMapCommand "Couldn't restore ${map.label}: $it" }
+            trashed = null
+            maps = Maps.NotLoaded
+            "Restored ${map.label}"
+        }
+    }
+
+    /**
+     * Tells the robot where it stands on the map in use (/cmd/reloc_pose), for example after
+     * switching maps away from the pile. GUESS: reloc_pose (rather than reloc_absolute) lets the
+     * robot refine the position against its laser scan.
+     */
+    fun setPosition(pose: Pose) {
+        runMapCommand("Setting the robot's position …", mapProblemNow(mapping = false)) { a ->
+            val body = JSONObject().put("x", round3(pose.x)).put("y", round3(pose.y)).put("theta", round3(pose.theta)).toString()
+            mapCommand(a, RELOC_PATH, body)?.let { return@runMapCommand "Couldn't set the position: $it" }
+            atPoint = null
+            fmt("Position set: x %.2f, y %.2f, facing %.0f°", pose.x, pose.y, Math.toDegrees(pose.theta))
+        }
+    }
+
+    /**
+     * Why a map command can't run now, or null. [mapping]: true = only while the robot is
+     * mapping, false = only while it isn't, null = either.
+     */
+    private fun mapProblemNow(mapping: Boolean?): String? {
+        val s = snapshot()
+        return when {
+            s.mapStep != null -> "Wait for \"${s.mapStep}\" to finish."
+            !s.connected -> "Connect to the robot first."
+            s.busy || !s.still -> "Wait for the robot to stand still."
+            s.uv != null || s.lampsOffOwed -> "Switch the UV lamps off first."
+            mapping == true && !s.mapping -> "The robot isn't mapping."
+            mapping == false && s.mapping -> "Save or discard the map being made first."
+            else -> null
+        }
+    }
+
+    /**
+     * Runs one map command at a time, unless there is a [problem]. [step] shows while it runs;
+     * what [block] returns is logged and shown with the map.
+     */
+    private fun runMapCommand(step: String, problem: String?, block: suspend (RobotApi) -> String) {
+        if (problem != null) {
+            mapMessage = problem
+            publish()
+            return
+        }
+        mapStep = step
+        mapMessage = null
+        log(step)
+        publish()
+        val a = api
+        mapCommandJob = scope.launch {
+            val result = block(a)
+            log(result)
+            mapMessage = result
+            mapStep = null
+            modeStale = true
+            publish()
+        }
+    }
+
+    /** POSTs one map command: null if the robot accepted it, else what went wrong. */
+    private suspend fun mapCommand(a: RobotApi, path: String, json: String): String? {
+        log("Map: sending $path $json")
+        val r = a.post(path, json)
+        val rejected = if (r.ok) robotError(r.body) else null
+        return when {
+            !r.ok -> "FAILED ${r.error}"
+            rejected != null -> "robot rejected: $rejected"
+            else -> null
+        }
+    }
+
     // ------------------------------------------------------------------ demo controls
 
     fun demoToggleEstop() {
@@ -1302,7 +1951,11 @@ class DriveController(
             log("Switch the UV lamps off before resetting the DEMO robot.")
         } else {
             demoRobot.reset()
-            log("DEMO robot reset: centre of the room, no faults")
+            modeStale = true
+            refreshImage()
+            maps = Maps.NotLoaded
+            trashed = null
+            log("DEMO robot reset: centre of the room, its own maps, no faults")
         }
         publish()
     }
@@ -1351,6 +2004,18 @@ class DriveController(
             demoRobot.isNavigating, demoRobot.isBusy, demoRobot.isUvOn,
         ) else null,
         log = logLines.toList(),
+        mode = mode,
+        currentMap = currentMap,
+        mapImage = mapImage,
+        mapProblem = mapProblem,
+        robotPose = robotPose,
+        maps = maps,
+        mapStep = mapStep,
+        mapMessage = mapMessage,
+        trashed = trashed,
+        walls = walls,
+        pendingPoints = pendingPoints,
+        pendingWalls = pendingWalls,
     )
 
     companion object {
@@ -1369,6 +2034,20 @@ class DriveController(
         // firmware's own planned braking is ~0.2-0.3 m/s^2; a jump to zero is 7-20 m/s^2.
         const val JOG_ACCEL = 0.4           // m/s^2: 0.02 m/s per command
         const val JOG_ANGULAR_ACCEL = 0.8   // rad/s^2: 0.04 rad/s per command
+        // Letting go slows down twice as fast as pressing speeds up (2026-10-14: at the same rate,
+        // short presses ran on well past where the finger lifted). Still far gentler than a bare 0.
+        const val JOG_BRAKE = 0.8           // m/s^2: from 0.3 m/s to rest in ~0.35 s
+        const val JOG_ANGULAR_BRAKE = 1.6   // rad/s^2
+        // From rest the first command is this, not one stair: a stair's 0.02 m/s barely turns the
+        // wheels. Slowing down, from here the next command is zero.
+        const val JOG_START_VX = 0.05       // m/s
+        const val JOG_START_VTH = 0.1       // rad/s
+        // A tap (let go sooner than TAP_MS) nudges by a fixed small step instead (see release()).
+        const val TAP_MS = 250L
+        const val NUDGE_CM = 5
+        const val NUDGE_DEG = 5
+        const val NUDGE_SPEED = 0.15        // m/s
+        const val NUDGE_TURN_SPEED = 0.3    // rad/s
         const val JOG_TICK_MS = 50L         // a command every 50 ms (the robot's watchdog needs < ~1 s)
         const val JOG_FINAL_ZEROS = 1       // zeros sent again after the ramp reaches zero
         const val JOG_FAILS = 3             // failed commands in a row before a hold ends
@@ -1401,9 +2080,9 @@ class DriveController(
         const val DOCK_PATH = "/cmd/charge"
         // type 0 = dock with a pile close by, 1 = cancel docking, 2 = navigate to the pile's
         // point, then dock. The robot's pile point is named "charging_pile".
-        private const val DOCK_START = """{"type":0,"point":"charging_pile"}"""
         private const val DOCK_CANCEL = """{"type":1,"point":"charging_pile"}"""
-        private const val CHARGE_NAV = """{"type":2,"point":"charging_pile"}"""
+        /** /cmd/charge with the pile's point name on the map in use. */
+        private fun chargeJson(type: Int, pile: String) = JSONObject().put("type", type).put("point", pile).toString()
         private const val CHARGE_NOT_FOUND = 9          // chargeFlag: no pile found while docking
         // GO TO CHARGER docks straight away within this distance of the pile's point, else drives
         // there first. GUESS: the docking routine's real range was never measured; kept short.
@@ -1447,14 +2126,100 @@ class DriveController(
         const val MAX_UV_DELAY_S = 120
         const val LAMPS_OFF_RETRY_MS = 1_500L
 
-        /**
-         * {"waypoints":[{name,type,pose{x,y,theta}}]}, without the charging pile, which has
-         * its own button. The pile is matched by name, and by its API type "charge" in case it
-         * was renamed.
-         */
-        private fun parsePoints(body: String): List<Waypoint> = parseWaypoints(body).filterNot { isPile(it) }
+        // ---- Maps (REEMAN SLAM WEB API, "map module"). The documented reads /robot/get_mode,
+        // /robot/map and /robot/history_map answered 404 on this robot (probe 2026-09-23,
+        // v5.1.12); the same reads answered under /reeman/. Not yet re-checked on v5.1.20. ----
+        private const val MODE_PATH = "/reeman/get_mode"         // {"mode":1|2|3}
+        private const val CURRENT_MAP_PATH = "/reeman/current_map" // {"name":id,"alias":"..."}
+        private const val MAP_PATH = "/reeman/map"               // size, resolution, origin, PNG data URL
+        private const val MAPS_PATH = "/reeman/history_map"      // {"maps":[{name,alias,map{...}}]}
+        private const val SET_MODE_PATH = "/cmd/set_mode"
+        private const val SAVE_MAP_PATH = "/cmd/save_map"
+        private const val APPLY_MAP_PATH = "/cmd/apply_map"
+        private const val RENAME_MAP_PATH = "/cmd/rename_map"
+        private const val TRASH_MAP_PATH = "/cmd/trash_map"
+        private const val RESTORE_MAP_PATH = "/cmd/restore_map"
+        private const val RELOC_PATH = "/cmd/reloc_pose"
+        private const val POSE_PATH = "/reeman/pose"
+        const val MAP_TICK_MS = 500L        // the robot's pose updates at ~5 Hz
+        const val MODE_EVERY = 6            // mode and map in use every ~3 s
+        const val MAP_REFRESH_MS = 2000L    // the image, at most this often (while mapping)
+        const val MAX_MAP_NAME = 32
+        private const val BASE64_MARK = "base64,"
+        // Virtual walls. The documented read (/reeman/restrictt_layer) answered 009 on this robot;
+        // /reeman/restrict_layer answered (probe 2026-09-23). Writing sends the whole set.
+        private const val WALLS_PATH = "/reeman/restrict_layer"
+        private const val SET_WALLS_PATH = "/cmd/restrict_layer"
+        const val MIN_WALL_M = 0.2
+        private const val PILE_TYPE = "charge"
 
-        /** Every saved point, the pile included. */
+        /** {"waypoints":[{"pose":{"point1":{"x","y"},"point2":{"x","y"}}}]}; null "waypoints" = none. */
+        private fun parseWalls(body: String): List<Wall> {
+            val list = JSONObject(body).optJSONArray("waypoints") ?: return emptyList()
+            return (0 until list.length()).map { i ->
+                val pose = list.getJSONObject(i).getJSONObject("pose")
+                val p1 = pose.getJSONObject("point1")
+                val p2 = pose.getJSONObject("point2")
+                Wall(p1.getDouble("x"), p1.getDouble("y"), p2.getDouble("x"), p2.getDouble("y"))
+            }
+        }
+
+        private fun wallsJson(list: List<Wall>): String {
+            val arr = org.json.JSONArray()
+            list.forEach { w ->
+                arr.put(
+                    JSONObject().put(
+                        "pose",
+                        JSONObject()
+                            .put("point1", JSONObject().put("x", round3(w.x1)).put("y", round3(w.y1)))
+                            .put("point2", JSONObject().put("x", round3(w.x2)).put("y", round3(w.y2))),
+                    )
+                )
+            }
+            return JSONObject().put("waypoints", arr).toString()
+        }
+
+        /** The robot may round what it stores: match walls to the centimetre. */
+        private fun sameWall(a: Wall, b: Wall) =
+            abs(a.x1 - b.x1) < 0.01 && abs(a.y1 - b.y1) < 0.01 && abs(a.x2 - b.x2) < 0.01 && abs(a.y2 - b.y2) < 0.01
+
+        private fun modeJson(m: RobotMode) = """{"mode":${m.code}}"""
+
+        private fun parseMode(body: String): RobotMode? =
+            runCatching { RobotMode.of(JSONObject(body).getInt("mode")) }.getOrNull()
+
+        /** {"name":id,"alias":"..."}; null for an error reply. */
+        private fun parseCurrentMap(body: String): SavedMap? = runCatching {
+            val o = JSONObject(body)
+            SavedMap(o.getString("name"), o.optString("alias"))
+        }.getOrNull()?.takeIf { it.id.isNotEmpty() }
+
+        /** {"width","height","resolution","origin_x","origin_y","image_url":"data:image/png;base64,..."} */
+        private fun parseMapImage(o: JSONObject): MapImage? {
+            val url = o.optString("image_url")
+            val at = url.indexOf(BASE64_MARK)
+            if (at < 0) return null
+            return MapImage(
+                o.getInt("width"), o.getInt("height"), o.optDouble("resolution", 0.0),
+                o.optDouble("origin_x", 0.0), o.optDouble("origin_y", 0.0), url.substring(at + BASE64_MARK.length),
+            )
+        }
+
+        private fun parseMaps(body: String): List<SavedMap> {
+            val list = JSONObject(body).optJSONArray("maps") ?: return emptyList()
+            return (0 until list.length()).map { i ->
+                val o = list.getJSONObject(i)
+                val map = o.optJSONObject("map")
+                // GUESS: the alias may sit with the image on some firmware.
+                val alias = o.optString("alias").ifBlank { map?.optString("alias").orEmpty() }
+                SavedMap(o.getString("name"), alias, map?.let { runCatching { parseMapImage(it) }.getOrNull() })
+            }
+        }
+
+        /**
+         * Every saved point, the pile included: {"waypoints":[{name,type,pose{x,y,theta}}]}. The pile
+         * is matched by name, and by its API type "charge" in case it was renamed (see [isPile]).
+         */
         private fun parseWaypoints(body: String): List<Waypoint> {
             val list = JSONObject(body).optJSONArray("waypoints") ?: return emptyList() // none saved: may be null
             return (0 until list.length()).map { i ->
@@ -1477,9 +2242,25 @@ class DriveController(
 
         /** One stair of the ramp: from [from] towards [to], by at most one command's worth. */
         private fun ramp(from: Velocity, to: Velocity) = Velocity(
-            toward(from.vx, to.vx, JOG_ACCEL * JOG_TICK_MS / 1000.0),
-            toward(from.vth, to.vth, JOG_ANGULAR_ACCEL * JOG_TICK_MS / 1000.0),
+            stair(from.vx, to.vx, JOG_ACCEL, JOG_BRAKE, JOG_START_VX),
+            stair(from.vth, to.vth, JOG_ANGULAR_ACCEL, JOG_ANGULAR_BRAKE, JOG_START_VTH),
         )
+
+        /**
+         * One axis of [ramp]. From rest it starts at [start] at once (slower barely turns the
+         * wheels, and only delays the start); it speeds up at [up] and slows down at [down], the
+         * quicker of the two, so letting go stops it sooner. At or below [start], slowing to a
+         * stop goes straight to zero. Reversing slows to zero first, then starts the other way.
+         */
+        private fun stair(a: Double, b: Double, up: Double, down: Double, start: Double): Double {
+            if (a == b) return b
+            val tick = JOG_TICK_MS / 1000.0
+            val away = a == 0.0 || (sign(a) == sign(b) && abs(b) > abs(a))
+            if (away) return if (abs(a) < start) sign(b) * min(start, abs(b)) + 0.0 else toward(a, b, up * tick)
+            val goal = if (b != 0.0 && sign(b) == sign(a)) b else 0.0
+            val next = toward(a, goal, down * tick)
+            return if (goal == 0.0 && abs(next) <= start) 0.0 else next
+        }
 
         private fun toward(a: Double, b: Double, step: Double) =
             (if (abs(b - a) <= step + 1e-9) b else a + step * sign(b - a)) + 0.0 // + 0.0: never -0.0
