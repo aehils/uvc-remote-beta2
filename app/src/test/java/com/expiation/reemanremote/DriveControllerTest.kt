@@ -481,4 +481,412 @@ class DriveControllerTest {
         val c = ready()
         assertTrue(c.state.value.log.all { "[DEMO]" in it })
     }
+
+    // ------------------------------------------------------------------ UV disinfection
+
+    private fun uvOn(c: DriveController) = c.demoRobot.isUvOn
+
+    /** Ready, with the lamps on (countdown skipped). */
+    private fun TestScope.lampsOn(minutes: Int = 5): DriveController {
+        val c = ready()
+        c.setUvSettings(UvSettings(minutes))
+        c.startDisinfection()
+        c.startDisinfectionNow()
+        waitFor(c) { it.uv is Uv.On }
+        assertTrue(uvOn(c))
+        return c
+    }
+
+    @Test
+    fun disinfectionCountsDownThenRunsForTheSetTime() = runTest {
+        val c = ready()
+        c.setUvSettings(UvSettings(minutes = 1, delaySeconds = 15))
+        c.startDisinfection()
+        assertTrue(c.state.value.uv is Uv.Countdown)
+        assertFalse(c.state.value.canDrive)
+
+        advanceTimeBy(14_000)
+        assertFalse("not before the delay", uvOn(c))
+        val tookOn = waitFor(c) { it.uv is Uv.On }
+        assertTrue(uvOn(c))
+        assertTrue("took $tookOn ms", tookOn < 2_000)
+
+        c.drive(Move.FORWARD) // locked while the lamps are on
+        assertEquals(StepPhase.Idle, c.state.value.phase)
+
+        val ran = waitFor(c, maxMs = 70_000) { it.uv == null }
+        assertTrue("ran $ran ms", ran in 59_000..61_000)
+        waitFor(c) { !it.lampsOffOwed }
+        assertFalse(uvOn(c))
+        assertTrue(log(c), logged(c, "Disinfection done: UV lamps off"))
+        assertTrue(c.state.value.canDrive)
+    }
+
+    @Test
+    fun cancelDuringTheCountdownNeverSwitchesTheLampsOn() = runTest {
+        val c = ready()
+        c.setUvSettings(UvSettings(minutes = 1, delaySeconds = 15))
+        c.startDisinfection()
+        advanceTimeBy(3_000)
+        c.stopDisinfection()
+        advanceTimeBy(20_000)
+        assertFalse(uvOn(c))
+        assertEquals(null, c.state.value.uv)
+        assertFalse("nothing sent", logged(c, DriveController.UV_PATH))
+        assertTrue(log(c), logged(c, "cancelled before the lamps came on"))
+    }
+
+    @Test
+    fun startNowSkipsTheCountdown() = runTest {
+        val c = ready()
+        c.startDisinfectionNow() // no countdown running: does nothing
+        assertEquals(null, c.state.value.uv)
+
+        c.setUvSettings(UvSettings(minutes = 1, delaySeconds = 60))
+        c.startDisinfection()
+        advanceTimeBy(2_000)
+        assertFalse(uvOn(c))
+        c.startDisinfectionNow()
+        val took = waitFor(c) { it.uv is Uv.On }
+        assertTrue("took $took ms", took < 1_000)
+        assertTrue(uvOn(c))
+        assertTrue(log(c), logged(c, "countdown skipped"))
+
+        val ran = waitFor(c, maxMs = 70_000) { it.uv == null } // the full time, from START NOW
+        assertTrue("ran $ran ms", ran in 59_000..61_000)
+        waitFor(c) { !it.lampsOffOwed }
+        assertFalse(uvOn(c))
+    }
+
+    @Test
+    fun stopSwitchesTheLampsOff() = runTest {
+        val c = lampsOn()
+        c.stop()
+        waitFor(c) { !it.lampsOffOwed }
+        assertFalse(uvOn(c))
+        assertEquals(null, c.state.value.uv)
+        assertTrue(log(c), logged(c, "STOP pressed. UV lamps off"))
+    }
+
+    @Test
+    fun stopSwitchesOffLampsThisAppDidNotSwitchOn() = runTest {
+        val c = ready()
+        c.demoRobot.handle("POST", DriveController.UV_PATH, """{"type":"24v","operation":"1"}""") // the robot's own app
+        assertTrue(uvOn(c))
+        c.stop()
+        advanceTimeBy(2_000)
+        assertFalse(uvOn(c))
+    }
+
+    @Test
+    fun stopWhileOnIsInFlightStillEndsWithTheLampsOff() = runTest {
+        val c = ready()
+        c.startDisinfection()
+        c.startDisinfectionNow()
+        assertTrue(c.state.value.uv is Uv.Starting)
+        c.stop() // before the robot has answered the ON
+        advanceTimeBy(2_000)
+        assertFalse("OFF must not overtake ON", uvOn(c))
+        assertEquals(null, c.state.value.uv)
+        assertFalse(c.state.value.lampsOffOwed)
+    }
+
+    @Test
+    fun leavingTheAppSwitchesTheLampsOff() = runTest {
+        val c = lampsOn()
+        c.pause()
+        advanceTimeBy(2_000)
+        assertFalse(uvOn(c))
+        assertTrue(log(c), logged(c, "app left"))
+    }
+
+    @Test
+    fun estopEndsTheRun() = runTest {
+        val c = lampsOn()
+        c.demoToggleEstop()
+        waitFor(c) { it.uv == null && !it.lampsOffOwed }
+        assertFalse(uvOn(c))
+        assertTrue(log(c), logged(c, "e-stop pressed"))
+    }
+
+    @Test
+    fun robotMovingEndsTheRun() = runTest {
+        val c = lampsOn()
+        c.demoChargeOnItsOwn()
+        waitFor(c) { it.uv == null && !it.lampsOffOwed }
+        assertFalse(uvOn(c))
+        assertTrue(log(c), logged(c, "the robot moved"))
+    }
+
+    @Test
+    fun offIsRetriedUntilTheRobotAcceptsIt() = runTest {
+        val c = lampsOn()
+        c.demoToggleWifi()
+        waitFor(c) { it.uv == null }
+        assertTrue(log(c), logged(c, "lost connection"))
+        assertTrue("owed while unreachable", c.state.value.lampsOffOwed)
+        assertTrue("the robot never heard OFF", uvOn(c))
+        advanceTimeBy(5_000)
+        assertTrue(c.state.value.lampsOffOwed)
+        assertEquals(1, c.state.value.log.count { "THE LAMPS MAY STILL BE ON" in it })
+
+        c.demoToggleWifi()
+        waitFor(c) { !it.lampsOffOwed }
+        assertFalse(uvOn(c))
+        assertTrue(log(c), logged(c, "robot accepted OFF"))
+    }
+
+    @Test
+    fun noModeSwitchWhileTheLampsMayBeOn() = runTest {
+        val c = lampsOn()
+        assertFalse(c.setDemo(false))
+        assertTrue(c.state.value.demo)
+        assertTrue(logged(c, "Switch the UV lamps off before changing robot"))
+    }
+
+    @Test
+    fun arrivingAtAPointNamesTheRun() = runTest {
+        val (c, points) = withPoints()
+        assertEquals("starts in the room centre", null, c.state.value.atPoint)
+        c.goTo(points[0])
+        waitFor(c, maxMs = 60_000) { it.phase == StepPhase.Idle }
+        assertEquals(log(c), points[0], c.state.value.atPoint)
+
+        c.setUvSettings(UvSettings(minutes = 1))
+        c.startDisinfection()
+        c.startDisinfectionNow()
+        assertEquals("Bed 1", c.state.value.uv?.point)
+        waitFor(c) { it.uv is Uv.On }
+        assertTrue(log(c), logged(c, "UV lamps ON for 1 min at Bed 1"))
+    }
+
+    // ------------------------------------------------------------------ hold-to-drive
+
+    private fun vxNow(c: DriveController) =
+        Regex("\"vx\":(-?[0-9.]+)").find(c.demoRobot.handle("GET", "/reeman/speed", null)!!.body)!!.groupValues[1].toDouble()
+
+    /** Keeps [move] held, the way the screen reports it, for [ms]; returns the robot's speed every 100 ms. */
+    private fun TestScope.keepHolding(c: DriveController, move: Move, ms: Long): List<Double> {
+        val speeds = mutableListOf<Double>()
+        repeat((ms / DriveController.HOLD_ALIVE_MS).toInt()) {
+            advanceTimeBy(DriveController.HOLD_ALIVE_MS)
+            c.holdAlive(move)
+            speeds += vxNow(c)
+        }
+        return speeds
+    }
+
+    /** The fastest the speed fell (or, [up], rose) over any 0.2 s, in m/s² (0.2 s, so encoder noise doesn't count). */
+    private fun hardest(speeds: List<Double>, up: Boolean = false) =
+        speeds.windowed(3).maxOf { (if (up) it[2] - it[0] else it[0] - it[2]) / 0.2 }
+
+    @Test
+    fun holdRampsUpDrivesThenEasesToAStopWhenLetGo() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        assertEquals(Move.FORWARD, c.state.value.holding)
+        val speeds = keepHolding(c, Move.FORWARD, 3000).toMutableList()
+        assertTrue("moving within 0.5 s: $speeds", speeds[4] > 0.05)
+        assertTrue("at full speed within ~1 s: $speeds", speeds.drop(12).all { it > 0.28 })
+        val x = robotX(c)
+
+        c.release(Move.FORWARD)
+        assertTrue(c.state.value.phase is StepPhase.Stepping)
+        assertFalse("locked until still", c.state.value.canDrive)
+        val released = speeds.size
+        while (c.state.value.phase != StepPhase.Idle) {
+            advanceTimeBy(100)
+            speeds += vxNow(c)
+        }
+        assertTrue(log(c), logged(c, "Forward (held): let go after 3.0 s"))
+        assertTrue(log(c), logged(c, "Forward (held): done"))
+        assertTrue("stopped within ~1.1 s: $speeds", speeds.drop(released + 11).all { abs(it) < 0.02 })
+        val ranOn = robotX(c) - x
+        assertTrue("ran on $ranOn m", ranOn in 0.12..0.25)
+        // Never a jump: the speed only ever changed at the app's ramp (0.4 m/s²), both ways.
+        assertTrue("braked at ${hardest(speeds)} m/s²", hardest(speeds) < 0.5)
+        assertTrue("sped up at ${hardest(speeds, up = true)} m/s²", hardest(speeds, up = true) < 0.5)
+        assertFalse("letting go is not a STOP", logged(c, "STOP"))
+        assertTrue(c.state.value.canDrive)
+    }
+
+    @Test
+    fun aTapBarelyMovesTheRobot() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        advanceTimeBy(80)
+        c.release(Move.FORWARD)
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue("moved ${robotX(c)} m", robotX(c) < 0.03)
+    }
+
+    @Test
+    fun holdingTurnsAndBacksUp() = runTest {
+        val c = ready()
+        c.hold(Move.LEFT)
+        keepHolding(c, Move.LEFT, 2000)
+        assertEquals(DriveController.TURN_SPEED, c.state.value.vth, 0.02)
+        c.release(Move.LEFT)
+        waitFor(c) { it.phase == StepPhase.Idle }
+        c.hold(Move.BACK)
+        keepHolding(c, Move.BACK, 2000)
+        assertEquals(-DriveController.BACKWARD_SPEED, c.state.value.vx, 0.02)
+        c.release(Move.BACK)
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), logged(c, "Back (held): done"))
+    }
+
+    @Test
+    fun aButtonThatStopsReportingCountsAsLetGo() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD) // and then nothing: the screen froze, say
+        advanceTimeBy(600)
+        assertTrue(log(c), logged(c, "lost track of the button"))
+        assertTrue(c.state.value.phase is StepPhase.Stepping)
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue("0.4 s of ramp up, then down: ${robotX(c)} m", robotX(c) < 0.12)
+    }
+
+    @Test
+    fun onlyTheHeldArrowCounts() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        c.hold(Move.LEFT) // a second finger
+        c.release(Move.LEFT)
+        c.holdAlive(Move.LEFT)
+        assertEquals(Move.FORWARD, c.state.value.holding)
+        c.release(Move.FORWARD)
+        assertEquals(null, c.state.value.holding)
+    }
+
+    @Test
+    fun stopWhileHeldStopsForGoodEvenWithTheFingerStillDown() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        keepHolding(c, Move.FORWARD, 1500)
+        c.stop()
+        assertTrue(c.state.value.phase is StepPhase.Stopping)
+        keepHolding(c, Move.FORWARD, 4000) // still pressed: must not drive again
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), logged(c, "Forward (held): stopped"))
+        assertEquals("one press, one drive", 1, c.state.value.log.count { "driving at" in it })
+        val x = robotX(c)
+        keepHolding(c, Move.FORWARD, 2000)
+        assertEquals("still stopped", x, robotX(c), 0.001)
+        c.release(Move.FORWARD)
+    }
+
+    @Test
+    fun holdEndsWhenTheRobotStopsByItself() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD) // towards the east wall, ~2.2 m ahead
+        var held = 0L
+        while (c.state.value.holding != null) {
+            check(held < 15_000) { log(c) }
+            keepHolding(c, Move.FORWARD, 500)
+            held += 500
+        }
+        assertTrue(log(c), logged(c, "the robot stopped while held. Obstacle in the way?"))
+        keepHolding(c, Move.FORWARD, 3000) // still pressed: no more pushing into the wall
+        assertEquals(StepPhase.Idle, c.state.value.phase)
+        assertEquals("not moving", 0.0, vxNow(c), 0.01)
+        c.release(Move.FORWARD)
+    }
+
+    @Test
+    fun wifiLostWhileHeldTheRobotsWatchdogStopsIt() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        keepHolding(c, Move.FORWARD, 2000)
+        val x = robotX(c)
+        c.demoToggleWifi()
+        repeat(60) { // 6 s, finger still down; nothing reaches the robot
+            advanceTimeBy(100)
+            c.holdAlive(Move.FORWARD)
+        }
+        assertEquals(null, c.state.value.holding)
+        assertTrue(log(c), logged(c, "Slowing to a stop; let go and press again"))
+        c.demoToggleWifi()
+        // The known weak spot: ~1.2 s more at full speed, then the watchdog's hard stop.
+        val ranOn = robotX(c) - x
+        assertTrue("ran on $ranOn m", ranOn <= 0.3 * 1.4 + 0.05)
+        keepHolding(c, Move.FORWARD, 2000)
+        assertEquals("doesn't set off again when Wi-Fi comes back", 0.0, vxNow(c), 0.01)
+        c.release(Move.FORWARD)
+    }
+
+    @Test
+    fun eStopWhileHeldEndsTheHold() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        keepHolding(c, Move.FORWARD, 1000)
+        c.demoToggleEstop()
+        keepHolding(c, Move.FORWARD, 2000)
+        assertEquals(null, c.state.value.holding)
+        assertTrue(log(c), logged(c, "Forward (held): e-stop pressed"))
+    }
+
+    @Test
+    fun pressingAgainWhileSlowingCarriesOnFromTheCurrentSpeed() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        keepHolding(c, Move.FORWARD, 2000)
+        c.release(Move.FORWARD)
+        advanceTimeBy(300)
+        assertTrue(c.state.value.canHold(Move.FORWARD))
+        c.hold(Move.FORWARD)
+        assertTrue(log(c), logged(c, "pressed while slowing"))
+        val speeds = keepHolding(c, Move.FORWARD, 1500)
+        assertTrue("no dip: $speeds", speeds.all { it > 0.12 })
+        c.release(Move.FORWARD)
+    }
+
+    @Test
+    fun forwardThenBackRampsThroughZero() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        val speeds = keepHolding(c, Move.FORWARD, 2000).toMutableList()
+        c.release(Move.FORWARD)
+        advanceTimeBy(100)
+        c.hold(Move.BACK)
+        speeds += keepHolding(c, Move.BACK, 2500)
+        assertEquals(-DriveController.BACKWARD_SPEED, speeds.last(), 0.02)
+        assertTrue("braked at ${hardest(speeds)} m/s²", hardest(speeds) < 0.5)
+        c.release(Move.BACK)
+    }
+
+    @Test
+    fun oneHoldLastsThirtySecondsAtMost() = runTest {
+        val c = ready()
+        c.hold(Move.LEFT) // turning on the spot, so no wall ends it first
+        keepHolding(c, Move.LEFT, DriveController.HOLD_MAX_MS + 1000)
+        assertEquals(null, c.state.value.holding)
+        assertTrue(log(c), logged(c, "Left (held): held for 30 s"))
+        c.release(Move.LEFT)
+    }
+
+    @Test
+    fun stillMovingLongAfterLetGoSendsStop() = runTest {
+        val c = ready()
+        c.hold(Move.FORWARD)
+        keepHolding(c, Move.FORWARD, 1000)
+        c.release(Move.FORWARD)
+        advanceTimeBy(1200) // the speed has ramped down; the lock waits for stillness
+        // A drive command reaching the robot late, say: it runs on.
+        c.demoRobot.handle("POST", "/cmd/move", """{"distance":300,"direction":1,"speed":0.30}""")
+        waitFor(c) { it.phase is StepPhase.Stopping }
+        assertTrue(log(c), logged(c, "still moving 5 s after it was let go"))
+        assertTrue(log(c), logged(c, "STOP sent by the app"))
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue("stopped short of 3 m: ${robotX(c)}", robotX(c) < 2.0)
+    }
+
+    @Test
+    fun uvSettingsAreKeptInRange() = runTest {
+        val c = controller()
+        c.setUvSettings(UvSettings(minutes = 0, delaySeconds = 0)) // say, 0 s saved by an older build
+        assertEquals(UvSettings(1, DriveController.MIN_UV_DELAY_S), c.state.value.uvSettings)
+        c.setUvSettings(UvSettings(minutes = 999, delaySeconds = 999))
+        assertEquals(UvSettings(DriveController.MAX_UV_MINUTES, DriveController.MAX_UV_DELAY_S), c.state.value.uvSettings)
+    }
 }

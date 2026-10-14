@@ -30,7 +30,7 @@ class FakeRobotTest {
     private fun vth() = num(get("/reeman/speed"), "vth")
     private fun pose(key: String) = num(get("/reeman/pose"), key)
 
-    private fun forward() = assertEquals("{}", post("/cmd/move", """{"distance":50,"direction":1,"speed":0.30}"""))
+    private fun forward() = assertEquals(FakeRobot.OK, post("/cmd/move", """{"distance":50,"direction":1,"speed":0.30}"""))
 
     @Test
     fun statusMatchesFirmwareShapes() {
@@ -58,7 +58,7 @@ class FakeRobotTest {
     }
 
     private fun chargeFlag() = num(get("/reeman/base_encode"), "chargeFlag")
-    private fun dock() = assertEquals("{}", post("/cmd/charge", """{"type":0,"point":"charging_pile"}"""))
+    private fun dock() = assertEquals(FakeRobot.OK, post("/cmd/charge", """{"type":0,"point":"charging_pile"}"""))
 
     @Test
     fun dockTurnsAwayFromThePileThenReversesOntoItAndCharges() {
@@ -97,7 +97,7 @@ class FakeRobotTest {
         dock()
         advance(3.0)
         assertTrue(vx() < -0.05)
-        assertEquals("{}", post("/cmd/charge", """{"type":1,"point":"charging_pile"}"""))
+        assertEquals(FakeRobot.OK, post("/cmd/charge", """{"type":1,"point":"charging_pile"}"""))
         assertEquals(0.0, vx(), 0.0)
         assertEquals(0.0, chargeFlag(), 0.0)
     }
@@ -115,7 +115,7 @@ class FakeRobotTest {
     @Test
     fun navTurnsDrivesAndSettlesOnThePointsHeading() {
         assertTrue("no plan while idle", !planning())
-        assertEquals("{}", nav("Bed 1"))
+        assertEquals(FakeRobot.OK, nav("Bed 1"))
         advance(1.0)
         assertTrue("turning to face the point first", abs(vth()) > 0.1)
         assertTrue(planning())
@@ -131,7 +131,7 @@ class FakeRobotTest {
         nav("Bed 2")
         advance(5.0)
         assertTrue(planning())
-        assertEquals("{}", post("/cmd/cancel_goal", "{}"))
+        assertEquals(FakeRobot.OK, post("/cmd/cancel_goal", "{}"))
         assertEquals(0.0, vx(), 0.0)
         assertEquals(0.0, vth(), 0.0)
         assertTrue(!planning())
@@ -139,7 +139,7 @@ class FakeRobotTest {
 
     @Test
     fun setPointSavesAPointTheRobotCanGoTo() {
-        assertEquals("{}", post("/cmd/position", """{"name":"Door","type":"delivery","pose":{"x":0.8,"y":-0.4,"theta":0.0}}"""))
+        assertEquals(FakeRobot.OK, post("/cmd/position", """{"name":"Door","type":"delivery","pose":{"x":0.8,"y":-0.4,"theta":0.0}}"""))
         assertTrue(get("/reeman/position").contains(""""name":"Door","type":"delivery","pose":{"x":0.8000,"y":-0.4000"""))
         assertTrue("type must be one the API lists",
             post("/cmd/position", """{"name":"X","type":"disinfect","pose":{"x":0,"y":0,"theta":0}}""").contains("004"))
@@ -169,7 +169,7 @@ class FakeRobotTest {
 
     @Test
     fun chargeType2NavigatesToThePileThenDocks() {
-        assertEquals("{}", post("/cmd/charge", """{"type":2,"point":"charging_pile"}"""))
+        assertEquals(FakeRobot.OK, post("/cmd/charge", """{"type":2,"point":"charging_pile"}"""))
         advance(2.0)
         assertTrue("a trip with a plan", planning())
         advance(60.0)
@@ -224,7 +224,7 @@ class FakeRobotTest {
         forward()
         advance(1.5)
         assertTrue(vx() > 0.1)
-        assertEquals("{}", post("/cmd/move", """{"distance":0,"direction":1,"speed":0}"""))
+        assertEquals(FakeRobot.OK, post("/cmd/move", """{"distance":0,"direction":1,"speed":0}"""))
         assertEquals(0.0, vx(), 1e-9)
         advance(1.0)
         assertEquals(0.0, vx(), 1e-9)
@@ -284,11 +284,31 @@ class FakeRobotTest {
         val r = robot.handle("GET", "/robot/get_mode", null)!!
         assertEquals(404, r.code)
         assertTrue(r.body.contains("\"error_code\":\"009\""))
-        assertTrue(post("/cmd/speed", """{"vx":0.2,"vth":0}""").contains("\"error_code\":\"004\""))
         assertTrue(
             "more than 180 degrees is rejected",
             post("/cmd/turn", """{"direction":1,"angle":270,"speed":0.4}""").contains("004"),
         )
+    }
+
+    @Test
+    fun speedStreamingIsInstantAndTheWatchdogStopsItHard() {
+        post("/cmd/speed", """{"vx":0.3,"vth":0}""")
+        advance(0.1)
+        assertEquals("still inside the ~200 ms latency", 0.0, vx(), 1e-9)
+        advance(0.15)
+        assertEquals("no ramp of its own", 0.3, vx(), 1e-9)
+        post("/cmd/speed", """{"vx":0.2,"vth":0}""")
+        advance(0.25)
+        assertEquals(0.2, vx(), 1e-9)
+        advance(1.0)
+        assertEquals("runs on without commands", 0.2, vx(), 1e-9)
+        advance(0.2)
+        assertEquals("the watchdog: a hard stop ~1.16 s after the last command", 0.0, vx(), 1e-9)
+        post("/cmd/speed", """{"vx":0,"vth":0.4}""")
+        advance(0.3)
+        assertEquals(0.4, vth(), 1e-9)
+        post("/cmd/move", """{"distance":0,"direction":1,"speed":0}""")
+        assertEquals("a stop body ends it", 0.0, vth(), 1e-9)
     }
 
     @Test
@@ -297,10 +317,5 @@ class FakeRobotTest {
         assertEquals(7, robot.batteryPercent())
         robot.drainBattery()
         assertEquals(100, robot.batteryPercent())
-    }
-
-    @Test
-    fun laserSeesTheWallAhead() {
-        assertTrue(get("/reeman/laser").startsWith("""{"coordinates":[[2.500,0.000]"""))
     }
 }

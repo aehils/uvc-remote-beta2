@@ -11,6 +11,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -41,6 +43,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -67,6 +70,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -79,6 +83,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
@@ -109,6 +114,8 @@ import com.expiation.reemanremote.RemoteState
 import com.expiation.reemanremote.Step
 import com.expiation.reemanremote.StepPhase
 import com.expiation.reemanremote.Tracking
+import com.expiation.reemanremote.Uv
+import com.expiation.reemanremote.UvSettings
 import com.expiation.reemanremote.Waypoint
 import java.util.Locale
 
@@ -117,11 +124,18 @@ data class RemoteActions(
     val onDemoChange: (Boolean) -> Unit = {},
     val onPing: (String) -> Unit = {},
     val onMove: (Move) -> Unit = {},
+    val onHold: (Move) -> Unit = {},
+    val onHoldAlive: (Move) -> Unit = {},
+    val onRelease: (Move) -> Unit = {},
     val onStop: () -> Unit = {},
     val onLoadPoints: () -> Unit = {},
     val onGoTo: (Waypoint) -> Unit = {},
     val onAddPoint: (String) -> Unit = {},
     val onGoToCharger: () -> Unit = {},
+    val onStartDisinfection: () -> Unit = {},
+    val onStartDisinfectionNow: () -> Unit = {},
+    val onStopDisinfection: () -> Unit = {},
+    val onUvSettings: (UvSettings) -> Unit = {},
     val onDemoEstop: () -> Unit = {},
     val onDemoWifi: () -> Unit = {},
     val onDemoBlock: () -> Unit = {},
@@ -180,11 +194,7 @@ private fun MainPage(
         topBar = {
             Column {
                 TopBar(state, actions.onDemoChange, onOpenDemoControls)
-                // Pinned above the scrolling content so it can never be scrolled away.
-                AnimatedVisibility(state.demo) { DemoStrip() }
-                Box(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) { Telemetry(state) }
-                AnimatedVisibility(state.runaway) { RunawayBanner() }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                StatusHeader(state)
             }
         },
         bottomBar = { NavBar(tab, onTabChange, moving = state.busy || !state.still, actions.onStop) },
@@ -413,7 +423,7 @@ private fun DemoMenu(state: RemoteState, onDemoChange: (Boolean) -> Unit, onOpen
                         buildAnnotatedString {
                             withLink(
                                 LinkAnnotation.Url(
-                                    DEMO_LIMITS_URL,
+                                    DEMO_HELP_URL,
                                     TextLinkStyles(SpanStyle(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)),
                                 )
                             ) { append("Learn More") }
@@ -457,7 +467,20 @@ private fun DemoMenu(state: RemoteState, onDemoChange: (Boolean) -> Unit, onOpen
     }
 }
 
-private const val DEMO_LIMITS_URL = "https://github.com/aehils/uvc-remote-beta2#demo-mode-limitations"
+private const val DEMO_HELP_URL = "https://github.com/aehils/uvc-remote-beta2#demo-mode"
+
+/**
+ * Under every page's title bar, pinned so it never scrolls away: the DEMO strip, the robot's
+ * readings, and the runaway and UV banners.
+ */
+@Composable
+private fun StatusHeader(state: RemoteState) {
+    AnimatedVisibility(state.demo) { DemoStrip() }
+    Box(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) { Telemetry(state) }
+    AnimatedVisibility(state.runaway) { RunawayBanner() }
+    AnimatedVisibility(state.uv != null || state.lampsOffOwed) { UvBanner(state) }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+}
 
 @Composable
 private fun DemoStrip() {
@@ -484,6 +507,29 @@ private fun RunawayBanner() {
         modifier = Modifier
             .fillMaxWidth()
             .background(RemoteTheme.status.danger)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        color = Color.White,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.Bold,
+        textAlign = TextAlign.Center,
+    )
+}
+
+/** While the UV lamps are on, about to come on, or may still be on. Pinned on every page. */
+@Composable
+private fun UvBanner(state: RemoteState) {
+    val left = state.uvLeftMs?.let { DriveController.clockText(it) } ?: ""
+    val text = when (state.uv) {
+        is Uv.Countdown -> "UV LAMPS ON IN $left. LEAVE THE ROOM."
+        is Uv.Starting -> "UV LAMPS SWITCHING ON"
+        is Uv.On -> "UV LAMPS ON · $left LEFT"
+        null -> "UV LAMPS MAY STILL BE ON. THE ROBOT HASN'T ACCEPTED OFF."
+    }
+    Text(
+        text,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(RemoteTheme.status.stop)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         color = Color.White,
         style = MaterialTheme.typography.labelLarge,
@@ -740,7 +786,12 @@ private fun Reading(label: String, value: String, unit: String, valueColor: Colo
 private fun DriveCard(state: RemoteState, actions: RemoteActions) {
     Panel {
         BusyStatus(state)
-        DrivePad(state.canDrive, actions.onMove)
+        DrivePad(state, actions)
+        Text(
+            "Hold an arrow to drive. Let go and the robot eases to a stop in under a second (~20 cm).",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -756,7 +807,11 @@ private fun BusyStatus(state: RemoteState) {
                 trackColor = status.warnContainer,
             )
             Text(
-                (if (state.phase is StepPhase.Stopping) "Stopping: " else "Moving: ") + (state.busyLabel ?: "") + " …",
+                when (state.phase) {
+                    is StepPhase.Stopping -> "Stopping: "
+                    is StepPhase.Holding -> "Driving: "
+                    else -> "Moving: "
+                } + (state.busyLabel ?: "") + " …",
                 style = MaterialTheme.typography.labelLarge,
                 color = status.warn,
                 fontWeight = FontWeight.SemiBold,
@@ -787,17 +842,17 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
         )
 
         SectionLabel("Tasks")
+        val uv = state.uv
         TaskItem(
             icon = R.drawable.ic_tab_tasks,
-            title = "Disinfection points",
+            title = "Disinfection Points",
             detail = when {
-                charging && count != null -> "$count saved. Send the robot to one, or add one."
-                charging -> "Send the robot to a saved point, or add one where it stands."
-                goal != null -> "On the way to ${goal.name}"
+                uv != null || state.lampsOffOwed -> uvStatus(state)
+                goal != null && !charging -> "On the way to ${goal.name}"
                 count != null -> "$count saved. Send the robot to one, or add one."
                 else -> "Send the robot to a saved point, or add one where it stands."
             },
-            highlight = goal != null && !charging,
+            highlight = (goal != null && !charging) || uv != null || state.lampsOffOwed,
             onClick = onOpenPoints,
         )
     }
@@ -838,7 +893,8 @@ private fun TaskItem(icon: Int, title: String, detail: String, highlight: Boolea
 }
 
 /**
- * Disinfection points: send the robot to one, or save where it stands as a new one.
+ * Disinfection Points: disinfect where the robot stands, send it to a point, or save where it
+ * stands as a new one.
  * Like the DEMO controls page, it keeps STOP and the robot's readings on screen.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -861,7 +917,7 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () ->
                             Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
                         }
                     },
-                    title = { Text("Disinfection points", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
+                    title = { Text("Disinfection Points", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
                     actions = {
                         TextButton(
                             onClick = actions.onLoadPoints,
@@ -870,10 +926,7 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () ->
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 )
-                AnimatedVisibility(state.demo) { DemoStrip() }
-                Box(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) { Telemetry(state) }
-                AnimatedVisibility(state.runaway) { RunawayBanner() }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                StatusHeader(state)
             }
         },
         bottomBar = { StopBar(actions.onStop) },
@@ -883,51 +936,62 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () ->
             Modifier
                 .padding(padding)
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            AnimatedVisibility(state.busy) { Panel { BusyStatus(state) } }
-
-            SectionLabel("Send the robot to")
-            when {
-                points is Points.Loaded && points.list.isNotEmpty() -> {
-                    val goal = state.running?.goal
-                    points.list.forEach { PointRow(it, goingHere = it == goal, state.canDrive, actions.onGoTo) }
-                }
-                points is Points.Loaded -> TasksNote("No disinfection points are saved on this robot's map yet. Add one below.")
-                points is Points.Failed -> TasksNote("Couldn't read the points: ${points.error}")
-                points == Points.Loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
-                !state.connected -> TasksNote("Connect to the robot to see its points.")
-            }
-            TasksNote(
-                "GO sends the robot to the point on its own: it plans its route and speed. " +
-                    "STOP cancels the trip. This only drives there; it does not switch on the UV lamps."
-            )
-
+            // The disinfection card stays put, so START (and LAMPS OFF) never scroll out of view.
+            Box(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) { DisinfectCard(state, actions) }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            SectionLabel("Add a point")
-            OutlinedButton(
-                onClick = { adding = true },
-                enabled = state.canAddPoint,
-                modifier = Modifier
+            Column(
+                Modifier
+                    .weight(1f)
                     .fillMaxWidth()
-                    .height(52.dp),
-                shape = RoundedCornerShape(14.dp),
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text(
-                    if (state.addingPoint) "Saving …" else "+  Add point where the robot is",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
+                AnimatedVisibility(state.busy) { Panel { BusyStatus(state) } }
+
+                SectionLabel("Send the robot to")
+                when {
+                    points is Points.Loaded && points.list.isNotEmpty() -> {
+                        val goal = state.running?.goal
+                        points.list.forEach {
+                            PointRow(it, goingHere = it == goal, here = it == state.atPoint, state.canDrive, actions.onGoTo)
+                        }
+                    }
+                    points is Points.Loaded -> TasksNote("No disinfection points are saved on this robot's map yet. Add one below.")
+                    points is Points.Failed -> TasksNote("Couldn't read the points: ${points.error}")
+                    points == Points.Loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                    !state.connected -> TasksNote("Connect to the robot to see its points.")
+                }
+                TasksNote(
+                    "GO sends the robot to the point on its own: it plans its route and speed. " +
+                        "STOP cancels the trip. Once it arrives, START DISINFECTION switches on the UV lamps."
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SectionLabel("Add a point")
+                OutlinedButton(
+                    onClick = { adding = true },
+                    enabled = state.canAddPoint,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Text(
+                        if (state.addingPoint) "Saving …" else "+  Add point where the robot is",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                TasksNote(
+                    state.pointMessage ?: when {
+                        !state.connected -> "Connect to the robot first."
+                        state.busy || !state.still -> "The robot must be standing still."
+                        else -> "Saves the spot the robot is on, and the way it faces, as a new point on its map."
+                    }
                 )
             }
-            TasksNote(
-                state.pointMessage ?: when {
-                    !state.connected -> "Connect to the robot first."
-                    state.busy || !state.still -> "The robot must be standing still."
-                    else -> "Saves the spot the robot is on, and the way it faces, as a new point on its map."
-                }
-            )
         }
     }
 
@@ -942,6 +1006,203 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () ->
             },
         )
     }
+}
+
+/** "where" text for the disinfection card and dialogs. */
+private fun uvWhere(point: String?) = point?.let { "at $it" } ?: "where the robot stands"
+
+/** One line on the run, for the Tasks list. */
+private fun uvStatus(state: RemoteState): String {
+    val left = state.uvLeftMs?.let { DriveController.clockText(it) } ?: ""
+    return when (val uv = state.uv) {
+        is Uv.Countdown -> "UV lamps on in $left, ${uvWhere(uv.point)}"
+        is Uv.Starting -> "UV lamps switching on ${uvWhere(uv.point)}"
+        is Uv.On -> "UV on ${uvWhere(uv.point)}: $left left"
+        null -> "The UV lamps may still be on: the robot hasn't accepted OFF"
+    }
+}
+
+/**
+ * Top of the Disinfection Points page: switches the UV lamps on where the robot stands, after
+ * the start delay, for the set time. The tune button opens the settings.
+ */
+@Composable
+private fun DisinfectCard(state: RemoteState, actions: RemoteActions) {
+    val status = RemoteTheme.status
+    var confirming by rememberSaveable { mutableStateOf(false) }
+    var editing by rememberSaveable { mutableStateOf(false) }
+    val uv = state.uv
+    val set = state.uvSettings
+    val left = state.uvLeftMs?.let { DriveController.clockText(it) } ?: ""
+    val delayText = "${set.delaySeconds} s after you start"
+
+    Panel(color = if (uv != null || state.lampsOffOwed) status.dangerContainer else MaterialTheme.colorScheme.surface) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val point = if (uv != null) uv.point else state.atPoint?.name
+            Text(
+                point?.let { "At $it" } ?: "Not at a saved point",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            IconButton(onClick = { editing = true }, enabled = uv == null) {
+                Icon(painterResource(R.drawable.ic_tune), contentDescription = "Disinfection settings", modifier = Modifier.size(22.dp))
+            }
+        }
+
+        val off = @Composable { label: String ->
+            Button(
+                onClick = actions.onStopDisinfection,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = status.stop, contentColor = Color.White),
+            ) {
+                Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+            }
+        }
+        when (uv) {
+            null -> {
+                Button(
+                    onClick = { confirming = true },
+                    enabled = state.canDisinfect,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Text("START DISINFECTION", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+                }
+            }
+            is Uv.Countdown -> {
+                Text(
+                    "Lamps on in $left. Leave the room and close the door.",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = status.danger,
+                )
+                // START NOW skips the rest of the countdown, for when the room is already clear.
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedButton(
+                        onClick = actions.onStopDisinfection,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
+                    ) { Text("CANCEL", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
+                    Button(
+                        onClick = actions.onStartDisinfectionNow,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
+                    ) { Text("START NOW", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
+                }
+            }
+            is Uv.Starting -> {
+                Text("Switching the lamps on …", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = status.danger)
+                off("LAMPS OFF")
+            }
+            is Uv.On -> {
+                val total = (uv.until - uv.since).coerceAtLeast(1)
+                LinearProgressIndicator(
+                    progress = { 1f - (state.uvLeftMs ?: 0L).toFloat() / total },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = status.danger,
+                    trackColor = MaterialTheme.colorScheme.surface,
+                )
+                Text(
+                    "UV ON · $left left of ${DriveController.clockText(total)}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    fontFamily = FontFamily.Monospace,
+                    color = status.danger,
+                )
+                off("LAMPS OFF")
+            }
+        }
+    }
+
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text("Start UV disinfection?") },
+            text = {
+                Text(
+                    "UV-C light burns skin and eyes. Make sure nobody is in the room and the door is closed.\n\n" +
+                        "The lamps come on ${uvWhere(state.atPoint?.name)} $delayText and stay on for ${set.minutes} min. " +
+                        "STOP, LAMPS OFF, the e-stop, or leaving the app switches them off.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirming = false
+                    actions.onStartDisinfection()
+                }) { Text("START", fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = { TextButton(onClick = { confirming = false }) { Text("Cancel") } },
+        )
+    }
+    if (editing) {
+        UvSettingsDialog(
+            current = set,
+            onDismiss = { editing = false },
+            onSave = {
+                editing = false
+                actions.onUvSettings(it)
+            },
+        )
+    }
+}
+
+/** Durations offered by the − / + buttons: every minute up to 5, then every 5. */
+private val UV_MINUTE_STEPS = (1..4) + (5..DriveController.MAX_UV_MINUTES step 5)
+private val UV_DELAYS = listOf(DriveController.MIN_UV_DELAY_S, 30, 60)
+
+@Composable
+private fun UvSettingsDialog(current: UvSettings, onDismiss: () -> Unit, onSave: (UvSettings) -> Unit) {
+    var minutes by rememberSaveable { mutableStateOf(current.minutes) }
+    var delay by rememberSaveable { mutableStateOf(current.delaySeconds) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Disinfection settings") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                SectionLabel("UV lamps on for")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        onClick = { minutes = UV_MINUTE_STEPS.last { it < minutes } },
+                        enabled = minutes > UV_MINUTE_STEPS.first(),
+                        shape = RoundedCornerShape(10.dp),
+                    ) { Text("−", fontSize = 20.sp) }
+                    Text(
+                        "$minutes min",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontFamily = FontFamily.Monospace,
+                        textAlign = TextAlign.Center,
+                    )
+                    OutlinedButton(
+                        onClick = { minutes = UV_MINUTE_STEPS.first { it > minutes } },
+                        enabled = minutes < UV_MINUTE_STEPS.last(),
+                        shape = RoundedCornerShape(10.dp),
+                    ) { Text("+", fontSize = 20.sp) }
+                }
+                Spacer(Modifier.height(6.dp))
+                SectionLabel("Lamps come on after")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    UV_DELAYS.forEach { d ->
+                        FilterChip(selected = delay == d, onClick = { delay = d }, label = { Text("$d s") })
+                    }
+                }
+                TasksNote("Time to leave the room after you press START. START NOW skips it.")
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(UvSettings(minutes, delay)) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable
@@ -983,12 +1244,15 @@ private fun AddPointDialog(taken: Set<String>, onDismiss: () -> Unit, onAdd: (St
 }
 
 @Composable
-private fun PointRow(point: Waypoint, goingHere: Boolean, canDrive: Boolean, onGoTo: (Waypoint) -> Unit) {
+private fun PointRow(point: Waypoint, goingHere: Boolean, here: Boolean, canDrive: Boolean, onGoTo: (Waypoint) -> Unit) {
     val status = RemoteTheme.status
     Panel(color = if (goingHere) status.warnContainer else MaterialTheme.colorScheme.surface) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(point.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                if (here) {
+                    Text("Robot is here", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = status.good)
+                }
                 point.pose?.let {
                     Text(
                         String.format(Locale.US, "x %.2f   y %.2f", it.x, it.y),
@@ -1043,24 +1307,93 @@ private fun ChargerButton(enabled: Boolean, onDock: () -> Unit) {
     }
 }
 
+/** The arrows drive while held; Turn 180° in the middle is a fixed step. */
 @Composable
-private fun DrivePad(enabled: Boolean, onMove: (Move) -> Unit) {
+private fun DrivePad(state: RemoteState, actions: RemoteActions) {
     val gap = Arrangement.spacedBy(10.dp)
     Column(verticalArrangement = gap) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
             Spacer(Modifier.weight(1f))
-            PadButton(Move.FORWARD, "▲", enabled, onMove)
+            HoldButton(Move.FORWARD, "▲", state, actions)
             Spacer(Modifier.weight(1f))
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
-            PadButton(Move.LEFT, "↺", enabled, onMove)
-            PadButton(Move.AROUND, "↩", enabled, onMove, tonal = true)
-            PadButton(Move.RIGHT, "↻", enabled, onMove)
+            HoldButton(Move.LEFT, "↺", state, actions)
+            PadButton(Move.AROUND, "↩", state.canDrive, actions.onMove, tonal = true)
+            HoldButton(Move.RIGHT, "↻", state, actions)
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
             Spacer(Modifier.weight(1f))
-            PadButton(Move.BACK, "▼", enabled, onMove)
+            HoldButton(Move.BACK, "▼", state, actions)
             Spacer(Modifier.weight(1f))
+        }
+    }
+}
+
+/**
+ * An arrow that drives while held (see [DriveController.hold]). It reports the press, then a sign
+ * of life every [DriveController.HOLD_ALIVE_MS] while it lasts, then the release.
+ *
+ * Only lifting the finger lets go. A resting thumb always drifts, and the page around the pad
+ * scrolls: left alone, the scroll takes the touch over after a few millimetres, which used to
+ * count as letting go (2026-10-08, first real test: the robot only ever nudged). So the press
+ * keeps every move to itself, and drifting, even off the button, keeps driving. The button
+ * leaving the screen mid-press, or the system cancelling the touch, still lets go; and if the
+ * screen stops reporting at all, the controller lets go by itself.
+ */
+@Composable
+private fun RowScope.HoldButton(move: Move, glyph: String, state: RemoteState, actions: RemoteActions) {
+    val enabled = state.canHold(move)
+    val held = state.holding == move
+    // Read inside the gesture, which must not restart (and so let go) when these change mid-press.
+    val canStart by rememberUpdatedState(enabled)
+    val act by rememberUpdatedState(actions)
+    val colors = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(24.dp)
+    val content = when {
+        held -> colors.onPrimaryContainer
+        enabled -> colors.onPrimary
+        else -> colors.onSurface.copy(alpha = 0.38f)
+    }
+    Box(
+        Modifier
+            .weight(1f)
+            .height(92.dp)
+            .clip(shape)
+            .background(
+                when {
+                    held -> colors.primaryContainer
+                    enabled -> colors.primary
+                    else -> colors.onSurface.copy(alpha = 0.12f)
+                }
+            )
+            .then(if (held) Modifier.border(3.dp, colors.primary, shape) else Modifier)
+            .semantics { contentDescription = "${move.word}: hold to drive" }
+            .pointerInput(move) {
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    if (!canStart) return@awaitEachGesture
+                    down.consume()
+                    act.onHold(move)
+                    try {
+                        while (true) {
+                            // A still thumb sends no events: the timeout keeps the sign of life going.
+                            val event = withTimeoutOrNull(DriveController.HOLD_ALIVE_MS) { awaitPointerEvent() }
+                            val finger = event?.changes?.firstOrNull { it.id == down.id }
+                            finger?.consume() // so the scrolling page never takes the press over
+                            if (event != null && (finger == null || !finger.pressed)) break // lifted, or cancelled
+                            act.onHoldAlive(move)
+                        }
+                    } finally {
+                        act.onRelease(move)
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(glyph, fontSize = 26.sp, color = content)
+            Text(move.word, style = MaterialTheme.typography.labelLarge, color = content, textAlign = TextAlign.Center)
         }
     }
 }
@@ -1104,7 +1437,7 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
                     title = { Text("DEMO controls", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 )
-                DemoStrip()
+                StatusHeader(state)
             }
         },
         bottomBar = { StopBar(actions.onStop) },
@@ -1118,10 +1451,6 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Telemetry(state)
-            AnimatedVisibility(state.runaway) { RunawayBanner() }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
             SectionLabel("Faults")
             DemoToggle("E-stop pressed", "As if the physical e-stop were pressed. Driving is blocked; pressing mid-step stops the robot.", demo.estopPressed, actions.onDemoEstop)
             DemoToggle("Wi-Fi dropped", "The robot stops answering. The Ping icon turns orange after about 3 missed polls.", demo.offline, actions.onDemoWifi)
@@ -1151,6 +1480,13 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             SectionLabel("Robot")
+            Text(
+                "Simulated UV lamps (${DriveController.UV_SUPPLY.uppercase(Locale.US).replace("V", " V")} supply): " +
+                    if (demo.uvOn) "ON" else "off",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (demo.uvOn) FontWeight.Bold else FontWeight.Normal,
+                color = if (demo.uvOn) RemoteTheme.status.danger else MaterialTheme.colorScheme.onSurface,
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedButton(actions.onDemoBattery, Modifier.weight(1f), shape = RoundedCornerShape(10.dp)) { Text("Battery −10%") }
                 OutlinedButton(actions.onDemoReset, Modifier.weight(1f), shape = RoundedCornerShape(10.dp)) { Text("Reset robot") }
@@ -1212,8 +1548,6 @@ private fun ActivityLog(lines: List<String>, modifier: Modifier) {
     }
 }
 
-// ---------------------------------------------------------------------- helpers
-
 // ---------------------------------------------------------------------- previews
 
 private val PREVIEW_POINTS = listOf(
@@ -1226,7 +1560,7 @@ private fun previewState(demo: Boolean, moving: Boolean) = RemoteState(
     demo = demo,
     host = "192.168.1.228",
     link = Link.Connected(EStop.RELEASED),
-    version = "RSNF1-v5.1.12_01",
+    version = "RSNF1-v5.1.20_01",
     battery = 18,
     vx = if (moving) 0.27 else 0.0,
     vth = 0.0,
@@ -1236,7 +1570,12 @@ private fun previewState(demo: Boolean, moving: Boolean) = RemoteState(
     addingPoint = false,
     pointMessage = null,
     runaway = false,
-    demoStatus = if (demo) DemoStatus(estopPressed = false, offline = false, blockPending = true, navigating = false, robotBusy = moving) else null,
+    atPoint = null,
+    uv = null,
+    uvLeftMs = null,
+    uvSettings = UvSettings(),
+    lampsOffOwed = false,
+    demoStatus = if (demo) DemoStatus(estopPressed = false, offline = false, blockPending = true, navigating = false, robotBusy = moving, uvOn = false) else null,
     log = listOf(
         "12:04:10  [DEMO] Forward 0.5 m: accepted {}",
         "12:04:10  [DEMO] Forward 0.5 m: sending /cmd/move {\"distance\":50,\"direction\":1,\"speed\":0.30}",
@@ -1251,12 +1590,23 @@ private fun PreviewDemo() = RemoteTheme(dark = false) { RemoteScreen(previewStat
 @Composable
 private fun PreviewLiveDark() = RemoteTheme(dark = true) { RemoteScreen(previewState(demo = false, moving = false), RemoteActions()) }
 
-@Preview(name = "Disinfection points, going to one", heightDp = 1100)
+@Preview(name = "Disinfection Points, going to one", heightDp = 1100)
 @Composable
 private fun PreviewPoints() = RemoteTheme(dark = false) {
     val goal = PREVIEW_POINTS[1]
     val state = previewState(demo = true, moving = true).copy(
         phase = StepPhase.Stepping(Step("Go to ${goal.name}", "/cmd/nav_name", "{}", false, 60_000, goal = goal), Tracking(0, 0)),
+    )
+    PointsPage(state, RemoteActions(), onBack = {})
+}
+
+@Preview(name = "Disinfection Points, UV on", heightDp = 1100)
+@Composable
+private fun PreviewPointsUv() = RemoteTheme(dark = true) {
+    val state = previewState(demo = false, moving = false).copy(
+        atPoint = PREVIEW_POINTS[0],
+        uv = Uv.On("Bed 1", since = 0, until = 300_000),
+        uvLeftMs = 192_000,
     )
     PointsPage(state, RemoteActions(), onBack = {})
 }

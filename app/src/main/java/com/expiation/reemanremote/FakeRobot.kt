@@ -16,12 +16,15 @@ import kotlin.math.sqrt
 /**
  * Demo mode: a simulated Reeman navigation computer that lives inside the app.
  *
- * It answers the same paths with the same JSON shapes as firmware RSNF1-v5.1.12_01
+ * It answers the same paths with the same JSON shapes as firmware RSNF1-v5.1.12_01 and v5.1.20_01
  * (REEMAN_HANDOFF.txt section 4), so DriveController's polling, step lock and STOP
  * logic run unchanged, and nothing is sent over the network.
  *
  * Motion follows the measured /cmd/move behaviour (section 5): ~200 ms command
  * latency, then a trapezoid with accel/decel of about 0.36 * speed^0.40 m/s^2.
+ * Velocity streaming (/cmd/speed) follows the jog test (section 6): ~200 ms latency, then the
+ * wheels take the new speed at once (no ramp), and a watchdog hard-stops the robot ~1.16 s
+ * after the last command.
  * Anything marked GUESS was never measured on the real robot.
  *
  * No org.json, so it runs on a plain JVM.
@@ -93,6 +96,15 @@ class FakeRobot(
     private var estopPressed = false
     private var offline = false
     private var blockNext = false
+    private var power24 = false     // the power board's external supplies
+    private var power36 = false
+    // Velocity streaming (/cmd/speed): the speed the wheels follow now, commands still inside their
+    // latency (applied at [JogCmd.atNs]), and when the last one took effect (for the watchdog).
+    private class JogCmd(val atNs: Long, val vx: Double, val vth: Double)
+    private var jogVx = 0.0
+    private var jogVth = 0.0
+    private val jogQueue = ArrayDeque<JogCmd>()
+    private var jogLastNs = 0L
     private var poseX = 0.0
     private var poseY = 0.0
     private var poseTheta = 0.0
@@ -123,8 +135,6 @@ class FakeRobot(
 
     private fun get(path: String, now: Long): String? = when (path) {
         "/reeman/current_version" -> """{"version":"$VERSION"}"""
-        "/reeman/hostname" -> """{"hostname":"demo-robot"}"""
-        "/reeman/get_mode" -> """{"mode":2}"""
         "/reeman/base_encode" -> fmt(
             """{"battery":%d,"chargeFlag":%d,"emergencyButton":%d}""",
             batteryPercent(), chargeFlag, if (estopPressed) 0 else 1,
@@ -133,7 +143,10 @@ class FakeRobot(
             val m = motion
             val v = if (m == null) 0.0 else m.sign * m.speedAt(now)
             val turning = m?.turn == true
-            fmt("""{"vx":%.4f,"vth":%.4f}""", (if (turning) 0.0 else v) + noise(), (if (turning) v else 0.0) + noise())
+            fmt(
+                """{"vx":%.4f,"vth":%.4f}""",
+                (if (turning) 0.0 else v) + jogVx + noise(), (if (turning) v else 0.0) + jogVth + noise(),
+            )
         }
         "/reeman/pose" -> {
             if (now - poseNs >= POSE_PERIOD_NS) {
@@ -144,7 +157,6 @@ class FakeRobot(
             }
             fmt("""{"x":%.4f,"y":%.4f,"theta":%.4f}""", poseX, poseY, poseTheta)
         }
-        "/reeman/laser" -> laser()
         "/reeman/position" -> points.joinToString(",", """{"waypoints":[""", "]}") {
             fmt("""{"name":"%s","type":"%s","pose":{"x":%.4f,"y":%.4f,"theta":%.4f}}""", it.name, it.type, it.x, it.y, it.theta)
         }
@@ -157,15 +169,16 @@ class FakeRobot(
 
     private fun post(path: String, json: String, now: Long): String? = when (path) {
         "/cmd/move" -> move(json, now)
+        "/cmd/speed" -> speed(json, now)
         "/cmd/turn" -> turn(json, now)
         "/cmd/charge" -> charge(json, now)
         "/cmd/nav_name" -> navName(json, now)
         "/cmd/position" -> setPoint(json)
+        "/cmd/external_power_supply" -> externalPower(json)
         "/cmd/cancel_goal" -> {
             if (navGoal != null) halt()
             OK
         }
-        in UNSIMULATED_CMDS -> error("004", "Not simulated in DEMO mode")
         else -> null
     }
 
@@ -181,6 +194,24 @@ class FakeRobot(
         if (distance < 0 || speed < 0) return error("004", "Internal service error")
         val v = min(speed, MAX_FIRMWARE_LINEAR)
         start(false, if (direction == 1.0) 1.0 else -1.0, distance / 100.0, v, 0.36 * v.pow(0.40), now)
+        return OK
+    }
+
+    /**
+     * {"vx":m/s,"vth":rad/s}: drive at this speed until told otherwise. Takes effect after the
+     * command latency, at once (the jog test: 0 to 0.35 m/s within 20 ms; to 0 within 20-70 ms).
+     * GUESS: a jog replaces a planned step or navigation, and the stop bodies (and an obstacle)
+     * end a jog. With the e-stop pressed it is accepted but the wheels never turn.
+     */
+    private fun speed(json: String, now: Long): String {
+        val vx = num(json, "vx")
+        val vth = num(json, "vth")
+        if (vx == null || vth == null) return error("004", "Internal service error")
+        if (motion != null || navGoal != null) halt()
+        if (!estopPressed) {
+            jogQueue.addLast(JogCmd(now + CMD_LATENCY_NS, vx.coerceIn(-MAX_FIRMWARE_LINEAR, MAX_FIRMWARE_LINEAR), vth))
+            chargeFlag = CHARGE_NONE
+        }
         return OK
     }
 
@@ -324,6 +355,9 @@ class FakeRobot(
     private fun halt() {
         motion = null
         legs.clear()
+        jogVx = 0.0
+        jogVth = 0.0
+        jogQueue.clear()
         navGoal = null
         navThen = null
         if (chargeFlag == CHARGE_DOCKING) chargeFlag = CHARGE_NONE
@@ -333,8 +367,8 @@ class FakeRobot(
         startLegs({ t -> Motion(turn, sign, amount, speed, accel, t) }, now = now)
 
     /**
-     * A new command replaces the running one outright (GUESS: the firmware's pre-emption
-     * behaviour is unmeasured). With the e-stop pressed or an obstacle simulated the
+     * A new command replaces the running one outright, from rest. Seen on the real robot
+     * (2026-10-08): a step sent again every 0.25 s restarted each time, so the robot shuffled. With the e-stop pressed or an obstacle simulated the
      * command is accepted but the wheels never turn (also a GUESS).
      */
     private fun startLegs(vararg plan: (Long) -> Motion, now: Long): Boolean {
@@ -357,15 +391,33 @@ class FakeRobot(
         }
         var t = lastNs
         while (t < now) {
-            val m = motion ?: break
             val next = min(now, t + STEP_NS)
-            val v = m.sign * m.speedAt((t + next) / 2)
+            while (jogQueue.isNotEmpty() && jogQueue.first().atNs <= next) {
+                val c = jogQueue.removeFirst()
+                jogVx = c.vx
+                jogVth = c.vth
+                jogLastNs = c.atNs
+            }
+            val jogging = jogVx != 0.0 || jogVth != 0.0
+            if (jogging && next - jogLastNs > JOG_WATCHDOG_NS) {
+                halt() // the watchdog: no command for too long, then a hard stop (section 6)
+                t = next
+                continue
+            }
+            val m = motion
+            if (m == null && !jogging) {
+                if (jogQueue.isEmpty()) break
+                t = next
+                continue
+            }
             val dt = (next - t) / 1e9
-            if (m.turn) {
-                theta = wrap(theta + v * dt)
-            } else {
-                val nx = x + v * dt * cos(theta)
-                val ny = y + v * dt * sin(theta)
+            val v = m?.let { it.sign * it.speedAt((t + next) / 2) } ?: 0.0
+            val turning = m?.turn == true
+            val forward = (if (turning) 0.0 else v) + jogVx
+            theta = wrap(theta + ((if (turning) v else 0.0) + jogVth) * dt)
+            if (forward != 0.0) {
+                val nx = x + forward * dt * cos(theta)
+                val ny = y + forward * dt * sin(theta)
                 if (collides(nx, ny)) {
                     halt() // obstacle brake: stops short, like the real safety brake
                 } else {
@@ -373,7 +425,7 @@ class FakeRobot(
                     y = ny
                 }
             }
-            if (v != 0.0) battery = maxOf(0.0, battery - dt / MOVING_SECONDS_PER_PERCENT)
+            if (v != 0.0 || jogging) battery = maxOf(0.0, battery - dt / MOVING_SECONDS_PER_PERCENT)
             if (motion?.finished(next) == true) {
                 motion = legs.removeFirstOrNull()?.invoke(next)
                 if (motion == null) {
@@ -386,19 +438,34 @@ class FakeRobot(
         lastNs = now
     }
 
-    /** Lidar hits as [[x,y],...] in metres. GUESS: map frame; confirm on the real robot. */
-    private fun laser(): String {
-        val points = (0 until LASER_BEAMS).mapNotNull { i ->
-            val a = theta + 2 * Math.PI * i / LASER_BEAMS
-            val dx = cos(a)
-            val dy = sin(a)
-            val best = WALLS.minOf { rayHit(x, y, dx, dy, it) }.coerceAtMost(LASER_RANGE)
-            if (best >= LASER_RANGE) null else fmt("[%.3f,%.3f]", x + dx * best, y + dy * best)
+    /**
+     * Switches the power board's external supply, as the API documents:
+     * {"type":"24v"|"36v"|"24v36","operation":"0"|"1"}. GUESS: the reply to a bad body.
+     */
+    private fun externalPower(json: String): String {
+        val on = when (str(json, "operation")) {
+            "1" -> true
+            "0" -> false
+            else -> return error("004", "Internal service error")
         }
-        return points.joinToString(",", """{"coordinates":[""", "]}")
+        when (str(json, "type")) {
+            "24v" -> power24 = on
+            "36v" -> power36 = on
+            "24v36" -> { power24 = on; power36 = on }
+            else -> return error("004", "Internal service error")
+        }
+        return OK
     }
 
     // ------------------------------------------------------------------ demo controls
+
+    /** The UV lamps: whichever supply DriveController.UV_SUPPLY says they are on. */
+    @get:Synchronized
+    val isUvOn: Boolean get() = when (DriveController.UV_SUPPLY) {
+        "24v" -> power24
+        "36v" -> power36
+        else -> power24 && power36
+    }
 
     @get:Synchronized
     val isEstopPressed: Boolean get() = estopPressed
@@ -449,7 +516,7 @@ class FakeRobot(
     }
 
     @get:Synchronized
-    val isBusy: Boolean get() = motion != null
+    val isBusy: Boolean get() = motion != null || jogVx != 0.0 || jogVth != 0.0
 
     /** Knocks 10% off the battery; wraps back to full below zero. */
     @Synchronized
@@ -469,6 +536,9 @@ class FakeRobot(
         poseNs = lastNs - POSE_PERIOD_NS
         motion = null
         legs.clear()
+        jogVx = 0.0
+        jogVth = 0.0
+        jogQueue.clear()
         navGoal = null
         navThen = null
         points.clear()
@@ -478,15 +548,18 @@ class FakeRobot(
         estopPressed = false
         offline = false
         blockNext = false
+        power24 = false
+        power36 = false
     }
 
     private fun noise() = if (realistic) (rng.nextDouble() * 2 - 1) * SPEED_NOISE else 0.0
 
     companion object {
-        const val VERSION = "DEMO-SIM (mimics RSNF1-v5.1.12_01)"
+        const val VERSION = "DEMO-SIM (mimics RSNF1-v5.1.20_01)"
 
         // ---- Motion model ----
         private const val CMD_LATENCY_NS = 200_000_000L  // measured ~200 ms command-to-wheel
+        private const val JOG_WATCHDOG_NS = 1_160_000_000L // measured: runs on this long after the last /cmd/speed
         private const val ANGULAR_ACCEL = 0.5            // rad/s^2, GUESS: turn ramps never measured
         private const val MAX_FIRMWARE_LINEAR = 1.0      // top of the /cmd/max_speed range
         private const val ROBOT_RADIUS = 0.30            // m, GUESS
@@ -513,14 +586,6 @@ class FakeRobot(
         // DOCK_X/Y is where the robot's centre sits when it is on the pile.
         private const val DOCK_X = -ROOM_X + ROBOT_RADIUS + 0.05
         private const val DOCK_Y = 0.0
-        private val WALLS = arrayOf(
-            doubleArrayOf(-ROOM_X, -ROOM_Y, ROOM_X, -ROOM_Y), doubleArrayOf(ROOM_X, -ROOM_Y, ROOM_X, ROOM_Y),
-            doubleArrayOf(ROOM_X, ROOM_Y, -ROOM_X, ROOM_Y), doubleArrayOf(-ROOM_X, ROOM_Y, -ROOM_X, -ROOM_Y),
-            doubleArrayOf(BOX[0], BOX[1], BOX[2], BOX[1]), doubleArrayOf(BOX[2], BOX[1], BOX[2], BOX[3]),
-            doubleArrayOf(BOX[2], BOX[3], BOX[0], BOX[3]), doubleArrayOf(BOX[0], BOX[3], BOX[0], BOX[1]),
-        )
-        private const val LASER_BEAMS = 180  // every 2 degrees, GUESS
-        private const val LASER_RANGE = 8.0
 
         // ---- Navigation (/cmd/nav_name). Speeds are the firmware's choice on the real robot. ----
         private const val NAV_SPEED = 0.3                // m/s, GUESS
@@ -541,35 +606,14 @@ class FakeRobot(
             SavedPoint("charging_pile", "charge", DOCK_X, DOCK_Y, 0.0),
         )
 
-        // Real commands this simulator doesn't model. They answer 004 rather than 009
-        // so a demo never suggests a real route doesn't exist.
-        private val UNSIMULATED_CMDS = setOf(
-            "/cmd/speed", "/cmd/nav", "/cmd/max_speed",
-            "/cmd/reloc_pose", "/cmd/reloc_absolute", "/cmd/set_mode",
-            "/cmd/save_map", "/cmd/apply_map", "/cmd/restrict_layer",
-            "/cmd/shutdown", "/cmd/external_power_supply",
-        )
-
-        // GUESS: the real success body was never recorded; the app only checks it isn't an error.
-        private const val OK = "{}"
+        // The success reply of /cmd/nav_name, /cmd/cancel_goal and /cmd/external_power_supply (seen on
+        // v5.1.20); assumed for the rest. The app only checks it isn't an error.
+        const val OK = """{"status":"success"}"""
 
         private fun collides(px: Double, py: Double): Boolean {
             val r = ROBOT_RADIUS
             if (abs(px) > ROOM_X - r || abs(py) > ROOM_Y - r) return true
             return px > BOX[0] - r && px < BOX[2] + r && py > BOX[1] - r && py < BOX[3] + r
-        }
-
-        /** Distance along the ray to segment w = {ax, ay, bx, by}, or infinity. */
-        private fun rayHit(ox: Double, oy: Double, dx: Double, dy: Double, w: DoubleArray): Double {
-            val ex = w[2] - w[0]
-            val ey = w[3] - w[1]
-            val den = dx * ey - dy * ex
-            if (abs(den) < 1e-12) return Double.POSITIVE_INFINITY
-            val wx = w[0] - ox
-            val wy = w[1] - oy
-            val t = (wx * ey - wy * ex) / den
-            val u = (wx * dy - wy * dx) / den
-            return if (t > 0 && u >= 0 && u <= 1) t else Double.POSITIVE_INFINITY
         }
 
         private fun wrap(a: Double): Double {
