@@ -8,8 +8,8 @@ import androidx.lifecycle.viewModelScope
 
 /**
  * Owns the [DriveController] so the connection survives screen recreation
- * (rotation, dark-mode switch), and remembers the robot address, demo choice and
- * disinfection settings.
+ * (rotation, dark-mode switch), and remembers the robot address, demo choice,
+ * disinfection settings and saved disinfection tasks.
  */
 class RemoteViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -28,6 +28,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         controller.setUvSettings(
             UvSettings(prefs.getInt(KEY_UV_MINUTES, defaults.minutes), prefs.getInt(KEY_UV_DELAY, defaults.delaySeconds))
         )
+        controller.setTasks(DisinfectionTask.listFromJson(prefs.getString(KEY_TASKS, null)))
         if (emulatorDefault) controller.note("Emulator detected: starting in DEMO mode")
         controller.note(if (demo) "App started in DEMO MODE (simulated robot)" else "App started. Robot address $host")
         controller.testConnection(null)
@@ -47,12 +48,27 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putInt(KEY_UV_MINUTES, saved.minutes).putInt(KEY_UV_DELAY, saved.delaySeconds).apply()
     }
 
+    fun saveTask(task: DisinfectionTask) {
+        controller.saveTask(task)
+        saveTasks()
+    }
+
+    fun deleteTask(id: String) {
+        controller.deleteTask(id)
+        saveTasks()
+    }
+
+    private fun saveTasks() {
+        prefs.edit().putString(KEY_TASKS, DisinfectionTask.listToJson(controller.state.value.tasks)).apply()
+    }
+
     private companion object {
         const val PREFS = "reeman_remote"   // same file as beta 0.1, so settings carry over
         const val KEY_HOST = "host"
         const val KEY_DEMO = "demo"
         const val KEY_UV_MINUTES = "uv_minutes"
         const val KEY_UV_DELAY = "uv_delay_s"
+        const val KEY_TASKS = "tasks"
 
         fun isEmulator() = Build.FINGERPRINT.startsWith("generic") || "emulator" in Build.FINGERPRINT ||
             "ranchu" in Build.HARDWARE || "goldfish" in Build.HARDWARE || "sdk" in Build.PRODUCT

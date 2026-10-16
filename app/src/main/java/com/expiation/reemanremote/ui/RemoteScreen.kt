@@ -87,6 +87,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -110,6 +111,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.expiation.reemanremote.DemoStatus
+import com.expiation.reemanremote.DisinfectionTask
 import com.expiation.reemanremote.DriveController
 import com.expiation.reemanremote.EStop
 import com.expiation.reemanremote.Link
@@ -121,6 +123,9 @@ import com.expiation.reemanremote.RemoteState
 import com.expiation.reemanremote.RobotMode
 import com.expiation.reemanremote.SavedMap
 import com.expiation.reemanremote.Step
+import com.expiation.reemanremote.TaskRun
+import com.expiation.reemanremote.TaskStage
+import com.expiation.reemanremote.TaskStop
 import com.expiation.reemanremote.StepPhase
 import com.expiation.reemanremote.Tracking
 import com.expiation.reemanremote.Uv
@@ -146,6 +151,8 @@ data class RemoteActions(
     val onStartDisinfection: () -> Unit = {},
     val onStartDisinfectionNow: () -> Unit = {},
     val onStopDisinfection: () -> Unit = {},
+    val onSwitchLampsOn: () -> Unit = {},
+    val onDismissAlert: () -> Unit = {},
     val onUvSettings: (UvSettings) -> Unit = {},
     val onDemoEstop: () -> Unit = {},
     val onDemoWifi: () -> Unit = {},
@@ -167,6 +174,13 @@ data class RemoteActions(
     val onAddChargingPile: () -> Unit = {},
     val onAddWall: (Wall) -> Unit = {},
     val onRemoveWall: (Wall) -> Unit = {},
+    val onSaveTask: (DisinfectionTask) -> Unit = {},
+    val onDeleteTask: (String) -> Unit = {},
+    val onStartTask: (String) -> Unit = {},
+    val onRetryTaskStop: () -> Unit = {},
+    val onSkipTaskStop: () -> Unit = {},
+    val onEndTask: () -> Unit = {},
+    val onDismissTaskReport: () -> Unit = {},
 )
 
 @Composable
@@ -174,6 +188,8 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
     // Kept here, not in MainPage, so coming back from another page returns to the same tab.
     var tab by rememberSaveable { mutableStateOf(Tab.REMOTE) }
     var page by rememberSaveable { mutableStateOf(Page.MAIN) }
+    // The task the editor is open on: its id, or "" for a new one.
+    var editingTask by rememberSaveable { mutableStateOf("") }
     // The drive sheet stays open or closed across tabs and pages.
     var driveOpen by rememberSaveable { mutableStateOf(false) }
     // The controls page only exists in DEMO: leaving DEMO closes it.
@@ -183,30 +199,45 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
 
     val drive = DriveSheetState(driveOpen) { driveOpen = it }
     val demoStatus = state.demoStatus
-    when {
-        page == Page.DEMO_CONTROLS && demoStatus != null ->
-            DemoControlsPage(state, demoStatus, actions, drive, onBack = { page = Page.MAIN })
-        page == Page.POINTS -> PointsPage(state, actions, drive, onBack = { page = Page.MAIN })
-        page == Page.MAPS -> MapsPage(
-            state, actions, drive,
-            onBack = { page = Page.MAIN },
-            onShowMap = {
-                page = Page.MAIN
-                tab = Tab.MAP
-            },
-        )
-        else -> MainPage(
-            state, actions, tab, drive,
-            onTabChange = { tab = it },
-            onOpenDemoControls = { page = Page.DEMO_CONTROLS },
-            onOpenPoints = { page = Page.POINTS },
-            onOpenMaps = { page = Page.MAPS },
-        )
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        AnimatedVisibility(state.demo) { DemoStrip() }
+        Box(Modifier.weight(1f)) {
+            when {
+                page == Page.DEMO_CONTROLS && demoStatus != null ->
+                    DemoControlsPage(state, demoStatus, actions, drive, onBack = { page = Page.MAIN })
+                page == Page.POINTS -> PointsPage(state, actions, drive, onBack = { page = Page.MAIN })
+                page == Page.TASK_EDIT -> TaskEditorPage(
+                    state, actions,
+                    original = state.tasks.firstOrNull { it.id == editingTask },
+                    drive = drive,
+                    onBack = { page = Page.MAIN },
+                )
+                page == Page.MAPS -> MapsPage(
+                    state, actions, drive,
+                    onBack = { page = Page.MAIN },
+                    onShowMap = {
+                        page = Page.MAIN
+                        tab = Tab.MAP
+                    },
+                )
+                else -> MainPage(
+                    state, actions, tab, drive,
+                    onTabChange = { tab = it },
+                    onOpenDemoControls = { page = Page.DEMO_CONTROLS },
+                    onOpenPoints = { page = Page.POINTS },
+                    onOpenMaps = { page = Page.MAPS },
+                    onEditTask = {
+                        editingTask = it
+                        page = Page.TASK_EDIT
+                    },
+                )
+            }
+        }
     }
 }
 
 /** Pages over the main (tabbed) page. Each keeps STOP, the drive sheet and the robot's readings on screen. */
-private enum class Page { MAIN, DEMO_CONTROLS, POINTS, MAPS }
+private enum class Page { MAIN, DEMO_CONTROLS, POINTS, MAPS, TASK_EDIT }
 
 /** Whether the drive sheet is pulled up, and how to change that. */
 internal class DriveSheetState(val open: Boolean, val onOpenChange: (Boolean) -> Unit)
@@ -219,7 +250,7 @@ private enum class Tab(val label: String, val icon: Int) {
 }
 
 /**
- * Layout, top to bottom: title bar, DEMO strip, the robot's readings (pinned, on every tab),
+ * Layout, top to bottom: DEMO strip (from [RemoteScreen]), title bar, the robot's readings (pinned, on every tab),
  * the current tab, and the nav bar with STOP in its centre so STOP is on every tab too.
  */
 @Composable
@@ -232,19 +263,20 @@ private fun MainPage(
     onOpenDemoControls: () -> Unit,
     onOpenPoints: () -> Unit,
     onOpenMaps: () -> Unit,
+    onEditTask: (String) -> Unit,
 ) {
     Scaffold(
         topBar = {
             Column {
                 TopBar(state, actions, onOpenDemoControls)
                 // On the Map tab the readings show the robot's mode and the map, not its speed.
-                StatusHeader(state, onOpenMaps = onOpenMaps.takeIf { tab == Tab.MAP })
+                StatusHeader(state, actions.onDismissAlert, onOpenMaps = onOpenMaps.takeIf { tab == Tab.MAP })
             }
         },
         bottomBar = {
             Column {
-                // On the Remote tab the pad is the page itself.
-                if (tab != Tab.REMOTE) DriveSheet(state, actions, drive)
+                // On the Remote tab the pad is the page itself; the Tasks tab has none.
+                if (tab != Tab.REMOTE && tab != Tab.TASKS) DriveSheet(state, actions, drive)
                 NavBar(tab, onTabChange, moving = state.busy || !state.still, actions.onStop)
             }
         },
@@ -254,15 +286,14 @@ private fun MainPage(
             .padding(padding)
             .fillMaxSize()
         when (tab) {
+            // The pad sits at the bottom, by the thumb and next to STOP. Portrait only, so it always fits.
             Tab.REMOTE -> Column(
-                content
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                content.padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.Bottom),
             ) {
                 DriveCard(state, actions)
             }
-            Tab.TASKS -> TasksTab(state, actions, onOpenPoints, content)
+            Tab.TASKS -> TasksTab(state, actions, onOpenPoints, onEditTask, content)
             Tab.MAP -> MapTab(state, actions, onOpenMaps, content)
             Tab.ACTIVITY -> ActivityLog(state.log, content)
         }
@@ -346,7 +377,7 @@ private fun BetaPill() {
     Text(
         "BETA",
         modifier = Modifier
-            .background(BetaOrange.copy(alpha = 0.7f), RoundedCornerShape(6.dp))
+            .background(BetaOrange, RoundedCornerShape(6.dp))
             .padding(horizontal = 8.dp, vertical = 2.dp),
         color = Color.White,
         style = MaterialTheme.typography.labelSmall,
@@ -507,30 +538,34 @@ private fun RobotMenu(state: RemoteState, actions: RemoteActions, onOpenDemoCont
 private const val DEMO_HELP_URL = "https://github.com/aehils/uvc-remote-beta2#demo-mode"
 
 /**
- * Under every page's title bar, pinned so it never scrolls away: the DEMO strip, the robot's
- * readings, and the runaway and UV banners.
+ * Under every page's title bar, pinned so it never scrolls away: the robot's readings, and the
+ * runaway and UV banners.
  */
 @Composable
-internal fun StatusHeader(state: RemoteState, onOpenMaps: (() -> Unit)? = null) {
-    AnimatedVisibility(state.demo) { DemoStrip() }
+internal fun StatusHeader(state: RemoteState, onDismissAlert: () -> Unit, onOpenMaps: (() -> Unit)? = null) {
     Box(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) { Telemetry(state, onOpenMaps) }
     AnimatedVisibility(state.runaway) { RunawayBanner() }
     AnimatedVisibility(state.uv != null || state.lampsOffOwed) { UvBanner(state) }
+    // Kept while it hides, so the text doesn't vanish before the banner has slid away.
+    var alert by remember { mutableStateOf("") }
+    state.robotAlert?.let { alert = it }
+    AnimatedVisibility(state.robotAlert != null) { RobotAlertBanner(alert, onDismissAlert) }
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
 
+/** A thin band above every page's title bar while DEMO is on. */
 @Composable
 private fun DemoStrip() {
     Text(
-        "DEMO MODE IS ON",
+        "DEMO MODE · SIMULATED ROBOT",
         modifier = Modifier
             .fillMaxWidth()
-            .background(RemoteTheme.status.demoBold)
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-        color = Color.White,
-        style = MaterialTheme.typography.labelMedium,
-        fontWeight = FontWeight.Light,
-        letterSpacing = 1.sp,
+            .background(RemoteTheme.status.demoContainer)
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        color = RemoteTheme.status.demo,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 1.5.sp,
         textAlign = TextAlign.Center,
         maxLines = 1,
     )
@@ -543,13 +578,36 @@ private fun RunawayBanner() {
         "ROBOT STILL MOVING AFTER STOP. USE THE PHYSICAL E-STOP.",
         modifier = Modifier
             .fillMaxWidth()
-            .background(RemoteTheme.status.danger)
+            .background(RemoteTheme.status.stop)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         color = Color.White,
         style = MaterialTheme.typography.labelLarge,
         fontWeight = FontWeight.Bold,
         textAlign = TextAlign.Center,
     )
+}
+
+/** What the robot is complaining about (a refused or failed trip, a failed dock), until dismissed. */
+@Composable
+private fun RobotAlertBanner(text: String, onDismiss: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(RemoteTheme.status.warnContainer)
+            .padding(start = 16.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text,
+            modifier = Modifier.weight(1f),
+            color = RemoteTheme.status.warn,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+        )
+        IconButton(onClick = onDismiss) {
+            Icon(painterResource(R.drawable.ic_close), contentDescription = "Dismiss", tint = RemoteTheme.status.warn, modifier = Modifier.size(20.dp))
+        }
+    }
 }
 
 /** While the UV lamps are on, about to come on, or may still be on. Pinned on every page. */
@@ -704,7 +762,7 @@ private fun AddressField(
 }
 
 /**
- * E-stop badge, then velocity (the main read). With [onOpenMaps] (the Map tab): the robot's
+ * E-stop and motion badges, then velocity (the main read), on the right. With [onOpenMaps] (the Map tab): the robot's
  * mode and the map in use instead, the map's name opening the Maps page. Readings fade when not
  * connected, since they are stale. The battery is in the title bar.
  */
@@ -719,6 +777,8 @@ private fun Telemetry(state: RemoteState, onOpenMaps: (() -> Unit)?) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         EStopBadge(state.estop)
+        Spacer(Modifier.width(8.dp))
+        MotionBadge(state)
         Spacer(Modifier.width(16.dp))
 
         if (onOpenMaps != null) {
@@ -734,17 +794,18 @@ private fun Telemetry(state: RemoteState, onOpenMaps: (() -> Unit)?) {
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 1.sp,
                 color = if (state.mapping) status.good else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.width(8.dp))
             MapChip(state, onOpenMaps, Modifier.widthIn(max = 200.dp))
         } else {
             // Velocity is the main read, in fixed-width slots so the figures never shift as they change.
-            val motion = if (state.busy) status.warn else MaterialTheme.colorScheme.onSurface
-            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.Center) {
-                Reading("Linear", if (live) reading(state.vx, 1) else "—", "m/s", motion, Modifier.width(104.dp))
-                Reading("Angular", if (live) reading(Math.toDegrees(state.vth), 0) else "—", "°/s", motion, Modifier.width(96.dp))
+            val ink = MaterialTheme.colorScheme.onSurface
+            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.End)) {
+                Reading("Linear", if (live) reading(state.vx, 1) else "—", "m/s", ink, Modifier.width(96.dp))
+                Reading("Angular", if (live) reading(Math.toDegrees(state.vth), 0) else "—", "°/s", ink, Modifier.width(88.dp))
             }
-            Spacer(Modifier.width(60.dp)) // keeps the speeds centred under the title bar as before
         }
     }
 }
@@ -812,8 +873,8 @@ private fun EStopBadge(estop: EStop?) {
     Box(
         Modifier
             .size(44.dp)
-            .background(if (pressed) RemoteTheme.status.danger else Color.Transparent, shape)
-            .border(2.dp, if (pressed) RemoteTheme.status.danger else grey, shape)
+            .background(if (pressed) RemoteTheme.status.stop else Color.Transparent, shape)
+            .border(2.dp, if (pressed) RemoteTheme.status.stop else grey, shape)
             .semantics {
                 contentDescription = when (estop) {
                     EStop.PRESSED -> "E-stop pressed"
@@ -832,9 +893,40 @@ private fun EStopBadge(estop: EStop?) {
     }
 }
 
+/**
+ * Beside the e-stop, a bare icon: flashes between amber and grey while a command runs (a step, a
+ * held arrow, a trip, docking), and stays amber if the robot moves with none running (pushed, or
+ * a task of its own). Grey when still.
+ */
+@Composable
+private fun MotionBadge(state: RemoteState) {
+    val warn = RemoteTheme.status.warn
+    val grey = MaterialTheme.colorScheme.outline
+    // Only animates while a command runs, so an idle robot costs no frames.
+    val tint = if (state.busy) {
+        val t by rememberInfiniteTransition(label = "motion").animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(450), RepeatMode.Reverse),
+            label = "flash",
+        )
+        lerp(warn, grey, t)
+    } else if (!state.still) warn else grey
+    Icon(
+        painterResource(R.drawable.ic_motion),
+        contentDescription = when {
+            state.busy -> "Running: ${state.busyLabel ?: "a command"}"
+            !state.still -> "Robot moving"
+            else -> "Robot still"
+        },
+        modifier = Modifier.size(34.dp),
+        tint = tint,
+    )
+}
+
 @Composable
 private fun Reading(label: String, value: String, unit: String, valueColor: Color, modifier: Modifier = Modifier) {
-    Column(modifier) {
+    Column(modifier, horizontalAlignment = Alignment.End) {
         Text(
             label.uppercase(Locale.US),
             style = MaterialTheme.typography.labelSmall,
@@ -851,48 +943,17 @@ private fun Reading(label: String, value: String, unit: String, valueColor: Colo
 
 @Composable
 private fun DriveCard(state: RemoteState, actions: RemoteActions) {
-    Panel {
-        BusyStatus(state)
-        DrivePad(state, actions)
-    }
+    Panel { DrivePad(state, actions) }
 }
-
-/** While a step runs: a progress bar and what the robot is doing. */
-@Composable
-internal fun BusyStatus(state: RemoteState) {
-    val status = RemoteTheme.status
-    AnimatedVisibility(state.busy) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            LinearProgressIndicator(
-                modifier = Modifier.fillMaxWidth(),
-                color = status.warn,
-                trackColor = status.warnContainer,
-            )
-            Text(
-                busyText(state),
-                style = MaterialTheme.typography.labelLarge,
-                color = status.warn,
-                fontWeight = FontWeight.SemiBold,
-            )
-        }
-    }
-}
-
-private fun busyText(state: RemoteState) = if (state.undocking && state.phase is StepPhase.Stepping) "Undocking …" else when (state.phase) {
-    is StepPhase.Stopping -> "Stopping: "
-    is StepPhase.Holding -> "Driving: "
-    else -> "Moving: "
-} + (state.busyLabel ?: "") + " …"
 
 /**
  * The d-pad, pulled up from the bottom of every page but the Remote tab (where the pad is the
  * page). Only the handle takes the open and close gesture (a tap, or a flick up or down), so
  * the arrows keep their presses to themselves. Closing it mid-press lets go of the arrow, as
- * lifting the finger does. Closed, the handle still says what the robot is doing.
+ * lifting the finger does. Closed, the handle still says why the pad is locked.
  */
 @Composable
 internal fun DriveSheet(state: RemoteState, actions: RemoteActions, sheet: DriveSheetState) {
-    val status = RemoteTheme.status
     val open = sheet.open
     val change by rememberUpdatedState(sheet.onOpenChange)
     val flick = with(LocalDensity.current) { 24.dp.toPx() }
@@ -934,7 +995,6 @@ internal fun DriveSheet(state: RemoteState, actions: RemoteActions, sheet: Drive
                 Spacer(Modifier.width(12.dp))
                 Text(
                     when {
-                        state.busy -> busyText(state)
                         !state.connected -> "Not connected"
                         state.docked -> "Docked"
                         state.estop == EStop.PRESSED -> "E-stop pressed"
@@ -943,7 +1003,7 @@ internal fun DriveSheet(state: RemoteState, actions: RemoteActions, sheet: Drive
                     },
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.labelMedium,
-                    color = if (state.busy) status.warn else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -959,36 +1019,109 @@ internal fun DriveSheet(state: RemoteState, actions: RemoteActions, sheet: Drive
 
 // ---------------------------------------------------------------------- tasks
 
-/** The Tasks tab: GO TO CHARGER (UNDOCK while docked), and a list of tasks, each opening its own page. */
+/**
+ * The Tasks tab: the task under way (or how the last one ended), GO TO CHARGER (UNDOCK while
+ * docked), the UV switch, the saved disinfection tasks, and Disinfection Points.
+ */
 @Composable
-private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: () -> Unit, modifier: Modifier) {
+private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: () -> Unit, onEditTask: (String) -> Unit, modifier: Modifier) {
     val goal = state.running?.goal
-    val charging = goal?.name == "charging_pile"
+    val charging = state.running?.label?.startsWith("Go to charger") == true
     val count = (state.points as? Points.Loaded)?.list?.size
+    // Tasks are checked against the points on the robot's map.
+    LaunchedEffect(state.connected, state.points is Points.NotLoaded) {
+        if (state.connected && state.points is Points.NotLoaded) actions.onLoadPoints()
+    }
     Column(
         modifier
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        AnimatedVisibility(state.busy) { Panel { BusyStatus(state) } }
         if (state.mapping) TasksNote("The robot is mapping. Trips and disinfection wait until the map is saved or discarded on the Map tab.")
+        val run = state.taskRun
+        val report = state.taskReport
+        if (run != null) TaskRunCard(state, run, actions)
+        else if (report != null) TaskReportCard(report, actions.onDismissTaskReport)
         if (state.docked) ChargerButton("UNDOCK", state.canDrive, actions.onUndock)
         else ChargerButton("GO TO CHARGER", state.canNavigate, actions.onGoToCharger)
+        UvSwitch(state, actions)
 
-        SectionLabel("Tasks")
+        SectionLabel("Disinfection tasks")
+        SavedTasks(state, actions, onEditTask)
+
+        SectionLabel("Points")
         val uv = state.uv
+        val trip = goal != null && !charging && run == null
         TaskItem(
             icon = R.drawable.ic_tab_tasks,
             title = "Disinfection Points",
             detail = when {
-                uv != null || state.lampsOffOwed -> uvStatus(state)
-                goal != null && !charging -> "On the way to ${goal.name}"
+                run == null && (uv != null || state.lampsOffOwed) -> uvStatus(state)
+                trip -> "On the way to ${goal!!.name}"
                 count != null -> "$count saved. Send the robot to one, or add one."
                 else -> "Send the robot to a saved point, or add one where it stands."
             },
-            highlight = (goal != null && !charging) || uv != null || state.lampsOffOwed,
+            highlight = trip || (run == null && (uv != null || state.lampsOffOwed)),
             onClick = onOpenPoints,
+        )
+    }
+}
+
+/**
+ * The UV lamps, on or off by hand. ON asks first, then switches them on at once (no countdown);
+ * OFF needs no asking. It shows any run, the Points page's included, so it also ends those.
+ */
+@Composable
+private fun UvSwitch(state: RemoteState, actions: RemoteActions) {
+    val status = RemoteTheme.status
+    var confirming by rememberSaveable { mutableStateOf(false) }
+    val owed = state.uv == null && state.lampsOffOwed
+    val on = state.uv != null || owed
+    Panel(color = if (on) status.dangerContainer else MaterialTheme.colorScheme.surface) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("UV Lamps", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (on) uvStatus(state) else "Off",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (on) status.danger else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Switch(
+                checked = on,
+                onCheckedChange = { if (it) confirming = true else actions.onStopDisinfection() },
+                // An owed OFF is already being resent; nothing for the switch to do until it lands.
+                enabled = if (on) !owed else state.canDisinfect,
+                colors = SwitchDefaults.colors(checkedTrackColor = status.danger),
+            )
+        }
+    }
+
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text("Switch the UV lamps on?") },
+            text = {
+                Text(
+                    "UV-C light burns skin and eyes. Make sure nobody is in the room and the door is closed.\n\n" +
+                        "The lamps come on now and go off after ${DriveController.MAX_UV_MINUTES} min at the latest. " +
+                        "The switch, STOP, the e-stop, or leaving the app switches them off.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirming = false
+                        actions.onSwitchLampsOn()
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = status.danger),
+                ) { Text("TURN ON", fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = { TextButton(onClick = { confirming = false }) { Text("Cancel") } },
         )
     }
 }
@@ -1062,7 +1195,7 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, drive: DriveS
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 )
-                StatusHeader(state)
+                StatusHeader(state, actions.onDismissAlert)
             }
         },
         bottomBar = {
@@ -1089,8 +1222,6 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, drive: DriveS
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                AnimatedVisibility(state.busy) { Panel { BusyStatus(state) } }
-
                 SectionLabel("Send the robot to")
                 when {
                     points is Points.Loaded && points.list.isNotEmpty() -> {
@@ -1132,7 +1263,7 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, drive: DriveS
     }
 
     if (adding) {
-        val taken = (points as? Points.Loaded)?.list.orEmpty().map { it.name }.toSet() + "charging_pile"
+        val taken = (points as? Points.Loaded)?.list.orEmpty().map { it.name }.toSet() + "charging_pile" + DriveController.APPROACH_POINT
         AddPointDialog(
             taken = taken,
             onDismiss = { adding = false },
@@ -1294,8 +1425,8 @@ private fun DisinfectCard(state: RemoteState, actions: RemoteActions) {
 }
 
 /** Durations offered by the − / + buttons: every minute up to 5, then every 5. */
-private val UV_MINUTE_STEPS = (1..4) + (5..DriveController.MAX_UV_MINUTES step 5)
-private val UV_DELAYS = listOf(DriveController.MIN_UV_DELAY_S, 30, 60)
+internal val UV_MINUTE_STEPS = (1..4) + (5..DriveController.MAX_UV_MINUTES step 5)
+internal val UV_DELAYS = listOf(DriveController.MIN_UV_DELAY_S, 30, 60)
 
 @Composable
 private fun UvSettingsDialog(current: UvSettings, onDismiss: () -> Unit, onSave: (UvSettings) -> Unit) {
@@ -1456,10 +1587,11 @@ private fun DrivePad(state: RemoteState, actions: RemoteActions, buttonHeight: D
             Spacer(Modifier.weight(1f))
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
-            HoldButton(Move.LEFT, "↺", state, actions, buttonHeight)
+            HoldButton(Move.LEFT, "\u25C0\uFE0E", state, actions, buttonHeight)
+            // ↺: the 180° turn goes left (counter-clockwise), the same /cmd/turn direction as LEFT.
             if (state.docked || state.undocking) UndockPadButton(state, actions.onUndock, buttonHeight)
-            else PadButton(Move.AROUND, "↩", state.canDriveByHand, actions.onMove, buttonHeight, tonal = true)
-            HoldButton(Move.RIGHT, "↻", state, actions, buttonHeight)
+            else PadButton(Move.AROUND, "↺", "180°", state.canDriveByHand, actions.onMove, buttonHeight, tonal = true)
+            HoldButton(Move.RIGHT, "\u25B6\uFE0E", state, actions, buttonHeight)
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
             Spacer(Modifier.weight(1f))
@@ -1530,10 +1662,7 @@ private fun RowScope.HoldButton(move: Move, glyph: String, state: RemoteState, a
             },
         contentAlignment = Alignment.Center,
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(glyph, fontSize = 26.sp, color = content)
-            Text(move.word, style = MaterialTheme.typography.labelLarge, color = content, textAlign = TextAlign.Center)
-        }
+        Text(glyph, fontSize = 30.sp, color = content)
     }
 }
 
@@ -1562,7 +1691,7 @@ private fun RowScope.UndockPadButton(state: RemoteState, onUndock: () -> Unit, h
 }
 
 @Composable
-private fun RowScope.PadButton(move: Move, glyph: String, enabled: Boolean, onMove: (Move) -> Unit, height: Dp, tonal: Boolean = false) {
+private fun RowScope.PadButton(move: Move, glyph: String, label: String, enabled: Boolean, onMove: (Move) -> Unit, height: Dp, tonal: Boolean = false) {
     Button(
         onClick = { onMove(move) },
         enabled = enabled,
@@ -1575,7 +1704,7 @@ private fun RowScope.PadButton(move: Move, glyph: String, enabled: Boolean, onMo
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(glyph, fontSize = 26.sp)
-            Text(move.label, style = MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center)
+            Text(label, style = MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center)
         }
     }
 }
@@ -1604,7 +1733,7 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 )
-                StatusHeader(state)
+                StatusHeader(state, actions.onDismissAlert)
             }
         },
         bottomBar = {
@@ -1771,5 +1900,29 @@ private fun PreviewPointsUv() = RemoteTheme(dark = true) {
 @Preview(name = "Tasks, dark", heightDp = 500)
 @Composable
 private fun PreviewTasks() = RemoteTheme(dark = true) {
-    TasksTab(previewState(demo = false, moving = false), RemoteActions(), {}, Modifier.background(MaterialTheme.colorScheme.background))
+    TasksTab(previewState(demo = false, moving = false), RemoteActions(), {}, {}, Modifier.background(MaterialTheme.colorScheme.background))
+}
+
+private val PREVIEW_TASK = DisinfectionTask(
+    "a", "Ward A", listOf(TaskStop("Bed 1", 5), TaskStop("Bed 2", 5), TaskStop("Sink area", 2)), rounds = 2,
+)
+
+@Preview(name = "Tasks, a task under way", heightDp = 1100)
+@Composable
+private fun PreviewTaskRunning() = RemoteTheme(dark = false) {
+    val state = previewState(demo = false, moving = false).copy(
+        tasks = listOf(PREVIEW_TASK, PREVIEW_TASK.copy(id = "b", name = "Sink only", stops = listOf(TaskStop("Sink area", 10)), rounds = 1)),
+        taskRun = TaskRun(PREVIEW_TASK, round = 1, index = 1, stage = TaskStage.Disinfecting, results = emptyList()),
+        atPoint = PREVIEW_POINTS[1],
+        uv = Uv.On("Bed 2", since = 0, until = 300_000),
+        uvLeftMs = 192_000,
+    )
+    TasksTab(state, RemoteActions(), {}, {}, Modifier.background(MaterialTheme.colorScheme.background))
+}
+
+@Preview(name = "Task editor", heightDp = 1300)
+@Composable
+private fun PreviewTaskEditor() = RemoteTheme(dark = true) {
+    val state = previewState(demo = false, moving = false).copy(tasks = listOf(PREVIEW_TASK))
+    TaskEditorPage(state, RemoteActions(), PREVIEW_TASK.copy(stops = PREVIEW_TASK.stops + TaskStop("Bed 9", 5)), DriveSheetState(false) {}, onBack = {})
 }

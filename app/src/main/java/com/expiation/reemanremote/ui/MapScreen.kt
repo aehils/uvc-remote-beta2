@@ -353,7 +353,7 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, @Suppress("UNUSE
     }
 
     if (adding) {
-        val taken = (layers.points + layers.pendingPoints).map { it.name }.toSet() + "charging_pile"
+        val taken = (layers.points + layers.pendingPoints).map { it.name }.toSet() + "charging_pile" + DriveController.APPROACH_POINT
         AddPointDialog(
             taken = taken,
             onDismiss = { adding = false },
@@ -722,7 +722,7 @@ internal fun MapsPage(
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 )
-                StatusHeader(state)
+                StatusHeader(state, actions.onDismissAlert)
             }
         },
         bottomBar = {

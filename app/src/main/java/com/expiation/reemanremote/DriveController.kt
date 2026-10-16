@@ -14,9 +14,12 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.min
+import kotlin.math.sin
 import kotlin.math.sign
 
 // ---------------------------------------------------------------------- state
@@ -62,8 +65,8 @@ data class Step(
     val stallHint: String = "Obstacle in the way, or command ignored?",
     /** Set for a navigation to a saved point (see [DriveController.goTo]). */
     val goal: Waypoint? = null,
-    /** Sent if this dock finds no pile (see [DriveController.goToCharger]). */
-    val fallback: Step? = null,
+    /** Sent once this step has ended where it should: lining up, then docking (see [DriveController.goToCharger]). */
+    val then: Step? = null,
     /** Set for a held d-pad arrow (see [DriveController.hold]). */
     val held: Move? = null,
 )
@@ -256,6 +259,17 @@ data class RemoteState(
      * (see [DriveController.undock]).
      */
     val docked: Boolean = false,
+    /**
+     * The robot's own complaint, if it has one: a trip it refused or that failed, or docking that
+     * found no pile (see [DriveController.dismissAlert]). Shown on every page until dismissed.
+     */
+    val robotAlert: String? = null,
+    /** The saved disinfection tasks (see [DriveController.saveTask]). */
+    val tasks: List<DisinfectionTask> = emptyList(),
+    /** The task under way, if any (see [DriveController.startTask]). */
+    val taskRun: TaskRun? = null,
+    /** How the last task ended, until dismissed or the next one starts. */
+    val taskReport: TaskReport? = null,
 ) {
     val connected: Boolean get() = link is Link.Connected
     val estop: EStop? get() = (link as? Link.Connected)?.estop
@@ -310,10 +324,39 @@ data class RemoteState(
     val mapping: Boolean get() = mode == RobotMode.MAPPING || mode == RobotMode.EXTENDING
 
     /**
-     * Trips the robot plans on its map (GO, GO TO CHARGER): the drive interlock, and the robot
-     * navigating on a map rather than scanning one. Driving by hand works either way.
+     * Trips the robot plans on its map: the drive interlock, and the robot navigating on a map
+     * rather than scanning one. Driving by hand works either way.
      */
-    val canNavigate: Boolean get() = canDrive && !mapping
+    val canTravel: Boolean get() = canDrive && !mapping
+
+    /**
+     * GO, GO TO CHARGER and the UV buttons: [canTravel], and no task running. A task sends its
+     * own trips and runs; the user's would fight it. STOP and the d-pad are never held back by one.
+     */
+    val canNavigate: Boolean get() = canTravel && taskRun == null
+
+    /** Why no task can start now (the robot, not the task), or null. */
+    val taskBlocker: String? get() = when {
+        !connected -> "Connect to the robot first."
+        taskRun != null -> "Another task is running."
+        mapping -> "The robot is mapping. Save the map first."
+        points !is Points.Loaded -> "Load the robot's points first."
+        battery != null && battery < DriveController.TASK_MIN_BATTERY -> "Battery too low to start ($battery%)."
+        estop == EStop.PRESSED -> "The e-stop is pressed."
+        !canNavigate -> "The robot must be still, with the lamps off."
+        else -> null
+    }
+
+    /** What in [task] keeps it from starting on this map (no points, or points the map doesn't have), or null. */
+    fun taskFault(task: DisinfectionTask): String? {
+        if (task.stops.isEmpty()) return "Add a point to the task first."
+        val loaded = (points as? Points.Loaded)?.list ?: return null
+        val missing = task.stops.map { it.point }.distinct().filter { p -> loaded.none { it.name == p } }
+        return if (missing.isEmpty()) null else "Not on this map: ${missing.joinToString()}"
+    }
+
+    /** Why [task] can't start now, or null if it can. [DriveController.startTask] refuses with it. */
+    fun taskProblem(task: DisinfectionTask): String? = taskFault(task) ?: taskBlocker
 
     /**
      * Map commands (mode, save, switch, position): connected, nothing running, the robot standing
@@ -391,6 +434,17 @@ class DriveController(
     private var ownMotionNoted = false
     private var addJob: Job? = null
     private var chargerJob: Job? = null
+    // The pile this GO TO CHARGER is going to, and whether it has already fallen back to lining up.
+    private var chargePile: Waypoint? = null
+    private var chargeRecovered = false
+    private var recoveringUntil = 0L
+
+    // ---- The robot's own complaints (/reeman/nav_status and chargeFlag 9), shown as an alert.
+    private var robotAlert: String? = null
+    private var navKey: String? = null // the last report read, to tell a new one from the same again
+    private var navSeen = false        // read one since connecting: later ones are news
+    private var navFresh = false       // a trip was sent since: the next report is news even if unchanged
+    private var navSentAt = 0L
 
     // Hold-to-drive (see [hold]): the speed stream, the speed it ramps towards, the last speed the
     // robot accepted, the last sign of life from the button, STOP pressed (the stream ends), drop to
@@ -416,6 +470,15 @@ class DriveController(
     // Lamp commands go out one at a time, in order: an OFF sent while an ON is still in flight
     // must not reach the robot first (live requests run on separate IO threads).
     private val lampLock = Mutex()
+    /** How the last UV run ended (see [endDisinfection]): a task moves on only from one that ran its time. */
+    private data class UvEnd(val completed: Boolean, val onMs: Long, val reason: String)
+    private var uvEnded: UvEnd? = null
+
+    // Disinfection tasks (see [startTask]): the saved ones, the one under way, the last one's report.
+    private var tasks: List<DisinfectionTask> = emptyList()
+    private var taskRun: TaskRun? = null
+    private var taskReport: TaskReport? = null
+    private var taskJob: Job? = null
 
     // Maps (see [mapLoop]): the robot's mode and map in use, the image and pose while a map is on
     // screen, the saved maps, and one map command at a time.
@@ -466,6 +529,8 @@ class DriveController(
         chargerJob?.cancel()
         dropUndockPlan()
         (phase as? StepPhase.Holding)?.let { endHold(it, "${it.step.label}: app left, robot slowing to a stop") }
+        // Polling stops, so a task can't be followed: it ends here (a trip under way finishes by itself).
+        endTask("app left")
         endDisinfection("app left")
         publish()
     }
@@ -524,10 +589,14 @@ class DriveController(
         return saved
     }
 
-    /** OFF goes to the selected robot, so never switch away from one whose lamps may be on. */
+    /** OFF goes to the selected robot, so never switch away from one whose lamps may be on, or that runs a task. */
     private fun uvBlocksSwitch(): Boolean {
-        if (uv == null && !lampsOffOwed) return false
-        log("Switch the UV lamps off before changing robot.")
+        val problem = when {
+            taskRun != null -> "End the task before changing robot."
+            uv != null || lampsOffOwed -> "Switch the UV lamps off before changing robot."
+            else -> return false
+        }
+        log(problem)
         publish()
         return true
     }
@@ -552,6 +621,8 @@ class DriveController(
         battery = null
         chargeFlag = null
         pileLeft = false
+        forgetNavStatus()
+        robotAlert = null
         vx = 0.0
         vth = 0.0
         mapCommandJob?.cancel()
@@ -593,12 +664,13 @@ class DriveController(
             val nav = withBase && snapshot().running?.goal != null
             val plan = if (nav) a.get(PLAN_PATH) else null
             val pose = if (nav) a.get("/reeman/pose") else null
-            onPoll(s, b, plan, pose)
+            val report = if (withBase) a.get(NAV_STATUS_PATH) else null
+            onPoll(s, b, plan, pose, report)
             delay((POLL_MS - (now() - started)).coerceAtLeast(0))
         }
     }
 
-    private fun onPoll(s: RobotApi.Result, b: RobotApi.Result?, plan: RobotApi.Result?, pose: RobotApi.Result?) {
+    private fun onPoll(s: RobotApi.Result, b: RobotApi.Result?, plan: RobotApi.Result?, pose: RobotApi.Result?, report: RobotApi.Result?) {
         var speedValid = false
         if (s.ok) {
             runCatching {
@@ -609,6 +681,7 @@ class DriveController(
             } // unexpected body: keep previous values
             if (link is Link.Disconnected) {
                 link = Link.Connected(estop = null)
+                forgetNavStatus() // what it reports first may be from before
                 log("Connected")
             }
             failCount = 0
@@ -630,6 +703,10 @@ class DriveController(
                 if (o.has("chargeFlag")) {
                     val f = o.getInt("chargeFlag")
                     if (f != chargeFlag) pileLeft = false
+                    // Turned 9 just now (not read as 9 on connecting): a dock has just failed.
+                    if (f == CHARGE_NOT_FOUND && chargeFlag != null && chargeFlag != CHARGE_NOT_FOUND && now() >= recoveringUntil) {
+                        raise("Docking failed: the robot couldn't find its charging pile")
+                    }
                     chargeFlag = f
                 }
                 val l = link
@@ -657,11 +734,13 @@ class DriveController(
         if (pose != null && pose.ok) {
             parsePose(pose.body)?.let { navPose = it }
         }
+        if (report != null) onNavStatus(report)
 
         trackStep(speedValid)
         guardStop(speedValid)
         noticeOwnMotion(speedValid)
         tickDisinfection(speedValid)
+        tickTask()
         publish()
     }
 
@@ -893,16 +972,22 @@ class DriveController(
     }
 
     /**
-     * GO TO CHARGER: docks straight away if the charging pile is close, otherwise drives to it
-     * and docks. "Close" is measured on the map: the robot's pose (/reeman/pose) against the
-     * pile's saved point (/reeman/position), within [DOCK_NEAR_M].
-     *  - close: /cmd/charge type 0, the docking routine. If that finds no pile (no motion, or
-     *    chargeFlag 9), it falls back to driving there (see [trackStep]).
-     *  - far, or either position unknown: /cmd/charge type 2, drive to the pile, then dock.
-     * Docking is never tried from far away: what the real routine does then is unknown.
+     * GO TO CHARGER, by how far the pile is on the map: the robot's pose (/reeman/pose) against
+     * the pile's saved point (/reeman/position).
+     *  - on it ([AT_PILE_M]): /cmd/charge type 0, the docking routine (already docked: no motion).
+     *  - near ([NEAR_PILE_M]): lines up first (see [lineUp]), then docks. From close by, the
+     *    robot refuses type 2 (nav_status reason -1) and tries docking where it stands, which
+     *    fails unless it happens to be lined up (its own log, 2026-10-15).
+     *  - far, or either position unknown: /cmd/charge type 2, drive to the pile, then dock. If
+     *    the robot refuses that anyway, the app lines up instead (see [lineUpAfterRefusal]).
      */
     fun goToCharger() {
-        if (!snapshot().canNavigate || chargerJob?.isActive == true) return
+        if (snapshot().canNavigate) charge()
+    }
+
+    /** [goToCharger] without the task check: a task ends with it. */
+    private fun charge() {
+        if (!snapshot().canTravel || chargerJob?.isActive == true) return
         log("Go to charger: checking how far the charging pile is …")
         publish()
         val a = api
@@ -922,7 +1007,7 @@ class DriveController(
                 return@launch
             }
             // The robot may have moved or been e-stopped while the app was asking.
-            if (!snapshot().canNavigate) {
+            if (!snapshot().canTravel) {
                 log("Go to charger: not sent (e-stop pressed, or the robot is moving)")
                 publish()
                 return@launch
@@ -931,15 +1016,21 @@ class DriveController(
             val name = pilePoint?.name ?: PILE_POINT
             if (name != PILE_POINT) log("Go to charger: the pile on this map is called \"$name\"")
             val drive = chargeNavStep(name)
+            chargePile = pilePoint
+            chargeRecovered = false
             when {
                 d == null -> {
                     log("Go to charger: couldn't tell where the pile is, so driving there first")
                     send(drive)
                 }
-                d <= DOCK_NEAR_M -> {
-                    log(fmt("Go to charger: pile %.1f m away, docking straight away", d))
-                    // At the pile already: a failed dock means "already docked", not "too far".
-                    send(dockStep(name, fallback = if (d > AT_PILE_M) drive else null))
+                // At the pile already: a dock that doesn't move means "already docked".
+                d <= AT_PILE_M -> {
+                    log(fmt("Go to charger: pile %.1f m away, docking", d))
+                    send(dockStep(name))
+                }
+                d <= NEAR_PILE_M -> {
+                    log(fmt("Go to charger: pile %.1f m away, lining up in front of it first", d))
+                    lineUp(a, pilePoint!!, here)
                 }
                 else -> {
                     log(fmt("Go to charger: pile %.1f m away, driving there first", d))
@@ -949,15 +1040,85 @@ class DriveController(
         }
     }
 
+    /**
+     * Drives to [APPROACH_POINT], [APPROACH_M] in front of the pile and facing away from it (a
+     * docked robot faces away: docking reverses onto the pile), then docks from there. The spot
+     * is a saved point so the robot plans its own way there; it is saved again only if the pile
+     * has moved. Already there, lined up: docks straight away.
+     */
+    private suspend fun lineUp(a: RobotApi, pile: Waypoint, here: Pose?) {
+        val p = pile.pose ?: return
+        val spot = Pose(p.x + APPROACH_M * cos(p.theta), p.y + APPROACH_M * sin(p.theta), p.theta)
+        val dock = dockStep(pile.name)
+        if (here != null && dist(here, spot) <= ARRIVED_M && abs(turnBetween(here.theta, spot.theta)) <= LINED_UP_RAD) {
+            if (!blockedForCharger()) {
+                log("Go to charger: lined up in front of the pile, docking")
+                send(dock)
+            }
+            return
+        }
+        val saved = readWaypoints(a)?.firstOrNull { it.name == APPROACH_POINT }?.pose
+        if (saved == null || dist(saved, spot) > 0.02 || abs(turnBetween(saved.theta, spot.theta)) > 0.02) {
+            val problem = savePoint(a, Waypoint(APPROACH_POINT, APPROACH_TYPE, spot))
+            if (problem != null) {
+                raise("Go to charger: couldn't save the spot in front of the pile ($problem)")
+                return
+            }
+        }
+        if (blockedForCharger()) return
+        send(
+            Step(
+                LINE_UP_LABEL, NAV_PATH, JSONObject().put("point", APPROACH_POINT).toString(), isTurn = false,
+                estimateMs = 60_000,     // unknown: depends on the route
+                stillPolls = 10,         // ~3 s, as for a trip
+                noMotionMs = 15_000,
+                capMs = 10 * 60_000,
+                stallHint = "No route to the spot in front of the pile?",
+                goal = Waypoint(APPROACH_POINT, APPROACH_TYPE, spot),
+                then = dock,
+            )
+        )
+    }
+
+    /** The robot may have moved or been e-stopped while the app was asking. */
+    private fun blockedForCharger(): Boolean {
+        if (snapshot().canTravel) return false
+        log("Go to charger: not sent (e-stop pressed, or the robot is moving)")
+        publish()
+        return true
+    }
+
+    /**
+     * The robot refused GO TO CHARGER's trip (nav_status reason -1) and is trying to dock where it
+     * stands instead. Ends that, waits for the robot to be still, and lines up. Once per press.
+     */
+    private fun lineUpAfterRefusal(step: Step) {
+        val pile = chargePile
+        if (pile?.pose == null) return raise("Couldn't go to ${step.goal?.name}: the robot wouldn't drive to its pile from here")
+        chargeRecovered = true
+        recoveringUntil = now() + RECOVERY_QUIET_MS // the dock cancelled here may still report 9
+        finishStep(step, "Go to charger: the robot wouldn't drive to the pile from here, so lining up in front of it first")
+        val a = api
+        chargerJob = scope.launch {
+            val cancel = chargeJson(1, pile.name)
+            log("Go to charger: ending the docking the robot started instead, sending $DOCK_PATH $cancel")
+            publish()
+            a.post(DOCK_PATH, cancel)
+            val until = now() + 5_000
+            while (!snapshot().still && now() < until) delay(POLL_MS)
+            lineUp(a, pile, readPose(a))
+            publish()
+        }
+    }
+
     /** The firmware's own docking routine (/cmd/charge type 0): finds the pile nearby and reverses onto it. */
-    private fun dockStep(pile: String, fallback: Step?) = Step(
+    private fun dockStep(pile: String) = Step(
         "Go to charger (docking)", DOCK_PATH, chargeJson(0, pile), isTurn = false,
         estimateMs = 30_000,     // GUESS: never timed on the real robot
         stillPolls = 10,         // ~3 s: the routine may pause between aligning and reversing
         noMotionMs = 8_000,
         capMs = 120_000,
         stallHint = "Is the robot's own screen asking to confirm? Otherwise: already docked, or no charging pile within range?",
-        fallback = fallback,
     )
 
     /**
@@ -1040,11 +1201,11 @@ class DriveController(
         }
     }
 
-    /** The trip GO asked for while docked, now the robot is off its pile. */
+    /** The trip GO (or a task) asked for while docked, now the robot is off its pile. */
     private fun carryOn() {
         val goal = goAfterUndock ?: return
         goAfterUndock = null
-        goTo(goal)
+        travel(goal)
     }
 
     private fun dropUndockPlan() {
@@ -1070,7 +1231,7 @@ class DriveController(
             val r = a.get(POINTS_PATH)
             val rejected = if (r.ok) robotError(r.body) else null
             val all = if (r.ok && rejected == null) runCatching { parseWaypoints(r.body) }.getOrNull() else null
-            val loaded = all?.filterNot { isPile(it) }
+            val loaded = all?.filterNot { isPile(it) || it.name == APPROACH_POINT }
             // The map's virtual walls, read alongside. Not fatal if they can't be.
             walls = readWalls(a) ?: walls
             // Is the robot already standing on one of them (say, after the app was restarted)?
@@ -1127,7 +1288,7 @@ class DriveController(
             !s.mapping && loaded == null -> "Load the points first."
             clean.isEmpty() -> "Give the point a name."
             clean.length > MAX_POINT_NAME -> "Use a name of $MAX_POINT_NAME characters or fewer."
-            !pile && (clean == PILE_POINT || clean in taken) -> "A point called \"$clean\" already exists."
+            !pile && (clean == PILE_POINT || clean == APPROACH_POINT || clean in taken) -> "A point called \"$clean\" already exists."
             else -> null
         }
         if (problem != null) {
@@ -1251,8 +1412,13 @@ class DriveController(
      * the lock also holds while the robot still has a plan (see [trackStep]).
      */
     fun goTo(point: Waypoint) {
+        if (snapshot().canNavigate) travel(point)
+    }
+
+    /** [goTo] without the task check: a task's own trips. */
+    private fun travel(point: Waypoint) {
         val s = snapshot()
-        if (!s.canNavigate) return
+        if (!s.canTravel) return
         if (s.docked) return undockThen(point)
         planActive = null
         navPose = null
@@ -1282,7 +1448,11 @@ class DriveController(
         if (step.goal != null) {
             planActive = null
             navPose = null
+            // A trip: the robot's next report is about it, even if it reads the same as the last.
+            navFresh = true
+            navSentAt = t
         }
+        if (step.goal != null || step.path == DOCK_PATH) robotAlert = null // trying again
         phase = StepPhase.Stepping(step, Tracking(t + step.noMotionMs, t + step.capMs))
         if (before == null) log("${step.label}: sending ${step.path} ${step.json}")
         publish()
@@ -1348,6 +1518,7 @@ class DriveController(
         dropUndockPlan()
         stopGuard = StopGuard(pressedAt = t, until = t + STOP_GUARD_MS, lastSent = t, resends = 0)
         runaway = false
+        endTask(reason)
         endDisinfection("STOP pressed")
         if (lampsOffOwed) sendLampsOff()
         publish()
@@ -1431,6 +1602,52 @@ class DriveController(
         if (!moving) ownMotionNoted = false
     }
 
+    // ------------------------------------------------------------------ the robot's complaints
+
+    /**
+     * The robot's report on its latest trip (/reeman/nav_status), the same one its screen app
+     * logs as nav_result{res reason goal dist mileage}. res 6 is the start of a trip: reason 0
+     * started, anything else refused (see [refusal]); res 3 is the end: reason 0 arrived, else
+     * failed. Only news counts: a report that changed, or the first one after the app sent a
+     * trip (a refused trip reads the same each time). The first one after connecting may be
+     * old, so it doesn't.
+     */
+    private fun onNavStatus(r: RobotApi.Result) {
+        if (!r.ok || now() - navSentAt < NAV_SETTLE_MS) return // the robot may not have updated it yet
+        val n = parseNavStatus(r.body) ?: return // no trip yet: the firmware answers with an error
+        val news = (n.key != navKey && navSeen) || navFresh
+        navKey = n.key
+        navSeen = true
+        navFresh = false
+        if (!news) return
+        val problem = when {
+            n.res == NAV_START && n.reason != 0 -> "Couldn't go to ${n.goal}: ${refusal(n.reason)}"
+            n.res == NAV_END && n.reason != 0 -> "Navigation to ${n.goal} failed"
+            else -> return
+        }
+        val step = snapshot().running
+        val refusedPile = n.res == NAV_START && abs(n.reason) == 1 &&
+            step != null && step.path == DOCK_PATH && step.goal?.name == n.goal
+        if (refusedPile && !chargeRecovered) lineUpAfterRefusal(step!!) else raise(problem)
+    }
+
+    private fun raise(problem: String) {
+        robotAlert = problem
+        log("Robot: $problem")
+        publish()
+    }
+
+    fun dismissAlert() {
+        robotAlert = null
+        publish()
+    }
+
+    private fun forgetNavStatus() {
+        navKey = null
+        navSeen = false
+        navFresh = false
+    }
+
     // ------------------------------------------------------------------ step lock
 
     /**
@@ -1498,16 +1715,14 @@ class DriveController(
             if (!stopping && tr.sawMotion && t <= tr.hardCap) carryOn() else dropUndockPlan()
         }
 
-        // A dock that found no pile (never moved, or reports chargeFlag 9): drive there instead.
-        // Not after STOP or a timeout, and only if driving is still allowed.
-        val fallback = step.fallback
-        val noPile = !tr.sawMotion || chargeFlag == CHARGE_NOT_FOUND
-        if (message != null && fallback != null && !stopping && noPile && t <= tr.hardCap) {
-            if (snapshot().canNavigate) {
-                log("Go to charger: couldn't dock from here, driving to the pile first")
-                send(fallback)
-            } else {
-                log("Go to charger: couldn't dock from here, and driving to the pile is blocked")
+        // Lined up in front of the pile: dock. Not after STOP, a stall or a timeout, nor if the trip
+        // ended short of the spot.
+        val next = step.then
+        if (message != null && next != null && !stopping && tr.sawMotion && t <= tr.hardCap) {
+            when {
+                goal != null && atPoint != goal -> raise("Go to charger: couldn't get to the spot in front of the pile")
+                snapshot().canTravel -> send(next)
+                else -> log("${next.label}: not sent (e-stop pressed, or the robot is moving)")
             }
         }
     }
@@ -1610,6 +1825,18 @@ class DriveController(
         publish()
     }
 
+    /**
+     * The Tasks tab's UV switch: the lamps on now, with no countdown (the switch's own dialog is
+     * the warning). Same interlock and same run as [startDisinfection], so everything that ends
+     * a run still switches them off, and [MAX_UV_MINUTES] is the latest they go off on their own.
+     */
+    fun switchLampsOn() {
+        if (!snapshot().canDisinfect) return
+        log("UV lamps switched on from the app (off after $MAX_UV_MINUTES min at the latest)")
+        lampsOn(atPoint?.name, MAX_UV_MINUTES)
+        publish()
+    }
+
     /** Cancels the countdown, or switches the lamps off early. */
     fun stopDisinfection() {
         endDisinfection("switched off from the app")
@@ -1644,12 +1871,17 @@ class DriveController(
     private fun endDisinfection(reason: String) {
         val run = uv ?: return
         uv = null
+        val t = now()
+        uvEnded = UvEnd(
+            completed = run is Uv.On && t >= run.until,
+            onMs = if (run is Uv.On) (min(t, run.until) - run.since).coerceAtLeast(0) else 0,
+            reason = reason,
+        )
         val where = run.point?.let { " at $it" } ?: ""
         if (run is Uv.Countdown) {
             log("Disinfection$where cancelled before the lamps came on ($reason)")
             return
         }
-        val t = now()
         log(
             when {
                 run is Uv.On && t >= run.until -> "Disinfection$where done: UV lamps off"
@@ -1701,6 +1933,215 @@ class DriveController(
             }
         }
         if (lampsOffOwed && link is Link.Connected && t - lampsOffLastSent >= LAMPS_OFF_RETRY_MS) sendLampsOff()
+    }
+
+    // ------------------------------------------------------------------ disinfection tasks
+
+    /** The saved tasks, read back when the app starts. */
+    fun setTasks(list: List<DisinfectionTask>) {
+        tasks = list.map { it.coerced() }
+        publish()
+    }
+
+    /**
+     * Adds [task], or replaces the saved one with its id; a blank id is a new task. A task under
+     * way keeps the copy it started with.
+     */
+    fun saveTask(task: DisinfectionTask) {
+        val t = task.coerced().let { if (it.id.isBlank()) it.copy(id = UUID.randomUUID().toString()) else it }
+        if (t.name.isEmpty() || t.stops.isEmpty()) return
+        tasks = if (tasks.any { it.id == t.id }) tasks.map { if (it.id == t.id) t else it } else tasks + t
+        log("Task \"${t.name}\" saved: ${t.stops.size} point(s), ${t.uvMinutes} min of UV")
+        publish()
+    }
+
+    /** Not the task under way. */
+    fun deleteTask(id: String) {
+        if (taskRun?.task?.id == id) return
+        val t = tasks.firstOrNull { it.id == id } ?: return
+        tasks = tasks - t
+        log("Task \"${t.name}\" deleted")
+        publish()
+    }
+
+    /**
+     * Runs a saved task, as the robot's own app does, one stop at a time, moved along by every
+     * poll (see [tickTask]):
+     *  1. to the stop's point with /cmd/nav_name, undocking first if the robot is on its pile;
+     *     no trip if it is standing there already. Not reached: the task holds, lamps off, for
+     *     the user to retry, skip the stop, or end the task.
+     *  2. the same UV run as START DISINFECTION: the task's countdown, then the lamps on for the
+     *     stop's minutes, then off.
+     *  3. on to the next stop only once the robot has accepted OFF: the lamps are never on while
+     *     it drives.
+     * Every stop, every round, then [WhenDone]. Whatever ends a UV run early (STOP, the e-stop,
+     * the robot moving, lost connection, LAMPS OFF, leaving the app) ends the task; so does the
+     * e-stop at any time. Battery under [TASK_LOW_BATTERY] between stops ends it and sends the
+     * robot to its charger.
+     */
+    fun startTask(id: String) {
+        val task = tasks.firstOrNull { it.id == id } ?: return
+        snapshot().taskProblem(task)?.let {
+            log("Task \"${task.name}\" not started: $it")
+            publish()
+            return
+        }
+        taskReport = null
+        taskRun = TaskRun(task, round = 1, index = 0, stage = TaskStage.Checking, results = emptyList())
+        log(
+            "Task \"${task.name}\" started: ${task.stops.size} point(s)" +
+                (if (task.rounds > 1) " × ${task.rounds} rounds" else "") + ", ${task.uvMinutes} min of UV"
+        )
+        beginStop()
+        publish()
+    }
+
+    /** At a stop where the robot couldn't get to: try the trip again. */
+    fun retryTaskStop() {
+        val run = taskRun ?: return
+        if (run.stage !is TaskStage.Held) return
+        log("Task: trying ${run.stop.point} again")
+        beginStop()
+        publish()
+    }
+
+    /** At a stop where the robot couldn't get to: leave it out and go on to the next. */
+    fun skipTaskStop() {
+        val run = taskRun ?: return
+        if (run.stage !is TaskStage.Held) return
+        log("Task: ${run.stop.point} skipped")
+        taskRun = run.copy(results = run.results + StopResult(run.round, run.stop.point, StopOutcome.SKIPPED))
+        nextStop()
+        publish()
+    }
+
+    /** Ends the task the way STOP does: the robot brakes, any trip is cancelled, the lamps go off. */
+    fun endTaskNow() {
+        if (taskRun != null) halt("Task ended from the app")
+    }
+
+    fun dismissTaskReport() {
+        taskReport = null
+        publish()
+    }
+
+    /** The current stop: low battery ends the task; else to the stop's point, unless the robot is on it. */
+    private fun beginStop() {
+        val run = taskRun ?: return
+        val b = battery
+        if (b != null && b < TASK_LOW_BATTERY) {
+            endTask("battery low ($b%)")
+            charge()
+            return
+        }
+        val point = (points as? Points.Loaded)?.list?.firstOrNull { it.name == run.stop.point }
+            ?: return hold("${run.stop.point} is no longer on the map")
+        if (atPoint?.name == point.name) return startStopUv()
+        // Standing on it already, though the app didn't see it arrive (say, the last task ended
+        // here)? A trip there wouldn't move, and would read as "couldn't get there".
+        val checking = run.copy(stage = TaskStage.Checking)
+        taskRun = checking
+        val a = api
+        taskJob?.cancel()
+        taskJob = scope.launch {
+            val here = readPose(a)
+            if (taskRun !== checking) return@launch // ended, or STOP, while asking
+            val to = point.pose
+            if (here != null && to != null && dist(here, to) <= ARRIVED_M && snapshot().still && !snapshot().busy) {
+                atPoint = point
+                startStopUv()
+            } else {
+                travel(point)
+                val sent = phase != StepPhase.Idle || chargerJob?.isActive == true
+                if (sent) taskRun = checking.copy(stage = TaskStage.Travelling)
+                else hold("Couldn't set off for ${point.name}: the robot isn't still, or the lamps may be on")
+            }
+            publish()
+        }
+    }
+
+    /** At the stop: the countdown starts, then [tickDisinfection] runs the lamps as for any run. */
+    private fun startStopUv() {
+        val run = taskRun ?: return
+        if (!snapshot().canTravel) return hold("Couldn't start the lamps at ${run.stop.point}: the robot isn't still")
+        val stop = run.stop
+        uvEnded = null
+        uv = Uv.Countdown(stop.point, now() + run.task.delaySeconds * 1000L, stop.minutes)
+        taskRun = run.copy(stage = TaskStage.Disinfecting)
+        log("Task: at ${stop.point} (${run.number} of ${run.total}). UV lamps on in ${run.task.delaySeconds} s, for ${stop.minutes} min")
+    }
+
+    /** Runs on every poll, after [tickDisinfection]: moves the task on when the stop's stage is over. */
+    private fun tickTask() {
+        val run = taskRun ?: return
+        if ((link as? Link.Connected)?.estop == EStop.PRESSED) return endTask("e-stop pressed")
+        when (run.stage) {
+            TaskStage.Checking, is TaskStage.Held -> Unit
+            TaskStage.Travelling -> {
+                // Still on its way, still undocking, or about to set off after undocking.
+                if (phase != StepPhase.Idle || chargerJob?.isActive == true || goAfterUndock != null) return
+                if (atPoint?.name == run.stop.point) startStopUv() else hold("Couldn't get to ${run.stop.point}")
+            }
+            TaskStage.Disinfecting -> {
+                if (uv != null) return
+                val end = uvEnded
+                if (end?.completed != true) return endTask(end?.reason ?: "the lamps went off")
+                taskRun = run.copy(
+                    stage = TaskStage.LampsOff,
+                    results = run.results + StopResult(run.round, run.stop.point, StopOutcome.DONE, end.onMs),
+                )
+            }
+            // OFF sent by endDisinfection, and resent until the robot accepts it.
+            TaskStage.LampsOff -> if (!lampsOffOwed) nextStop()
+        }
+    }
+
+    private fun hold(problem: String) {
+        val run = taskRun ?: return
+        taskRun = run.copy(stage = TaskStage.Held(problem))
+        log("Task: $problem. Try again, skip it, or end the task")
+    }
+
+    private fun nextStop() {
+        val run = taskRun ?: return
+        var round = run.round
+        var index = run.index + 1
+        if (index >= run.task.stops.size) {
+            index = 0
+            round++
+        }
+        if (round > run.task.rounds) return finishTask(run)
+        taskRun = run.copy(round = round, index = index, stage = TaskStage.Checking)
+        beginStop()
+    }
+
+    private fun finishTask(run: TaskRun) {
+        taskRun = null
+        taskJob?.cancel()
+        val report = TaskReport(run.task, completed = true, reason = null, results = run.results)
+        taskReport = report
+        log("Task \"${run.task.name}\" finished: ${report.done} of ${report.total} stop(s) disinfected")
+        if (run.task.whenDone == WhenDone.CHARGER) charge()
+    }
+
+    /**
+     * Ends the task under way, if any, and switches the lamps off if they may be on. The stop it
+     * was at counts as interrupted (lamps on, or counting down) or not reached.
+     */
+    private fun endTask(reason: String) {
+        val run = taskRun ?: return
+        taskRun = null
+        taskJob?.cancel()
+        endDisinfection(reason)
+        val here = when (run.stage) {
+            TaskStage.Checking -> null // never set off for it (low battery, or STOP before it moved)
+            TaskStage.LampsOff -> null // already counted as done
+            TaskStage.Disinfecting -> StopResult(run.round, run.stop.point, StopOutcome.INTERRUPTED, uvEnded?.onMs ?: 0)
+            TaskStage.Travelling, is TaskStage.Held -> StopResult(run.round, run.stop.point, StopOutcome.NOT_REACHED)
+        }
+        val report = TaskReport(run.task, completed = false, reason = reason, results = run.results + listOfNotNull(here))
+        taskReport = report
+        log("Task \"${run.task.name}\" ended: $reason. ${report.done} of ${report.total} stop(s) disinfected")
     }
 
     // ------------------------------------------------------------------ maps
@@ -2092,6 +2533,8 @@ class DriveController(
     fun demoReset() {
         if (phase != StepPhase.Idle) {
             log("Wait for the current step to finish before resetting the DEMO robot.")
+        } else if (taskRun != null) {
+            log("End the task before resetting the DEMO robot.")
         } else if (uv != null || lampsOffOwed) {
             log("Switch the UV lamps off before resetting the DEMO robot.")
         } else {
@@ -2162,6 +2605,10 @@ class DriveController(
         pendingPoints = pendingPoints,
         pendingWalls = pendingWalls,
         docked = chargeFlag == CHARGE_DOCKED && !pileLeft,
+        robotAlert = robotAlert,
+        tasks = tasks,
+        taskRun = taskRun,
+        taskReport = taskReport,
     )
 
     companion object {
@@ -2231,8 +2678,8 @@ class DriveController(
         private fun chargeJson(type: Int, pile: String) = JSONObject().put("type", type).put("point", pile).toString()
         private const val CHARGE_DOCKED = 2             // chargeFlag: charging on the pile
         private const val CHARGE_NOT_FOUND = 9          // chargeFlag: no pile found while docking
-        // GO TO CHARGER docks straight away within this distance of the pile's point, else drives
-        // there first. GUESS: the docking routine's real range was never measured; kept short.
+        // UNDOCK only pulls away within this distance of the pile's point: farther, chargeFlag's
+        // "docked" is stale. GUESS: kept short.
         const val DOCK_NEAR_M = 1.5
         private const val AT_PILE_M = 0.3               // this close, the robot is already at the pile
         // UNDOCK (see undock()). GUESS, all three: not yet tried on the real robot. Enough to clear
@@ -2255,6 +2702,22 @@ class DriveController(
         private const val PLAN_PATH = "/reeman/global_plan"
         private const val NO_PLAN = "007"               // "Can't get plan data": not navigating
         private const val PILE_POINT = "charging_pile"
+        // GO TO CHARGER lines up at this saved point before docking (see lineUp). Hidden from the
+        // points list. "normal" is the API's route point type.
+        const val APPROACH_POINT = "charging_approach"
+        private const val APPROACH_TYPE = "normal"
+        // GUESS, both: the robot refused type 2 from close by and drove it from 6.5 m (2026-10-15),
+        // and docked from 0.4 m in front of the pile.
+        private const val NEAR_PILE_M = 3.0
+        private const val APPROACH_M = 0.8
+        private const val LINED_UP_RAD = 0.5            // ~30°: facing near enough away from the pile to dock
+        const val LINE_UP_LABEL = "Go to charger (lining up)"
+        // ---- The robot's report on its latest trip (see onNavStatus). ----
+        private const val NAV_STATUS_PATH = "/reeman/nav_status"
+        private const val NAV_START = 6
+        private const val NAV_END = 3
+        private const val NAV_SETTLE_MS = 1_000L        // the robot updated it within 0.5 s in its log
+        private const val RECOVERY_QUIET_MS = 15_000L
         const val ARRIVED_M = 0.3                       // GUESS: how close counts as arrived
         private const val ADD_POINT_PATH = "/cmd/position"
         // The API allows delivery, normal (route point), production and charge. A disinfection
@@ -2278,6 +2741,12 @@ class DriveController(
         const val MIN_UV_DELAY_S = 15
         const val MAX_UV_DELAY_S = 120
         const val LAMPS_OFF_RETRY_MS = 1_500L
+        // ---- Disinfection tasks (see startTask). The robot's own head-unit app, always running,
+        // sends it to charge by itself at its "low_power" setting: 20% on this robot (its prefs,
+        // read 2026-10-16). Both limits sit above that, so a task ends cleanly before that app
+        // takes the robot away mid-task. The margins themselves are a GUESS. ----
+        const val TASK_MIN_BATTERY = 30     // % to start a task
+        const val TASK_LOW_BATTERY = 25     // % between stops: the task ends and the robot goes to charge
 
         // ---- Maps (REEMAN SLAM WEB API, "map module"). The documented reads /robot/get_mode,
         // /robot/map and /robot/history_map answered 404 on this robot (probe 2026-09-23,
@@ -2382,6 +2851,43 @@ class DriveController(
                 }
                 Waypoint(o.getString("name"), o.optString("type"), pose)
             }
+        }
+
+        /** One /reeman/nav_status report; [key] tells two reports apart. */
+        private class NavStatus(val res: Int, val reason: Int, val goal: String, val key: String)
+
+        private fun parseNavStatus(body: String): NavStatus? = runCatching {
+            val o = JSONObject(body)
+            if (!o.has("res")) return null
+            val res = o.getInt("res")
+            val reason = o.optInt("reason", 0)
+            val goal = o.optString("goal")
+            NavStatus(res, reason, goal, "$res/$reason/$goal/${o.opt("dist")}/${o.opt("mileage")}")
+        }.getOrNull()
+
+        /**
+         * Why the robot refused a trip (nav_status res 6). From the Web API manual's list; the
+         * robot sends them negative (-1 seen on 2026-10-15), so either sign is read.
+         */
+        private fun refusal(reason: Int) = when (abs(reason)) {
+            1 -> "it went to dock where it stood instead. Too close to the pile?"
+            2 -> "the e-stop is pressed"
+            3 -> "it is charging from the adapter"
+            4 -> "the point isn't on the map"
+            5 -> "docking failed"
+            6 -> "it doesn't know where it is on the map"
+            7 -> "the route's points are too far apart"
+            8 -> "the route wasn't found"
+            9 -> "it couldn't read the point"
+            else -> "code $reason"
+        }
+
+        /** The turn from heading [a] to heading [b], in -π..π. */
+        private fun turnBetween(a: Double, b: Double): Double {
+            var d = (b - a) % (2 * Math.PI)
+            if (d > Math.PI) d -= 2 * Math.PI
+            if (d < -Math.PI) d += 2 * Math.PI
+            return d
         }
 
         private fun isPile(w: Waypoint) = w.name == PILE_POINT || "charg" in w.type.lowercase(Locale.US)
