@@ -11,8 +11,8 @@ with the robot switched off.
 
 ## What it does
 
-Four tabs: **Remote** (the drive pad), **Tasks** (GO TO CHARGER, and **Disinfection Points**,
-which opens its own page), **Map** (the robot on its map; the map's name opens the **Maps** page)
+Four tabs: **Remote** (the drive pad), **Tasks** (GO TO CHARGER, the UV switch, the saved
+**disinfection tasks**, and **Disinfection Points**, which opens its own page), **Map** (the robot on its map; the map's name opens the **Maps** page)
 and **Activity** (the log). The robot's readings (e-stop badge and speed; on the Map tab, the
 mode and the map in use) are pinned at the top of every page, the battery sits in the title bar, and **STOP** is the red button in the centre of the nav bar (a
 full-width bar on the other pages).
@@ -37,6 +37,7 @@ switch and the firmware version.
 | GO (a saved point) | `/cmd/nav_name` `{"point":"<name>"}` | the firmware's |
 | Add point where the robot is | `/reeman/pose`, then `/cmd/position` `{"name","type":"delivery","pose":{x,y,theta}}` | doesn't move |
 | START DISINFECTION | after the start delay, `/cmd/external_power_supply` `{"type":"24v","operation":"1"}`; at the end `"0"` | doesn't move |
+| START (a task) | per stop: `/cmd/nav_name`, then the lamps as START DISINFECTION; OFF accepted before the next trip | the firmware's |
 | New map / Extend this map | `/cmd/set_mode` `{"mode":1}` / `{"mode":3}` | doesn't move; you drive |
 | Save map | `/cmd/save_map`, `/cmd/set_mode` `{"mode":2}`, then `/cmd/rename_map` with the name | doesn't move |
 | Discard | `/cmd/set_mode` `{"mode":2}` | doesn't move |
@@ -58,6 +59,9 @@ switch and the firmware version.
   sends STOP again every 1.5 s if it moves. After 3 tries a red **USE THE PHYSICAL E-STOP**
   banner appears. STOP is a hard stop: for emergencies. Steps end on their own; to stop
   driving, let go of the arrow.
+- **A task owns the robot while it runs.** GO, GO TO CHARGER, START DISINFECTION and the UV
+  switch's ON are locked; STOP, the d-pad (only usable while the task waits, lamps off) and
+  switching the lamps off are not. Switching the lamps off, STOP and the e-stop all end the task.
 - **Mapping is its own job.** While the robot scans a map, GO, GO TO CHARGER, START
   DISINFECTION and adding points are locked (the Map tab's readings say "Mapping", and the Tasks
   tab says why); the pad and STOP still work. Map commands never move the robot, but they need it connected,
@@ -138,6 +142,42 @@ it; until then the banner reads **UV LAMPS MAY STILL BE ON**, nothing that moves
 works, and the app won't switch robot or mode. ON and OFF go out one at a time, in order, so an
 OFF can never overtake an ON.
 
+**Disinfection tasks** work like the fixed-point tasks in the robot's own app. A task is a list
+of saved points in order, each with its UV time (1–30 min), plus the countdown before the lamps
+(15, 30 or 60 s), the number of rounds (1–10), and what to do at the end (**Go to charger** or
+**Stay**). Tasks are saved on the phone, by point name, under **Disinfection tasks** on the
+Tasks tab; **+ New task** and the tune button open the editor. **START** asks you to confirm the
+rooms are clear, then for each stop:
+
+1. the robot goes to the point with `/cmd/nav_name`, undocking first if it is on its pile. If it
+   is already standing on the point (say, round 2 of a one-point task), there is no trip.
+2. the same UV run as START DISINFECTION: countdown, lamps on for the stop's time, then OFF.
+3. the next trip only starts once the robot has **accepted OFF**. The lamps are never on while
+   it drives.
+
+If the robot can't reach a point (blocked, refused, or stopped short), the task **waits** with the
+lamps off: **TRY AGAIN**, **SKIP** that point, or **END TASK**. The d-pad works meanwhile, to free
+the robot. The task ends early on: STOP, END TASK, the e-stop, switching the lamps off, the
+robot moving or the connection dropping while the lamps are on or counting down, or leaving the
+app. Under 30% battery a task won't start; under 25% between stops it ends and the robot goes to
+its charger (even with **Stay**). Both sit above the robot's own app's auto-charge level (20% on
+this robot), which would otherwise take the robot away mid-task. Whatever happens, a card then says how the task went, point by
+point: the UV time that ran, or skipped, not reached, or stopped partway. "Disinfected" means the
+planned time ran there, nothing more: the app can't measure dose.
+
+**The robot's own app** (`com.reeman.robot.disinfection` v4.0.7, read 2026-10-16) runs one route
+over every numbered point in order, with one stay time for all of them, a 10 s countdown before
+the task, a single run or a loop for a set total time, the lamps **at the points**, **all the way**
+or **off** (a route test), and at the end the charger or the first point. Tasks can be manual or
+scheduled (a time and weekdays). While a task runs it pauses when its human sensor sees someone
+and resumes once nobody is seen; ending a task asks for a password on its screen.
+
+What it has that this doesn't: **human detection** and **voice prompts** both live on the robot's
+head unit, reached over its serial link, with no HTTP command (that app also turns detection
+off on its home screen, so it is off while this app runs tasks); and
+**scheduled** tasks would need the app to run in the background, which it deliberately doesn't (the
+lamps go off when you leave it). Keep the phone on the Tasks tab, on good Wi-Fi, for the whole task.
+
 ## Maps
 
 **The Map tab** shows the map the robot navigates on, its saved points, and the robot (a disc with
@@ -210,6 +250,8 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
   own app, with the robot on the pile).
 - A trip to a point (`/cmd/nav_name`): what `/reeman/global_plan` returns on the way, and
   whether `/cmd/cancel_goal` ends it.
+- **Disinfection tasks** (all of it). They're built from the pieces above, so they inherit their
+  open questions. See "First task test".
 - **All of Maps and mapping.** The robot couldn't be reached while it was built. The reads come
   from the 2026-09-23 probe on v5.1.12: the documented `/robot/get_mode`, `/robot/map` and
   `/robot/history_map` answered 404, and the same reads answered under `/reeman/` (mode 2; map
@@ -219,6 +261,8 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
 
 **Guesses** (marked `GUESS` in the code)
 - How close counts as arrived (0.3 m), and how far away docking can find the pile (1.5 m).
+- The task battery margins (30% to start, 25% to carry on), kept above the robot's own app's
+  auto-charge level (`low_power`, 20% on this robot).
 - That `/cmd/charge` type 1, sent on every STOP, does nothing while the robot sits on the pile.
 - Which point `type` the robot's own app uses (the app saves `delivery`).
 - Whether the e-stop alone cuts the lamps.
@@ -251,6 +295,14 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
 2. Repeat, ending with **LAMPS OFF**, then **STOP**, then the physical e-stop (note whether
    the e-stop alone cuts the lamps).
 3. **START NOW** during the countdown: the lamps come on straight away.
+
+**First task test.** As the UV test: nobody on the route, doors closed, watch from outside.
+1. Make a task of two points, **1 min** each, **15 s**, 1 round, **Stay**. START, leave.
+2. Watch it go to point 1, count down, light, switch off, and only then drive to point 2. The
+   card at the end should read 2 of 2.
+3. Run it again, and press the physical e-stop on the way to point 2: the task should end,
+   with point 1 done and point 2 not reached.
+4. Then with **Go to charger**, from off the pile (remember the Confirm on the robot's screen).
 
 **First mapping test.** Robot off the pile, room clear, physical e-stop in reach.
 1. Read-only first, from a laptop on the robot's Wi-Fi (nothing here moves or changes the robot):

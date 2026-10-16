@@ -40,6 +40,8 @@ class MainActivity : ComponentActivity() {
             onStartDisinfection = c::startDisinfection,
             onStartDisinfectionNow = c::startDisinfectionNow,
             onStopDisinfection = c::stopDisinfection,
+            onSwitchLampsOn = c::switchLampsOn,
+            onDismissAlert = c::dismissAlert,
             onUvSettings = vm::setUvSettings,
             onDemoEstop = c::demoToggleEstop,
             onDemoWifi = c::demoToggleWifi,
@@ -61,6 +63,13 @@ class MainActivity : ComponentActivity() {
             onAddChargingPile = c::addChargingPileHere,
             onAddWall = c::addWall,
             onRemoveWall = c::removeWall,
+            onSaveTask = vm::saveTask,
+            onDeleteTask = vm::deleteTask,
+            onStartTask = c::startTask,
+            onRetryTaskStop = c::retryTaskStop,
+            onSkipTaskStop = c::skipTaskStop,
+            onEndTask = c::endTaskNow,
+            onDismissTaskReport = c::dismissTaskReport,
         )
         setContent {
             val state by c.state.collectAsStateWithLifecycle()

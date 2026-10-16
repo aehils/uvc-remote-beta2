@@ -10,40 +10,82 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
+// Muted, low-chroma palette: near-neutral greys with a slate-indigo accent. Every role is set so
+// Material components (dialogs, switches, the nav indicator) never fall back to the baseline purple.
 private val LightColors = lightColorScheme(
-    primary = Color(0xFF1D4ED8),
+    primary = Color(0xFF34416E),
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFDBE4FF),
-    onPrimaryContainer = Color(0xFF0A1F5C),
-    secondaryContainer = Color(0xFFE3E8F2),
-    onSecondaryContainer = Color(0xFF1E293B),
-    background = Color(0xFFF3F5F9),
-    onBackground = Color(0xFF0F172A),
+    primaryContainer = Color(0xFFDDE2F2),
+    onPrimaryContainer = Color(0xFF141C36),
+    inversePrimary = Color(0xFFA9B6E0),
+    secondary = Color(0xFF555D6E),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFE0E5F1),
+    onSecondaryContainer = Color(0xFF1A2133),
+    tertiary = Color(0xFF574A85),
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFE7E2F5),
+    onTertiaryContainer = Color(0xFF211938),
+    background = Color(0xFFF3F4F6),
+    onBackground = Color(0xFF15181D),
     surface = Color.White,
-    onSurface = Color(0xFF0F172A),
-    surfaceVariant = Color(0xFFE8ECF3),
-    onSurfaceVariant = Color(0xFF475569),
-    outline = Color(0xFFCBD5E1),
-    outlineVariant = Color(0xFFE2E8F0),
-    error = Color(0xFFDC2626),
+    onSurface = Color(0xFF15181D),
+    surfaceVariant = Color(0xFFE8EAEE),
+    onSurfaceVariant = Color(0xFF5B616D),
+    surfaceTint = Color.Transparent, // flat surfaces: no tint creeping in with elevation
+    inverseSurface = Color(0xFF2A2D33),
+    inverseOnSurface = Color(0xFFEEF0F3),
+    error = Color(0xFFA8392F),
+    onError = Color.White,
+    errorContainer = Color(0xFFF6DEDA),
+    onErrorContainer = Color(0xFF410E0A),
+    outline = Color(0xFFC3C8D0),
+    outlineVariant = Color(0xFFE1E4E9),
+    surfaceBright = Color.White,
+    surfaceDim = Color(0xFFDADDE2),
+    surfaceContainerLowest = Color.White,
+    surfaceContainerLow = Color(0xFFF7F8FA),
+    surfaceContainer = Color(0xFFF0F1F4),
+    surfaceContainerHigh = Color(0xFFEAECF0),
+    surfaceContainerHighest = Color(0xFFE4E6EB),
 )
 
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFF9DB4FF),
-    onPrimary = Color(0xFF0A1F5C),
-    primaryContainer = Color(0xFF1E3A8A),
-    onPrimaryContainer = Color(0xFFDBE4FF),
-    secondaryContainer = Color(0xFF263041),
-    onSecondaryContainer = Color(0xFFE2E8F0),
-    background = Color(0xFF0B0F17),
-    onBackground = Color(0xFFE2E8F0),
-    surface = Color(0xFF151B26),
-    onSurface = Color(0xFFE2E8F0),
-    surfaceVariant = Color(0xFF1F2733),
-    onSurfaceVariant = Color(0xFF94A3B8),
-    outline = Color(0xFF334155),
-    outlineVariant = Color(0xFF1F2937),
-    error = Color(0xFFF87171),
+    primary = Color(0xFFA9B6E0),
+    onPrimary = Color(0xFF141C36),
+    primaryContainer = Color(0xFF222B45),
+    onPrimaryContainer = Color(0xFFD6DCF2),
+    inversePrimary = Color(0xFF3F4C7E),
+    secondary = Color(0xFFA3ABBD),
+    onSecondary = Color(0xFF1A1F2A),
+    secondaryContainer = Color(0xFF202A42), // the selected tab's pill
+    onSecondaryContainer = Color(0xFFD6DCF2),
+    tertiary = Color(0xFFB8AEDA),
+    onTertiary = Color(0xFF221C38),
+    tertiaryContainer = Color(0xFF2A2342),
+    onTertiaryContainer = Color(0xFFE0DAF4),
+    background = Color(0xFF0B0D11),
+    onBackground = Color(0xFFE3E5E9),
+    surface = Color(0xFF13161B),
+    onSurface = Color(0xFFE3E5E9),
+    surfaceVariant = Color(0xFF1B1F26),
+    onSurfaceVariant = Color(0xFF8F96A3),
+    surfaceTint = Color.Transparent,
+    inverseSurface = Color(0xFFE3E5E9),
+    inverseOnSurface = Color(0xFF1A1D22),
+    error = Color(0xFFE0857B),
+    onError = Color(0xFF3A1210),
+    errorContainer = Color(0xFF3D1E1B),
+    onErrorContainer = Color(0xFFF2D2CD),
+    outline = Color(0xFF2C313B),
+    outlineVariant = Color(0xFF1D2128),
+    surfaceBright = Color(0xFF262A32),
+    surfaceDim = Color(0xFF0B0D11),
+    surfaceContainerLowest = Color(0xFF08090C),
+    surfaceContainerLow = Color(0xFF101317),
+    surfaceContainer = Color(0xFF15181E),
+    surfaceContainerHigh = Color(0xFF1B1F26),
+    surfaceContainerHighest = Color(0xFF22262E),
 )
 
 /** Meaningful colours (state, not decoration). "Container" is the fill, the plain one is text on it. */
@@ -53,33 +95,33 @@ data class StatusColors(
     val warn: Color, val warnContainer: Color,
     val danger: Color, val dangerContainer: Color,
     val offline: Color, // the Ping icon while the robot is not answering
-    val demo: Color, val demoContainer: Color,
-    val demoBold: Color, // fill for white text: the DEMO strip and active demo chips
+    val demo: Color, val demoContainer: Color, // demo is also the DEMO strip's text, demoContainer its fill
+    val demoBold: Color, // fill for white text: active demo buttons and switches
     val stop: Color,
 )
 
 private val LightStatus = StatusColors(
-    good = Color(0xFF15803D), goodContainer = Color(0xFFDCFCE7),
-    warn = Color(0xFFB45309), warnContainer = Color(0xFFFEF3C7),
-    danger = Color(0xFFB91C1C), dangerContainer = Color(0xFFFEE2E2),
-    offline = Color(0xFFEA580C),
-    demo = Color(0xFF7C3AED), demoContainer = Color(0xFFEDE9FE),
-    demoBold = Color(0xFF7C3AED),
-    stop = Color(0xFFDC2626),
+    good = Color(0xFF2E7A4E), goodContainer = Color(0xFFDCEDE2),
+    warn = Color(0xFF94661C), warnContainer = Color(0xFFF3E7CF),
+    danger = Color(0xFFA8392F), dangerContainer = Color(0xFFF6DEDA),
+    offline = Color(0xFFB4612A),
+    demo = Color(0xFF4E3F86), demoContainer = Color(0xFFE9E5F5),
+    demoBold = Color(0xFF5B4B98),
+    stop = Color(0xFFB3342C),
 )
 
 private val DarkStatus = StatusColors(
-    good = Color(0xFF4ADE80), goodContainer = Color(0xFF14532D),
-    warn = Color(0xFFFBBF24), warnContainer = Color(0xFF78350F),
-    danger = Color(0xFFF87171), dangerContainer = Color(0xFF7F1D1D),
-    offline = Color(0xFFFB923C),
-    demo = Color(0xFFA78BFA), demoContainer = Color(0xFF2E1065),
-    demoBold = Color(0xFF7C3AED), // same in both themes so white text stays readable
-    stop = Color(0xFFDC2626), // STOP stays the same saturated red in both themes
+    good = Color(0xFF7BC496), goodContainer = Color(0xFF1B3125),
+    warn = Color(0xFFD6A75E), warnContainer = Color(0xFF382C17),
+    danger = Color(0xFFE0857B), dangerContainer = Color(0xFF3D1E1B),
+    offline = Color(0xFFD48A5A),
+    demo = Color(0xFFB9ACE0), demoContainer = Color(0xFF241C3A),
+    demoBold = Color(0xFF5B4B98), // same in both themes so white text stays readable
+    stop = Color(0xFFB3342C), // STOP stays the same deep red in both themes
 )
 
 /** Fill for the BETA pill. Decoration, not state, so it is the same in both themes (white text on it). */
-val BetaOrange = Color(0xFFEA580C)
+val BetaOrange = Color(0xFFA85A2A)
 
 private val LocalStatusColors = staticCompositionLocalOf { LightStatus }
 

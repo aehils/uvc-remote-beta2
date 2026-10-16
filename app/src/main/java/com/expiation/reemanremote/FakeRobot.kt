@@ -106,6 +106,9 @@ class FakeRobot(
     private var mode = MODE_NAVIGATION
     private var mapCount = 0
     private var chargeFlag = CHARGE_NONE
+
+    /** What /reeman/nav_status answers, set by tests; null answers as the idle robot does. */
+    var navStatus: String? = null
     private var battery = 0.0
     private var estopPressed = false
     private var offline = false
@@ -174,7 +177,7 @@ class FakeRobot(
         "/reeman/position" -> points.joinToString(",", """{"waypoints":[""", "]}") {
             fmt("""{"name":"%s","type":"%s","pose":{"x":%.4f,"y":%.4f,"theta":%.4f}}""", it.name, it.type, it.x, it.y, it.theta)
         }
-        "/reeman/nav_status" -> error("004", "Internal service error") // what the real robot says while idle
+        "/reeman/nav_status" -> navStatus ?: error("004", "Internal service error") // what the real robot says while idle
         // The API's documented shape (points ~30 cm apart); here just where the robot is.
         "/reeman/global_plan" -> if (navGoal != null) fmt("""{"coordinates":[[%.3f,%.3f]]}""", x, y)
         else error("007", "Can't get plan data")
