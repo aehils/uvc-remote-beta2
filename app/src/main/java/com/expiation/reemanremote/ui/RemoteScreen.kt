@@ -44,15 +44,12 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -94,10 +91,6 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.LinkAnnotation
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextLinkStyles
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -106,7 +99,6 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.text.withLink
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -208,7 +200,7 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
                     ActivityLog(state.log, it)
                 }
                 page == Page.ROBOT_INFO -> SubPage("Robot information", state, actions, drive, onBack = { page = Page.MAIN }) {
-                    RobotInfo(state, it)
+                    RobotInfo(state, actions.onPing, it)
                 }
                 page == Page.MAPS -> MapsPage(
                     state, actions, drive,
@@ -256,16 +248,16 @@ private fun MainPage(
     tab: Tab,
     drive: DriveSheetState,
     onTabChange: (Tab) -> Unit,
-    onOpenDemoControls: () -> Unit,
     onOpenPoints: () -> Unit,
     onOpenMaps: () -> Unit,
     onOpenActivity: () -> Unit,
     onOpenRobotInfo: () -> Unit,
+    onOpenDemoControls: () -> Unit,
 ) {
     Scaffold(
         topBar = {
             Column {
-                TopBar(state, actions, onOpenDemoControls)
+                TopBar(state, actions)
                 // On the Map tab the readings show the robot's mode and the map, not its speed.
                 StatusHeader(state, actions.onDismissAlert, onOpenMaps = onOpenMaps.takeIf { tab == Tab.MAP })
             }
@@ -292,7 +284,7 @@ private fun MainPage(
             }
             Tab.TASKS -> TasksTab(state, actions, onOpenPoints, content)
             Tab.MAP -> MapTab(state, actions, onOpenMaps, content)
-            Tab.CONFIG -> ConfigTab(state, actions, onOpenRobotInfo, onOpenMaps, onOpenActivity, content)
+            Tab.CONFIG -> ConfigTab(state, actions, onOpenRobotInfo, onOpenDemoControls, onOpenMaps, onOpenActivity, content)
         }
     }
 }
@@ -356,13 +348,13 @@ private fun RowScope.StopNavButton(moving: Boolean, onStop: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TopBar(state: RemoteState, actions: RemoteActions, onOpenDemoControls: () -> Unit) {
+private fun TopBar(state: RemoteState, actions: RemoteActions) {
     TopAppBar(
         title = { BetaPill() },
         actions = {
             BatteryReading(state)
-            Spacer(Modifier.width(12.dp))
-            RobotMenu(state, actions, onOpenDemoControls)
+            Spacer(Modifier.width(8.dp))
+            PingButton(state) { actions.onPing(state.host) }
             Spacer(Modifier.width(8.dp))
         },
         colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
@@ -384,155 +376,22 @@ private fun BetaPill() {
 }
 
 /**
- * The robot pill: which robot the app talks to (DEMO, or its address) and a connection light
- * (green answering, orange not). Its menu sets the address and switches DEMO on and off.
+ * Pings the robot. It is also the connection light: green while the robot answers, orange while
+ * it doesn't. The address and DEMO are set from the Config tab.
  */
 @Composable
-private fun RobotMenu(state: RemoteState, actions: RemoteActions, onOpenDemoControls: () -> Unit) {
+private fun PingButton(state: RemoteState, onPing: () -> Unit) {
     val status = RemoteTheme.status
-    val onDemoChange = actions.onDemoChange
-    var open by rememberSaveable { mutableStateOf(false) }
-
-    Box {
-        Row(
-            Modifier
-                .clip(RoundedCornerShape(6.dp))
-                .background(if (state.demo) status.demoContainer else Color.Transparent)
-                .border(1.dp, if (state.demo) status.demo else MaterialTheme.colorScheme.outline, RoundedCornerShape(6.dp))
-                .clickable(onClickLabel = "Robot and DEMO options") { open = true }
-                .padding(horizontal = 12.dp, vertical = 6.dp)
-                .semantics {
-                    contentDescription = (if (state.demo) "DEMO robot" else "Robot ${state.host}") +
-                        if (state.connected) ", connected" else ", not connected"
-                },
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier
-                    .size(8.dp)
-                    .background(if (state.connected) status.good else status.offline, CircleShape)
-            )
-            Spacer(Modifier.width(6.dp))
-            Text(
-                if (state.demo) "DEMO" else state.host,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = if (state.demo) FontWeight.Bold else FontWeight.Medium,
-                fontFamily = if (state.demo) null else FontFamily.Monospace,
-                color = if (state.demo) status.demo else MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.widthIn(max = 132.dp),
-            )
-        }
-
-        DropdownMenu(
-            expanded = open,
-            onDismissRequest = { open = false },
-            shape = RoundedCornerShape(16.dp),
-            containerColor = MaterialTheme.colorScheme.surface,
-        ) {
-            Column(
-                Modifier
-                    .width(272.dp)
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SectionLabel("Robot")
-                    ConnectionSection(state, actions.onPing)
-                    val link = state.link
-                    Text(
-                        when {
-                            state.connected -> "Connected"
-                            link is Link.Disconnected && link.lastError != null -> "Not answering: ${link.lastError}"
-                            else -> "Not connected yet"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (state.connected) status.good else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        if (state.demo) "DEMO is active" else "DEMO is deactivated",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    // Controls simulate robot events, so they only exist while DEMO is active.
-                    if (state.demo) {
-                        FilledIconButton(
-                            onClick = {
-                                open = false
-                                onOpenDemoControls()
-                            },
-                            modifier = Modifier.size(40.dp),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = status.demoBold,
-                                contentColor = Color.White,
-                            ),
-                        ) {
-                            Icon(painterResource(R.drawable.ic_tune), contentDescription = "DEMO controls", modifier = Modifier.size(22.dp))
-                        }
-                    }
-                }
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        if (state.demo) "Now operating a simulated robot. No data is sent."
-                        else "Robot operation is live. Obey safety precautions.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        buildAnnotatedString {
-                            withLink(
-                                LinkAnnotation.Url(
-                                    DEMO_HELP_URL,
-                                    TextLinkStyles(SpanStyle(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)),
-                                )
-                            ) { append("Learn More") }
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                Button(
-                    onClick = { onDemoChange(!state.demo) },
-                    enabled = !state.busy, // never switch robots mid-step
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = if (state.demo) ButtonDefaults.buttonColors()
-                    else ButtonDefaults.buttonColors(containerColor = status.demoBold, contentColor = Color.White),
-                ) {
-                    Text(if (state.demo) "Turn off DEMO" else "Turn on DEMO")
-                }
-                if (state.busy) {
-                    Text(
-                        "Wait for the current step to finish to switch.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Column {
-                    Text(
-                        "FIRMWARE",
-                        style = MaterialTheme.typography.labelSmall,
-                        letterSpacing = 1.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        state.version ?: "—",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                }
-            }
-        }
+    IconButton(onClick = onPing, modifier = Modifier.size(40.dp)) {
+        Icon(
+            painterResource(R.drawable.ic_ping),
+            contentDescription = (if (state.demo) "Ping the DEMO robot" else "Ping the robot") +
+                if (state.connected) ". Connected" else ". Not connected",
+            modifier = Modifier.size(22.dp),
+            tint = if (state.connected) status.good else status.offline,
+        )
     }
 }
-
-private const val DEMO_HELP_URL = "https://github.com/aehils/uvc-remote-beta2#demo-mode"
 
 /**
  * Under every page's title bar, pinned so it never scrolls away: the robot's readings, and the
@@ -1765,7 +1624,7 @@ internal fun SectionLabel(text: String) {
 }
 
 @Composable
-private fun DemoToggle(title: String, detail: String, on: Boolean, onToggle: () -> Unit) {
+private fun DemoToggle(title: String, detail: String, on: Boolean, onToggle: () -> Unit, enabled: Boolean = true) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -1775,6 +1634,7 @@ private fun DemoToggle(title: String, detail: String, on: Boolean, onToggle: () 
         Switch(
             checked = on,
             onCheckedChange = { onToggle() },
+            enabled = enabled,
             colors = SwitchDefaults.colors(checkedTrackColor = RemoteTheme.status.demoBold),
         )
     }
@@ -1786,6 +1646,7 @@ private fun ConfigTab(
     state: RemoteState,
     actions: RemoteActions,
     onOpenRobotInfo: () -> Unit,
+    onOpenDemoControls: () -> Unit,
     onOpenMaps: () -> Unit,
     onOpenActivity: () -> Unit,
     modifier: Modifier,
@@ -1801,7 +1662,19 @@ private fun ConfigTab(
         SectionLabel("Disinfection")
         ConfigItem(R.drawable.ic_tab_tasks, "Disinfection timing", "${uv.minutes} min UV · ${uv.delaySeconds} s exit delay") { editingUv = true }
         SectionLabel("Robot")
-        ConfigItem(R.drawable.ic_ping, "Robot information", state.version ?: "Not read yet", onOpenRobotInfo)
+        ConfigItem(R.drawable.ic_ping, "Robot information", if (state.demo) "DEMO" else state.host, onOpenRobotInfo)
+        Panel {
+            // Never switch robots mid-step: the controller refuses, so the switch is held too.
+            DemoToggle(
+                "DEMO mode",
+                if (state.demo) "Simulated robot" else "Off",
+                state.demo,
+                onToggle = { actions.onDemoChange(!state.demo) },
+                enabled = !state.busy,
+            )
+        }
+        // Controls simulate robot events, so they only exist while DEMO is on.
+        if (state.demo) ConfigItem(R.drawable.ic_tune, "DEMO controls", null, onOpenDemoControls)
         SectionLabel("Mapping and navigation")
         ConfigItem(R.drawable.ic_tab_map, "Maps", state.currentMap?.let { "In use: ${it.label}" }, onOpenMaps)
         SectionLabel("Records")
@@ -1888,7 +1761,7 @@ private fun SubPage(
 
 /** What the app knows about the robot: software, connection, power and navigation. Read only. */
 @Composable
-private fun RobotInfo(state: RemoteState, modifier: Modifier) {
+private fun RobotInfo(state: RemoteState, onPing: (String) -> Unit, modifier: Modifier) {
     val link = state.link
     Column(
         modifier
@@ -1902,12 +1775,12 @@ private fun RobotInfo(state: RemoteState, modifier: Modifier) {
         }
         SectionLabel("Connection")
         Panel {
-            InfoRow("Address", if (state.demo) "DEMO (simulated)" else state.host, mono = !state.demo)
+            ConnectionSection(state, onPing)
             InfoRow(
                 "Status",
                 when {
                     state.connected -> "Connected"
-                    link is Link.Disconnected && link.lastError != null -> "Not answering"
+                    link is Link.Disconnected && link.lastError != null -> "Not answering: ${link.lastError}"
                     else -> "Not connected yet"
                 },
             )

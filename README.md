@@ -23,9 +23,9 @@ nav bar or STOP: tap it, or flick it up, to pull the pad up under whatever is on
 or flick down to put it away. Only the handle takes that gesture, so a held arrow keeps its
 press. Closed, the handle still says what the robot is doing. Starting a map pulls it up by itself.
 
-**The robot pill** (top right, after the battery) shows which robot the app talks to (its address, or DEMO) and a
-connection light: green answering, orange not. Its menu holds the address and Ping, the DEMO
-switch and the firmware version.
+**The ping button** (top right, after the battery) pings the robot and is the connection light:
+green answering, orange not. The address (with its own Ping), the firmware version and the rest
+of the robot's details are on **Config → Robot information**; the DEMO switch is on Config too.
 
 | Button | Command sent | Speed |
 |---|---|---|
@@ -323,9 +323,9 @@ Copy anything odd from **Config → View Activity Log** (long-press to select).
 
 ## Demo mode
 
-Tap the **DEMO** pill (top right) and **Turn on DEMO**. The app then talks to a simulated robot
+Turn on **DEMO mode** in the Config tab. The app then talks to a simulated robot
 inside the app (`FakeRobot.kt`): **nothing is sent over the network**, so it is safe on the
-robot's Wi-Fi. A purple strip stays pinned at the top and every log line starts with `[DEMO]`.
+robot's Wi-Fi. A thin violet band stays pinned at the top and every log line starts with `[DEMO]`.
 All the app's own logic runs unchanged. Mode can't be switched while something runs or the
 lamps may be on. The emulator starts in demo mode until you choose, since it shares the Mac's
 network and could otherwise reach the real robot.
@@ -340,7 +340,7 @@ It has two maps, "Demo room" (with the points) and "Old scan" (no points), both 
 picture of the room: enough to check the map screens. Map commands are accepted, but mapping
 isn't simulated (the picture doesn't grow, and Set position changes nothing).
 
-The **DEMO controls** page (sliders button in the DEMO menu) simulates events that are hard to
+The **DEMO controls** page (Config → **DEMO controls**, shown while DEMO is on) simulates events that are hard to
 set up on the real robot:
 
 | Control | What the app should do |
@@ -394,7 +394,7 @@ Under `app/src/main/java/com/expiation/reemanremote/`:
   choice and UV settings.
 - `MainActivity.kt`: hosts the screen; leaving the app pauses polling and switches the lamps off.
 - `ui/RemoteScreen.kt`: the Compose screen. It only draws `RemoteState` and forwards taps.
-  The tabs, the drive sheet, the robot pill, the Tasks and Points pages.
+  The tabs, the drive sheet, the ping button, the Config tab and its pages, the Tasks and Points pages.
 - `ui/MapScreen.kt`: the Map tab (map view, set position, save/discard) and the Maps page.
 - `ui/Theme.kt`: colours, including the status colours.
 
