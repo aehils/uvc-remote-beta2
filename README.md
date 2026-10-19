@@ -248,7 +248,7 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
   own app, with the robot on the pile).
 - A trip to a point (`/cmd/nav_name`): what `/reeman/global_plan` returns on the way, and
   whether `/cmd/cancel_goal` ends it.
-- **START DISINFECTION** (all of it: the route, then the charger). It're built from the pieces above, so it inherits their
+- **START DISINFECTION** (all of it: the route, then the charger). It's built from the pieces above, so it inherits their
   open questions. See "First task test".
 - **All of Maps and mapping.** The robot couldn't be reached while it was built. The reads come
   from the 2026-09-23 probe on v5.1.12: the documented `/robot/get_mode`, `/robot/map` and
