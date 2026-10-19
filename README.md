@@ -11,9 +11,9 @@ with the robot switched off.
 
 ## What it does
 
-Four tabs: **Remote** (the drive pad), **Tasks** (the UV switch, **START DISINFECTION**,
-**Disinfection Points**, which opens its own page, and GO TO CHARGER pinned above the nav bar), **Map** (the robot on its map; the map's name opens the **Maps** page)
-and **Activity** (the log). The robot's readings (e-stop badge and speed; on the Map tab, the
+Four tabs: **Tasks** (the UV switch, **START DISINFECTION**,
+**Disinfection Points**, which opens its own page, and GO TO CHARGER pinned above the nav bar), **Remote** (the drive pad), **Map** (the robot on its map; the map's name opens the **Maps** page)
+and **Config** (disinfection timing, robot information, Maps, and **View Activity Log**). The robot's readings (e-stop badge and speed; on the Map tab, the
 mode and the map in use) are pinned at the top of every page, the battery sits in the title bar, and **STOP** is the red button in the centre of the nav bar (a
 full-width bar on the other pages).
 
@@ -198,7 +198,7 @@ Walls are read from `/reeman/restrict_layer` and written with `/cmd/restrict_lay
 replaces the whole set, so the app reads the walls, adds or removes one, and sends them all back.
 **Set position** (crosshair): tap where the robot really is, drag the way it faces, then the tick. While mapping they are **discard** (bin)
 and **save** (disk). What a map command did shows on the map for a few seconds (tap to hide),
-and stays in the Activity tab. The map's name in the readings opens the Maps page.
+and stays in the Activity log (Config tab). The map's name in the readings opens the Maps page.
   Needed after switching maps away from the pile (see below).
 
 **Mapping.** On the **Maps** page, **+ New map** starts a fresh scan and **Extend this map** adds
@@ -319,7 +319,7 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
    shows it too. Then **Use this map** to go back to the old one, with the robot on its pile.
 5. Try **Set position** once with the robot off the pile, and **Delete** then **Undo** on "Test 1".
 
-Copy anything odd from the **Activity** tab (long-press to select).
+Copy anything odd from **Config → View Activity Log** (long-press to select).
 
 ## Demo mode
 
