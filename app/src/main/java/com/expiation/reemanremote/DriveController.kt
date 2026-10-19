@@ -358,6 +358,13 @@ data class RemoteState(
     /** Why [task] can't start now, or null if it can. [DriveController.startTask] refuses with it. */
     fun taskProblem(task: DisinfectionTask): String? = taskFault(task) ?: taskBlocker
 
+    /** START DISINFECTION's route over every point on the map (see [DisinfectionTask.route]). */
+    val route: DisinfectionTask get() = DisinfectionTask.route((points as? Points.Loaded)?.list.orEmpty(), uvSettings)
+
+    /** Why START DISINFECTION can't start now, or null. [DriveController.startRoute] refuses with it. */
+    val routeProblem: String? get() = taskBlocker
+        ?: if (route.stops.isEmpty()) "No points are saved on this robot's map yet." else null
+
     /**
      * Map commands (mode, save, switch, position): connected, nothing running, the robot standing
      * still, the lamps off, and one command at a time. None of them moves the robot.
@@ -1986,6 +1993,21 @@ class DriveController(
             publish()
             return
         }
+        beginTask(task)
+    }
+
+    /** START DISINFECTION: every point on the map in turn, run like a saved task. */
+    fun startRoute() {
+        val s = snapshot()
+        s.routeProblem?.let {
+            log("Disinfection not started: $it")
+            publish()
+            return
+        }
+        beginTask(s.route)
+    }
+
+    private fun beginTask(task: DisinfectionTask) {
         taskReport = null
         taskRun = TaskRun(task, round = 1, index = 0, stage = TaskStage.Checking, results = emptyList())
         log(

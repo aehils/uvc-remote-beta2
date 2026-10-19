@@ -1348,6 +1348,49 @@ class DriveControllerTest {
     }
 
     @Test
+    fun startDisinfectionGoesRoundEveryPointOnTheMapWithTheSetTimes() = runTest {
+        val (c, points) = withPoints()
+        c.setUvSettings(UvSettings(minutes = 2, delaySeconds = 30))
+        c.startRoute()
+        val run = c.state.value.taskRun!!
+        assertEquals(points.map { TaskStop(it.name, 2) }, run.task.stops)
+        assertEquals(30, run.task.delaySeconds)
+        assertEquals(WhenDone.CHARGER, run.task.whenDone)
+        assertTrue(log(c), logged(c, "Task \"Disinfection\" started: ${points.size} point(s)"))
+
+        c.startRoute() // already running: refused
+        assertTrue(log(c), logged(c, "Disinfection not started: Another task is running."))
+    }
+
+    @Test
+    fun startDisinfectionVisitsEveryPointThenDocksOnTheCharger() = runTest {
+        val (c, points) = withPoints()
+        c.setUvSettings(UvSettings(minutes = 1, delaySeconds = 15))
+        c.startRoute()
+        runTask(c, maxMs = 120_000L * points.size + 120_000) { it.taskRun == null }
+        val r = c.state.value.taskReport!!
+        assertTrue(log(c), r.completed)
+        assertEquals(points.map { it.name to StopOutcome.DONE }, r.results.map { it.point to it.outcome })
+
+        // Then back to the charger, lamps off all the way.
+        runTask(c) { it.docked && it.phase == StepPhase.Idle }
+        assertFalse(uvOn(c))
+    }
+
+    @Test
+    fun startDisinfectionIsRefusedWithNoPointsOnTheMap() = runTest {
+        val (c, _) = withPoints()
+        val (_, old) = loadedMaps(c)
+        c.useMap(old) // no points at all
+        mapCommandDone(c)
+        c.loadPoints()
+        waitFor(c) { it.points is Points.Loaded }
+        assertEquals("No points are saved on this robot's map yet.", c.state.value.routeProblem)
+        c.startRoute()
+        assertEquals(null, c.state.value.taskRun)
+    }
+
+    @Test
     fun roundsRepeatTheStopsWithoutATripToWhereTheRobotAlreadyIs() = runTest {
         val c = withTask(TaskStop("Bed 1", 1), rounds = 2)
         c.startTask("t")
