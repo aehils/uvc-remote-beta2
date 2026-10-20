@@ -343,7 +343,8 @@ data class RemoteState(
         points !is Points.Loaded -> "Load the robot's points first."
         battery != null && battery < DriveController.TASK_MIN_BATTERY -> "Battery too low to start ($battery%)."
         estop == EStop.PRESSED -> "The e-stop is pressed."
-        !canNavigate -> "The robot must be still, with the lamps off."
+        busy || !still -> "Wait until the robot has stopped."
+        !canNavigate -> "Wait until the UV lamps are off."
         else -> null
     }
 
@@ -358,12 +359,8 @@ data class RemoteState(
     /** Why [task] can't start now, or null if it can. [DriveController.startTask] refuses with it. */
     fun taskProblem(task: DisinfectionTask): String? = taskFault(task) ?: taskBlocker
 
-    /** START DISINFECTION's route over every point on the map (see [DisinfectionTask.route]). */
-    val route: DisinfectionTask get() = DisinfectionTask.route((points as? Points.Loaded)?.list.orEmpty(), uvSettings)
-
-    /** Why START DISINFECTION can't start now, or null. [DriveController.startRoute] refuses with it. */
-    val routeProblem: String? get() = taskBlocker
-        ?: if (route.stops.isEmpty()) "No points are saved on this robot's map yet." else null
+    /** What START DISINFECTION would run for [points] (see [DisinfectionTask.plan]). */
+    fun plan(points: List<String>, whenDone: WhenDone) = DisinfectionTask.plan(points, uvSettings, whenDone)
 
     /**
      * Map commands (mode, save, switch, position): connected, nothing running, the robot standing
@@ -1808,7 +1805,7 @@ class DriveController(
 
     /**
      * Switches the UV lamps on where the robot stands, after the settings' start delay (time to
-     * leave the room; [startDisinfectionNow] skips it), for the settings' duration, then off.
+     * move away; [startDisinfectionNow] skips it), for the settings' duration, then off.
      * The lamps are an external supply of the power board (/cmd/external_power_supply; see
      * [UV_SUPPLY]). The robot can't report whether the
      * lamps are on, so the timer is the app's, and the run ends (lamps off) on STOP, the e-stop,
@@ -1820,7 +1817,7 @@ class DriveController(
         val set = uvSettings
         val where = point?.let { "at $it" } ?: "where the robot stands"
         uv = Uv.Countdown(point, now() + set.delaySeconds * 1000L, set.minutes)
-        log("Disinfection $where: UV lamps on in ${set.delaySeconds} s, for ${set.minutes} min. Leave the room.")
+        log("Disinfection $where: UV lamps on in ${set.delaySeconds} s, for ${set.minutes} min. Move away from the robot.")
         publish()
     }
 
@@ -1829,18 +1826,6 @@ class DriveController(
         val run = uv as? Uv.Countdown ?: return
         log("Disinfection: countdown skipped, lamps on now")
         lampsOn(run.point, run.minutes)
-        publish()
-    }
-
-    /**
-     * The Tasks tab's UV switch: the lamps on now, with no countdown (the switch's own dialog is
-     * the warning). Same interlock and same run as [startDisinfection], so everything that ends
-     * a run still switches them off, and [MAX_UV_MINUTES] is the latest they go off on their own.
-     */
-    fun switchLampsOn() {
-        if (!snapshot().canDisinfect) return
-        log("UV lamps switched on from the app (off after $MAX_UV_MINUTES min at the latest)")
-        lampsOn(atPoint?.name, MAX_UV_MINUTES)
         publish()
     }
 
@@ -1996,15 +1981,16 @@ class DriveController(
         beginTask(task)
     }
 
-    /** START DISINFECTION: every point on the map in turn, run like a saved task. */
-    fun startRoute() {
+    /** START DISINFECTION: the points picked on the Tasks tab, in that order, run like a saved task. */
+    fun startPlan(points: List<String>, whenDone: WhenDone) {
         val s = snapshot()
-        s.routeProblem?.let {
+        val task = s.plan(points, whenDone)
+        s.taskProblem(task)?.let {
             log("Disinfection not started: $it")
             publish()
             return
         }
-        beginTask(s.route)
+        beginTask(task)
     }
 
     private fun beginTask(task: DisinfectionTask) {

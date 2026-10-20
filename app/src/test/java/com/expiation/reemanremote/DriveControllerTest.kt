@@ -690,35 +690,6 @@ class DriveControllerTest {
     }
 
     @Test
-    fun theUvSwitchTurnsTheLampsOnAtOnceAndOffAgain() = runTest {
-        val c = ready()
-        c.setUvSettings(UvSettings(minutes = 1, delaySeconds = 60)) // the switch ignores both
-        c.switchLampsOn()
-        val took = waitFor(c) { it.uv is Uv.On }
-        assertTrue("took $took ms", took < 1_000)
-        assertTrue(uvOn(c))
-        assertFalse(c.state.value.canDrive)
-        val run = c.state.value.uv as Uv.On
-        assertEquals(DriveController.MAX_UV_MINUTES * 60_000L, run.until - run.since)
-
-        c.stopDisinfection()
-        waitFor(c) { !it.lampsOffOwed }
-        assertFalse(uvOn(c))
-        assertTrue(c.state.value.canDrive)
-    }
-
-    @Test
-    fun theUvSwitchTakesTheDriveInterlock() = runTest {
-        val c = ready()
-        c.demoToggleEstop()
-        waitFor(c) { it.estop == EStop.PRESSED }
-        c.switchLampsOn()
-        advanceTimeBy(2_000)
-        assertEquals(null, c.state.value.uv)
-        assertFalse(uvOn(c))
-    }
-
-    @Test
     fun stopSwitchesTheLampsOff() = runTest {
         val c = lampsOn()
         c.stop()
@@ -1348,25 +1319,26 @@ class DriveControllerTest {
     }
 
     @Test
-    fun startDisinfectionGoesRoundEveryPointOnTheMapWithTheSetTimes() = runTest {
+    fun startDisinfectionRunsThePickedPointsInTheOrderPickedWithTheSetTimes() = runTest {
         val (c, points) = withPoints()
         c.setUvSettings(UvSettings(minutes = 2, delaySeconds = 30))
-        c.startRoute()
+        val picked = listOf(points.last().name, points.first().name)
+        c.startPlan(picked, WhenDone.STAY)
         val run = c.state.value.taskRun!!
-        assertEquals(points.map { TaskStop(it.name, 2) }, run.task.stops)
+        assertEquals(picked.map { TaskStop(it, 2) }, run.task.stops)
         assertEquals(30, run.task.delaySeconds)
-        assertEquals(WhenDone.CHARGER, run.task.whenDone)
-        assertTrue(log(c), logged(c, "Task \"Disinfection\" started: ${points.size} point(s)"))
+        assertEquals(WhenDone.STAY, run.task.whenDone)
+        assertTrue(log(c), logged(c, "Task \"Disinfection\" started: 2 point(s)"))
 
-        c.startRoute() // already running: refused
+        c.startPlan(picked, WhenDone.STAY) // already running: refused
         assertTrue(log(c), logged(c, "Disinfection not started: Another task is running."))
     }
 
     @Test
-    fun startDisinfectionVisitsEveryPointThenDocksOnTheCharger() = runTest {
+    fun startDisinfectionVisitsEveryPickedPointThenDocksOnTheCharger() = runTest {
         val (c, points) = withPoints()
         c.setUvSettings(UvSettings(minutes = 1, delaySeconds = 15))
-        c.startRoute()
+        c.startPlan(points.map { it.name }, WhenDone.CHARGER)
         runTask(c, maxMs = 120_000L * points.size + 120_000) { it.taskRun == null }
         val r = c.state.value.taskReport!!
         assertTrue(log(c), r.completed)
@@ -1378,16 +1350,13 @@ class DriveControllerTest {
     }
 
     @Test
-    fun startDisinfectionIsRefusedWithNoPointsOnTheMap() = runTest {
+    fun startDisinfectionIsRefusedWithNoPointsOrPointsNotOnTheMap() = runTest {
         val (c, _) = withPoints()
-        val (_, old) = loadedMaps(c)
-        c.useMap(old) // no points at all
-        mapCommandDone(c)
-        c.loadPoints()
-        waitFor(c) { it.points is Points.Loaded }
-        assertEquals("No points are saved on this robot's map yet.", c.state.value.routeProblem)
-        c.startRoute()
+        c.startPlan(emptyList(), WhenDone.CHARGER)
         assertEquals(null, c.state.value.taskRun)
+        c.startPlan(listOf("Bed 9"), WhenDone.CHARGER)
+        assertEquals(null, c.state.value.taskRun)
+        assertTrue(log(c), logged(c, "Disinfection not started: Not on this map: Bed 9"))
     }
 
     @Test
@@ -1529,7 +1498,6 @@ class DriveControllerTest {
         assertTrue(log(c), logged(c, "not started: Another task is running"))
         runTask(c) { it.uv is Uv.Countdown }
         c.startDisinfection() // the task's run is the only one
-        c.switchLampsOn()
         assertTrue(c.state.value.uv is Uv.Countdown)
     }
 
