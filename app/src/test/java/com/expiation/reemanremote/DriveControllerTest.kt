@@ -1348,25 +1348,35 @@ class DriveControllerTest {
     }
 
     @Test
-    fun startDisinfectionGoesRoundEveryPointOnTheMapWithTheSetTimes() = runTest {
+    fun cleanTakesThePickedRoomsInTheMapsOrderWithTheSetTimes() = runTest {
         val (c, points) = withPoints()
+        check(points.size >= 2)
         c.setUvSettings(UvSettings(minutes = 2, delaySeconds = 30))
-        c.startRoute()
+        // Picked last-first: the robot still takes them in the map's order.
+        val picked = linkedSetOf(points[1].name, points[0].name)
+        c.startRoute(picked)
         val run = c.state.value.taskRun!!
-        assertEquals(points.map { TaskStop(it.name, 2) }, run.task.stops)
+        assertEquals(listOf(TaskStop(points[0].name, 2), TaskStop(points[1].name, 2)), run.task.stops)
         assertEquals(30, run.task.delaySeconds)
         assertEquals(WhenDone.CHARGER, run.task.whenDone)
-        assertTrue(log(c), logged(c, "Task \"Disinfection\" started: ${points.size} point(s)"))
+        assertTrue(log(c), logged(c, "Task \"2 rooms\" started: 2 point(s)"))
 
-        c.startRoute() // already running: refused
+        c.startRoute(picked) // already running: refused
         assertTrue(log(c), logged(c, "Disinfection not started: Another task is running."))
     }
 
     @Test
-    fun startDisinfectionVisitsEveryPointThenDocksOnTheCharger() = runTest {
+    fun cleaningOneRoomIsNamedAfterIt() = runTest {
+        val (c, points) = withPoints()
+        c.startRoute(setOf(points[0].name))
+        assertEquals(points[0].name, c.state.value.taskRun!!.task.name)
+    }
+
+    @Test
+    fun cleaningEveryRoomVisitsEachThenDocksOnTheCharger() = runTest {
         val (c, points) = withPoints()
         c.setUvSettings(UvSettings(minutes = 1, delaySeconds = 15))
-        c.startRoute()
+        c.startRoute(points.map { it.name }.toSet())
         runTask(c, maxMs = 120_000L * points.size + 120_000) { it.taskRun == null }
         val r = c.state.value.taskReport!!
         assertTrue(log(c), r.completed)
@@ -1378,16 +1388,13 @@ class DriveControllerTest {
     }
 
     @Test
-    fun startDisinfectionIsRefusedWithNoPointsOnTheMap() = runTest {
+    fun cleanIsRefusedWithNoRoomPickedOrOnlyRoomsNotOnTheMap() = runTest {
         val (c, _) = withPoints()
-        val (_, old) = loadedMaps(c)
-        c.useMap(old) // no points at all
-        mapCommandDone(c)
-        c.loadPoints()
-        waitFor(c) { it.points is Points.Loaded }
-        assertEquals("No points are saved on this robot's map yet.", c.state.value.routeProblem)
-        c.startRoute()
+        assertEquals("Pick a room first.", c.state.value.routeProblem(emptySet()))
+        assertEquals("Pick a room first.", c.state.value.routeProblem(setOf("Nowhere")))
+        c.startRoute(setOf("Nowhere"))
         assertEquals(null, c.state.value.taskRun)
+        assertTrue(log(c), logged(c, "Disinfection not started: Pick a room first."))
     }
 
     @Test

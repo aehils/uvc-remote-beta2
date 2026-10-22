@@ -358,12 +358,13 @@ data class RemoteState(
     /** Why [task] can't start now, or null if it can. [DriveController.startTask] refuses with it. */
     fun taskProblem(task: DisinfectionTask): String? = taskFault(task) ?: taskBlocker
 
-    /** START DISINFECTION's route over every point on the map (see [DisinfectionTask.route]). */
-    val route: DisinfectionTask get() = DisinfectionTask.route((points as? Points.Loaded)?.list.orEmpty(), uvSettings)
+    /** CLEAN's route over the points named in [rooms], in the map's order (see [DisinfectionTask.route]). */
+    fun route(rooms: Set<String>): DisinfectionTask =
+        DisinfectionTask.route((points as? Points.Loaded)?.list.orEmpty().filter { it.name in rooms }, uvSettings)
 
-    /** Why START DISINFECTION can't start now, or null. [DriveController.startRoute] refuses with it. */
-    val routeProblem: String? get() = taskBlocker
-        ?: if (route.stops.isEmpty()) "No points are saved on this robot's map yet." else null
+    /** Why CLEAN can't start on [rooms] now, or null. [DriveController.startRoute] refuses with it. */
+    fun routeProblem(rooms: Set<String>): String? = taskBlocker
+        ?: if (route(rooms).stops.isEmpty()) "Pick a room first." else null
 
     /**
      * Map commands (mode, save, switch, position): connected, nothing running, the robot standing
@@ -1996,15 +1997,15 @@ class DriveController(
         beginTask(task)
     }
 
-    /** START DISINFECTION: every point on the map in turn, run like a saved task. */
-    fun startRoute() {
+    /** CLEAN: the points named in [rooms] in turn, run like a saved task, then the charger. */
+    fun startRoute(rooms: Set<String>) {
         val s = snapshot()
-        s.routeProblem?.let {
+        s.routeProblem(rooms)?.let {
             log("Disinfection not started: $it")
             publish()
             return
         }
-        beginTask(s.route)
+        beginTask(s.route(rooms))
     }
 
     private fun beginTask(task: DisinfectionTask) {

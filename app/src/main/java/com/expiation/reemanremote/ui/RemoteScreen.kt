@@ -176,7 +176,7 @@ data class RemoteActions(
     val onSaveTask: (DisinfectionTask) -> Unit = {},
     val onDeleteTask: (String) -> Unit = {},
     val onStartTask: (String) -> Unit = {},
-    val onStartRoute: () -> Unit = {},
+    val onStartRoute: (rooms: Set<String>) -> Unit = {},
     val onRetryTaskStop: () -> Unit = {},
     val onSkipTaskStop: () -> Unit = {},
     val onEndTask: () -> Unit = {},
@@ -1007,19 +1007,22 @@ internal fun DriveSheet(state: RemoteState, actions: RemoteActions, sheet: Drive
 // ---------------------------------------------------------------------- tasks
 
 /**
- * The Tasks tab: the task under way (or how the last one ended), the UV switch, START
- * DISINFECTION, and Disinfection Points. GO TO CHARGER (UNDOCK while docked) sits at the
- * bottom, over the nav bar, so it never scrolls away.
+ * The Tasks tab, the one place to have the robot do something, for someone with a ward to run:
+ * what the robot is doing (or the task under way, or how the last one went), the rooms to tap,
+ * and one big CLEAN button. Below, by hand: the UV switch and Disinfection Points. CLEAN and GO
+ * TO CHARGER (not while docked) sit at the bottom, over the nav bar, so they never scroll away.
  */
 @Composable
 private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: () -> Unit, modifier: Modifier) {
     val goal = state.running?.goal
     val charging = state.running?.label?.startsWith("Go to charger") == true
     val count = (state.points as? Points.Loaded)?.list?.size
-    // START DISINFECTION goes round the points on the robot's map.
+    // The rooms are the points on the robot's map.
     LaunchedEffect(state.connected, state.points is Points.NotLoaded) {
         if (state.connected && state.points is Points.NotLoaded) actions.onLoadPoints()
     }
+    var picked by rememberSaveable { mutableStateOf(emptySet<String>()) }
+    val run = state.taskRun
     Column(modifier) {
         Column(
             Modifier
@@ -1029,15 +1032,18 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (state.mapping) TasksNote("The robot is mapping. Trips and disinfection wait until the map is saved or discarded on the Map tab.")
-            val run = state.taskRun
             val report = state.taskReport
             if (run != null) TaskRunCard(state, run, actions)
-            else if (report != null) TaskReportCard(report, actions.onDismissTaskReport)
-            UvSwitch(state, actions)
-            if (run == null) StartDisinfection(state, actions)
+            else {
+                if (report != null) TaskReportCard(report, actions.onDismissTaskReport)
+                RobotStatusCard(state)
+                RoomPicker(state, picked, onPick = { picked = it }, onSetUp = onOpenPoints)
+            }
 
-            SectionLabel("Points")
+            Spacer(Modifier.height(4.dp))
+            SectionLabel("Manual")
+            // During a task the run card has it all, END TASK included.
+            if (run == null) UvSwitch(state, actions)
             val uv = state.uv
             val trip = goal != null && !charging && run == null
             TaskItem(
@@ -1053,9 +1059,13 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
                 onClick = onOpenPoints,
             )
         }
-        Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-            if (state.docked) ChargerButton("UNDOCK", state.canDrive, actions.onUndock)
-            else ChargerButton("GO TO CHARGER", state.canNavigate, actions.onGoToCharger)
+        Column(
+            Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (run == null) CleanButton(state, picked, onStarted = { picked = emptySet() }, actions)
+            // Docked, nothing to do here: CLEAN undocks by itself, and the Remote tab's pad has UNDOCK.
+            if (!state.docked) ChargerButton("GO TO CHARGER", state.canNavigate, actions.onGoToCharger)
         }
     }
 }
@@ -1514,7 +1524,7 @@ internal fun TasksNote(text: String) {
     Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
-/** GO TO CHARGER, or UNDOCK. Either moves the robot, so it is held to the drive pad's interlock. */
+/** GO TO CHARGER. It moves the robot, so it is held to the drive pad's interlock. */
 @Composable
 private fun ChargerButton(label: String, enabled: Boolean, onClick: () -> Unit) {
     FilledTonalButton(
@@ -1522,7 +1532,7 @@ private fun ChargerButton(label: String, enabled: Boolean, onClick: () -> Unit) 
         enabled = enabled,
         modifier = Modifier
             .fillMaxWidth()
-            .height(56.dp),
+            .height(48.dp),
         shape = RoundedCornerShape(14.dp),
     ) {
         Icon(painterResource(R.drawable.ic_dock), contentDescription = null, modifier = Modifier.size(20.dp))
@@ -1855,10 +1865,10 @@ private fun PreviewPointsUv() = RemoteTheme(dark = true) {
     PointsPage(state, RemoteActions(), DriveSheetState(true) {}, onBack = {})
 }
 
-@Preview(name = "Tasks, dark", heightDp = 500)
+@Preview(name = "Tasks, dark, on the charger", heightDp = 800)
 @Composable
 private fun PreviewTasks() = RemoteTheme(dark = true) {
-    TasksTab(previewState(demo = false, moving = false), RemoteActions(), {}, Modifier.background(MaterialTheme.colorScheme.background))
+    TasksTab(previewState(demo = false, moving = false).copy(docked = true), RemoteActions(), {}, Modifier.background(MaterialTheme.colorScheme.background))
 }
 
 private val PREVIEW_TASK = DisinfectionTask(

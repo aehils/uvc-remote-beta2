@@ -45,12 +45,13 @@ data class DisinfectionTask(
         const val ROUTE_ID = "route"
 
         /**
-         * What START DISINFECTION runs, like the robot's own app: every point on the map, in the
-         * map's order, each for the same UV time and countdown, then the charger.
+         * What the Tasks tab's CLEAN runs, like the robot's own app: the chosen [points], in the
+         * map's order, each for the same UV time and countdown, then the charger. Named after its
+         * room when there is one, so the run card and the report say "Bed 3".
          */
         fun route(points: List<Waypoint>, settings: UvSettings) = DisinfectionTask(
             id = ROUTE_ID,
-            name = "Disinfection",
+            name = points.singleOrNull()?.name ?: "${points.size} rooms",
             stops = points.map { TaskStop(it.name, settings.minutes) },
             delaySeconds = settings.delaySeconds,
             whenDone = WhenDone.CHARGER,
