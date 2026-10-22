@@ -42,20 +42,20 @@ data class DisinfectionTask(
         const val MAX_NAME = 32
         const val MAX_STOPS = 20
         const val MAX_ROUNDS = 10
-        const val ROUTE_ID = "route"
+        const val PLAN_ID = "plan"
 
         /**
-         * What the Tasks tab's CLEAN runs, like the robot's own app: the chosen [points], in the
-         * map's order, each for the same UV time and countdown, then the charger. Named after its
-         * room when there is one, so the run card and the report say "Bed 3".
+         * What START DISINFECTION runs: the points picked on the Tasks tab, in the order they were
+         * picked, each for the same UV time and countdown, then [whenDone]. Named after its point
+         * when there is one, so the run card and the report say "Bed 3".
          */
-        fun route(points: List<Waypoint>, settings: UvSettings) = DisinfectionTask(
-            id = ROUTE_ID,
-            name = points.singleOrNull()?.name ?: "${points.size} rooms",
-            stops = points.map { TaskStop(it.name, settings.minutes) },
+        fun plan(points: List<String>, settings: UvSettings, whenDone: WhenDone) = DisinfectionTask(
+            id = PLAN_ID,
+            name = points.singleOrNull() ?: "Disinfection",
+            stops = points.map { TaskStop(it, settings.minutes) },
             delaySeconds = settings.delaySeconds,
-            whenDone = WhenDone.CHARGER,
-        )
+            whenDone = whenDone,
+        ).coerced()
 
         fun listToJson(list: List<DisinfectionTask>): String = JSONArray().apply {
             list.forEach { t ->

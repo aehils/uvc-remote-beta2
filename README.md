@@ -11,14 +11,15 @@ with the robot switched off.
 
 ## What it does
 
-Four tabs: **Remote** (the drive pad), **Tasks** (the one place to have the robot clean: what it
-is doing, the rooms to tap, **CLEAN**, and, by hand, the UV switch and **Disinfection Points**, which opens its own page), **Map** (the robot on its map; the map's name opens the **Maps** page)
+Four tabs: **Remote** (the drive pad), **Tasks** (one page: what the robot is doing, saved
+routines, the disinfection points to pick, the run's settings, and **START DISINFECTION** pinned
+above the nav bar; see Tasks below), **Map** (the robot on its map; the map's name opens the **Maps** page)
 and **Activity** (the log). The robot's readings (e-stop badge and speed; on the Map tab, the
 mode and the map in use) are pinned at the top of every page, the battery sits in the title bar, and **STOP** is the red button in the centre of the nav bar (a
 full-width bar on the other pages).
 
 **Driving from anywhere.** There is one drive pad. On the Remote tab it is the page; everywhere
-else (the other tabs, and the Points, Maps and DEMO pages) a **DRIVE** handle sits just above the
+else (the Map and Activity tabs, the Maps and DEMO pages, and the Tasks tab while a task waits at a point it couldn't reach) a **DRIVE** handle sits just above the
 nav bar or STOP: tap it, or flick it up, to pull the pad up under whatever is on screen, and tap
 or flick down to put it away. Only the handle takes that gesture, so a held arrow keeps its
 press. Closed, the handle still says what the robot is doing. Starting a map pulls it up by itself.
@@ -35,9 +36,9 @@ switch and the firmware version.
 | Turn 180° (tap) | `/cmd/turn` `{"direction":1,"angle":180,"speed":0.40}` | 0.4 rad/s |
 | GO TO CHARGER | `/reeman/position` + `/reeman/pose`, then `/cmd/charge` type 0 (pile close) or type 2 (pile far) | the firmware's |
 | GO (a saved point) | `/cmd/nav_name` `{"point":"<name>"}` | the firmware's |
-| Add point where the robot is | `/reeman/pose`, then `/cmd/position` `{"name","type":"delivery","pose":{x,y,theta}}` | doesn't move |
-| UV switch | `/cmd/external_power_supply` `{"type":"24v","operation":"1"}`; OFF `"0"` | doesn't move |
-| CLEAN (Tasks tab) | per picked room: `/cmd/nav_name`, then the lamps on after the start delay and off at the end; OFF accepted before the next trip; then GO TO CHARGER | the firmware's |
+| Add a disinfection point here | `/reeman/pose`, then `/cmd/position` `{"name","type":"delivery","pose":{x,y,theta}}` | doesn't move |
+| Disinfect here | `/cmd/external_power_supply` `{"type":"24v","operation":"1"}` after the start delay; OFF `"0"` at the end | doesn't move |
+| START DISINFECTION | per picked point, in the order picked: `/cmd/nav_name`, then the lamps on after the start delay and off at the end; OFF accepted before the next trip; then GO TO CHARGER | the firmware's |
 | New map / Extend this map | `/cmd/set_mode` `{"mode":1}` / `{"mode":3}` | doesn't move; you drive |
 | Save map | `/cmd/save_map`, `/cmd/set_mode` `{"mode":2}`, then `/cmd/rename_map` with the name | doesn't move |
 | Discard | `/cmd/set_mode` `{"mode":2}` | doesn't move |
@@ -48,7 +49,7 @@ switch and the firmware version.
 ## Safety rules
 
 - **The drive interlock.** Everything that moves the robot (the pad, GO, GO TO CHARGER) and
-  CLEAN only works when: connected, e-stop released, nothing running, the robot
+  START DISINFECTION only works when: connected, e-stop released, nothing running, the robot
   standing still, and the UV lamps off. Speeds are capped in code (`MAX_LINEAR` 0.3 m/s,
   `MAX_ANGULAR` 0.5 rad/s in `DriveController.kt`).
 - **One thing at a time.** After a command the buttons lock until the robot's measured speed
@@ -59,8 +60,8 @@ switch and the firmware version.
   sends STOP again every 1.5 s if it moves. After 3 tries a red **USE THE PHYSICAL E-STOP**
   banner appears. STOP is a hard stop: for emergencies. Steps end on their own; to stop
   driving, let go of the arrow.
-- **A task owns the robot while it runs.** GO, GO TO CHARGER, CLEAN and the UV
-  switch's ON are locked; STOP, the d-pad (only usable while the task waits, lamps off) and
+- **A task owns the robot while it runs.** GO, GO TO CHARGER, START DISINFECTION and Disinfect
+  here are locked; STOP, the d-pad (only usable while the task waits, lamps off) and
   switching the lamps off are not. Switching the lamps off, STOP and the e-stop all end the task.
 - **Mapping is its own job.** While the robot scans a map, GO, GO TO CHARGER, START
   DISINFECTION and adding points are locked (the Map tab's readings say "Mapping", and the Tasks
@@ -119,21 +120,37 @@ The pile is found by name or by its type (`charge`), and the command uses the na
 map in use, since the robot's own app may not call it `charging_pile`. On a map with no pile,
 nothing is sent and the log says to mark one.
 
-**Disinfection Points** lists the robot's saved points (except the pile). **GO** sends the robot
-to one with `/cmd/nav_name`; it plans its own route and speed. During a trip the app also reads
-`/reeman/global_plan` and `/reeman/pose`: the robot may pause on its way (a person passing), so
-the trip only ends once the robot reports no plan (`007`), and the log then says how far from
-the point it stopped ("arrived" within 0.3 m). **Add point where the robot is** saves the
-robot's spot and heading as a new point; names must be new, since saving an existing name would
-move that point. Rename or delete points in the robot's own app.
+**The Tasks tab** is one page, top to bottom:
 
-**UV disinfection.** The Tasks tab's **UV switch** turns the lamps on by hand (it asks first,
-no countdown, off after 30 min at the latest). The card at the top of the Disinfection Points
-page shows where the robot stands and any run under way; its **tune** button sets the time at
-each room (1–30 min) and the start delay (15, 30 or 60 s) that CLEAN uses; both are
-saved on the phone. **START NOW** skips a countdown. While a run is on,
-a red banner with the time left is pinned on every page and everything that moves the robot is
-locked.
+- **The robot card** says in a few words what the robot is doing ("Ready at Bed 1", "Going to
+  the charger", "Emergency stop is pressed", "Not connected") and what to do about it. While the
+  robot is idle it has **Disinfect here** and **Go to charger** (**Undock** while on the pile).
+- **Routines**: saved lists of points with their settings, each with **START**. Delete one from
+  its ⋮ menu.
+- **Disinfection points**: the robot's saved points (except the pile). Tap points to pick them;
+  each gets a number, its place in the visit order. **Select all** picks them in the map's order.
+  **GO** on a row sends the robot there with the lamps off. **Add a disinfection point here** at
+  the bottom saves the robot's spot and heading as a new point; the dialog reminds you to name it
+  so whoever sends the robot can tell where it is. Names must be new, since saving an existing
+  name would move that point. Rename or delete points in the robot's own app.
+- **At each point**: the UV time (1–30 min) and the start delay (15, 30 or 60 s), saved on the
+  phone and used by Disinfect here too, and what the robot does after the last point (back to
+  the charger, or stay there).
+- **Save these points as a routine** stores what is picked now, with those settings.
+- **START DISINFECTION**, pinned above the nav bar, with a line saying what it will do ("3
+  points · 15 min of UV · then back to the charger") or why it can't start.
+
+The picked points are kept while you switch tabs. Points not on the map in use are left out.
+
+**GO.** `/cmd/nav_name`; the robot plans its own route and speed. During a trip the app also
+reads `/reeman/global_plan` and `/reeman/pose`: the robot may pause on its way (a person
+passing), so the trip only ends once the robot reports no plan (`007`), and the log then says how
+far from the point it stopped ("arrived" within 0.3 m).
+
+**Disinfect here** runs the lamps where the robot stands: it asks first, then the start delay
+(**START NOW** skips it), the lamps on for the set time, then off. **CANCEL** or **LAMPS OFF**
+end it early. While a run is on, a red banner with the time left is pinned on every page and
+everything that moves the robot is locked.
 
 The lamps are on the power board's 24 V external supply. The robot can't report whether it is
 on, so the timer is the app's, and the app switches the lamps off on: the time running out,
@@ -143,15 +160,10 @@ it; until then the banner reads **UV LAMPS MAY STILL BE ON**, nothing that moves
 works, and the app won't switch robot or mode. ON and OFF go out one at a time, in order, so an
 OFF can never overtake an ON.
 
-**The Tasks tab** is built for someone on a ward who just wants a room cleaned, say after a
-patient is discharged. At the top, the robot in plain words: **Ready** (on the charger, or at a
-room, with the battery), or why not (not connected, e-stop pressed, battery under 30%, mapping,
-on its way somewhere). Below, the **rooms**: the points saved on the robot's map (except the
-pile), as big tiles. Tap one or more (**All** picks every one); picked tiles show the order the
-robot takes them in, the map's. The big button, pinned over the nav bar, reads **PICK A ROOM**,
-then **CLEAN BED 3** or **CLEAN 3 ROOMS**. It asks first: the rooms in order, the UV time per
-room (−/+, saved for next time), and two boxes to tick, **Nobody is in the room** and **The door
-is closed**; START waits for both. Then, room by room, like the robot's own app:
+**START DISINFECTION** (or a routine's START) asks first, listing the points in order with the
+UV warning and two boxes to tick, **Nobody is in the room** and **The door is closed**; START
+waits for both. A run of one point is named after it ("Bed 3") on the run card and the report.
+Then, for each point:
 
 1. the robot goes to the point with `/cmd/nav_name`, undocking first if it is on its pile. If it
    is already standing on the point, there is no trip.
@@ -159,12 +171,13 @@ is closed**; START waits for both. Then, room by room, like the robot's own app:
 3. the next trip only starts once the robot has **accepted OFF**. The lamps are never on while
    it drives.
 
-After the last room it goes back to the charger. **GO TO CHARGER** sits under CLEAN (not while
-docked: CLEAN undocks by itself, and UNDOCK is on the Remote tab's pad).
+While it runs, the task is the whole Tasks tab: what it is doing now in large type (the
+countdown, or the UV time left over a bar), every point with a tick and its UV time once done,
+and **END TASK**.
 
 If the robot can't reach a point (blocked, refused, or stopped short), the task **waits** with the
-lamps off: **TRY AGAIN**, **SKIP** that point, or **END TASK**. The d-pad works meanwhile, to free
-the robot. The task ends early on: STOP, END TASK, the e-stop, switching the lamps off, the
+lamps off: **TRY AGAIN**, **SKIP** that point, or **END TASK**. The DRIVE pad comes up on the
+Tasks tab meanwhile, to free the robot. The task ends early on: STOP, END TASK, the e-stop, switching the lamps off, the
 robot moving or the connection dropping while the lamps are on or counting down, or leaving the
 app. Under 30% battery a task won't start; under 25% between stops it ends and the robot goes to
 its charger. Both sit above the robot's own app's auto-charge level (20% on
@@ -197,7 +210,7 @@ never wait behind a big image. The robot's mode (`/reeman/get_mode`) and map in 
 The map shows the disinfection points (dots), the **charging pile** (a green square) and the
 **virtual walls** (red lines). The buttons under it are icons, to leave the map the room. The
 **add** button (pin, left) opens a menu:
-- **Disinfection point here**: saves where the robot stands, as on the Disinfection Points page.
+- **Disinfection point here**: saves where the robot stands, as on the Tasks tab.
 - **Charging pile here**: with the robot docked on its pile; saves `charging_pile` (type
   `charge`), replacing any pile already marked. GO TO CHARGER drives to it.
 - **Virtual wall**: drag from one end to the other, then the tick. A line the robot won't cross.
@@ -257,7 +270,7 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
   own app, with the robot on the pile).
 - A trip to a point (`/cmd/nav_name`): what `/reeman/global_plan` returns on the way, and
   whether `/cmd/cancel_goal` ends it.
-- **CLEAN** (all of it: the rooms, then the charger). It's built from the pieces above, so it inherits their
+- **START DISINFECTION** (all of it: the route, then the charger). It's built from the pieces above, so it inherits their
   open questions. See "First task test".
 - **All of Maps and mapping.** The robot couldn't be reached while it was built. The reads come
   from the 2026-09-23 probe on v5.1.12: the documented `/robot/get_mode`, `/robot/map` and
@@ -296,16 +309,15 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
 3. Hold Forward and let go: note how far it runs on (~20 cm) and whether the mast rocks.
 4. Press STOP once while holding Left (a hard stop, at turning speed).
 
-**UV test.** UV-C burns skin and eyes: nobody in the room, door closed, watch from outside.
-1. Set **30 s** (tune button). On the Tasks tab pick the room the robot stands in ("Robot
-   here"), **CLEAN**, set **1 min**, tick both boxes, START, leave. Lamps on after the delay, off
-   after a minute; the log says "robot accepted OFF".
-2. Repeat, ending with **END TASK**, then **STOP**, then the physical e-stop (note whether
+**UV test.** UV-C burns skin and eyes: nobody near the robot, watch from a safe distance.
+1. On the Tasks tab set **1 min** and **30 s**, then **Disinfect here**, and move away. Lamps on after the
+   delay, off after a minute; the log says "robot accepted OFF".
+2. Repeat, ending with **LAMPS OFF**, then **STOP**, then the physical e-stop (note whether
    the e-stop alone cuts the lamps).
 3. **START NOW** during the countdown: the lamps come on straight away.
 
-**First task test.** As the UV test: nobody on the route, doors closed, watch from outside.
-1. Make a task of two points, **1 min** each, **15 s**, 1 round, **Stay**. START, leave.
+**First task test.** As the UV test: nobody near the robot or its route.
+1. Pick two points, **1 min**, **15 s**, **Stay there**. START DISINFECTION, move away.
 2. Watch it go to point 1, count down, light, switch off, and only then drive to point 2. The
    card at the end should read 2 of 2.
 3. Run it again, and press the physical e-stop on the way to point 2: the task should end,
@@ -404,7 +416,9 @@ Under `app/src/main/java/com/expiation/reemanremote/`:
   choice and UV settings.
 - `MainActivity.kt`: hosts the screen; leaving the app pauses polling and switches the lamps off.
 - `ui/RemoteScreen.kt`: the Compose screen. It only draws `RemoteState` and forwards taps.
-  The tabs, the drive sheet, the robot pill, the Tasks and Points pages.
+  The tabs, the drive sheet, the robot pill.
+- `ui/TasksScreen.kt`: the Tasks tab: the robot card, routines, the points, the settings, START,
+  the task under way and its report.
 - `ui/MapScreen.kt`: the Map tab (map view, set position, save/discard) and the Maps page.
 - `ui/Theme.kt`: colours, including the status colours.
 

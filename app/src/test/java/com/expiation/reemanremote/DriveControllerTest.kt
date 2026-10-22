@@ -690,35 +690,6 @@ class DriveControllerTest {
     }
 
     @Test
-    fun theUvSwitchTurnsTheLampsOnAtOnceAndOffAgain() = runTest {
-        val c = ready()
-        c.setUvSettings(UvSettings(minutes = 1, delaySeconds = 60)) // the switch ignores both
-        c.switchLampsOn()
-        val took = waitFor(c) { it.uv is Uv.On }
-        assertTrue("took $took ms", took < 1_000)
-        assertTrue(uvOn(c))
-        assertFalse(c.state.value.canDrive)
-        val run = c.state.value.uv as Uv.On
-        assertEquals(DriveController.MAX_UV_MINUTES * 60_000L, run.until - run.since)
-
-        c.stopDisinfection()
-        waitFor(c) { !it.lampsOffOwed }
-        assertFalse(uvOn(c))
-        assertTrue(c.state.value.canDrive)
-    }
-
-    @Test
-    fun theUvSwitchTakesTheDriveInterlock() = runTest {
-        val c = ready()
-        c.demoToggleEstop()
-        waitFor(c) { it.estop == EStop.PRESSED }
-        c.switchLampsOn()
-        advanceTimeBy(2_000)
-        assertEquals(null, c.state.value.uv)
-        assertFalse(uvOn(c))
-    }
-
-    @Test
     fun stopSwitchesTheLampsOff() = runTest {
         val c = lampsOn()
         c.stop()
@@ -1348,35 +1319,33 @@ class DriveControllerTest {
     }
 
     @Test
-    fun cleanTakesThePickedRoomsInTheMapsOrderWithTheSetTimes() = runTest {
+    fun startDisinfectionRunsThePickedPointsInTheOrderPickedWithTheSetTimes() = runTest {
         val (c, points) = withPoints()
-        check(points.size >= 2)
         c.setUvSettings(UvSettings(minutes = 2, delaySeconds = 30))
-        // Picked last-first: the robot still takes them in the map's order.
-        val picked = linkedSetOf(points[1].name, points[0].name)
-        c.startRoute(picked)
+        val picked = listOf(points.last().name, points.first().name)
+        c.startPlan(picked, WhenDone.STAY)
         val run = c.state.value.taskRun!!
-        assertEquals(listOf(TaskStop(points[0].name, 2), TaskStop(points[1].name, 2)), run.task.stops)
+        assertEquals(picked.map { TaskStop(it, 2) }, run.task.stops)
         assertEquals(30, run.task.delaySeconds)
-        assertEquals(WhenDone.CHARGER, run.task.whenDone)
-        assertTrue(log(c), logged(c, "Task \"2 rooms\" started: 2 point(s)"))
+        assertEquals(WhenDone.STAY, run.task.whenDone)
+        assertTrue(log(c), logged(c, "Task \"Disinfection\" started: 2 point(s)"))
 
-        c.startRoute(picked) // already running: refused
+        c.startPlan(picked, WhenDone.STAY) // already running: refused
         assertTrue(log(c), logged(c, "Disinfection not started: Another task is running."))
     }
 
     @Test
-    fun cleaningOneRoomIsNamedAfterIt() = runTest {
+    fun disinfectingOnePointIsNamedAfterIt() = runTest {
         val (c, points) = withPoints()
-        c.startRoute(setOf(points[0].name))
+        c.startPlan(listOf(points[0].name), WhenDone.CHARGER)
         assertEquals(points[0].name, c.state.value.taskRun!!.task.name)
     }
 
     @Test
-    fun cleaningEveryRoomVisitsEachThenDocksOnTheCharger() = runTest {
+    fun startDisinfectionVisitsEveryPickedPointThenDocksOnTheCharger() = runTest {
         val (c, points) = withPoints()
         c.setUvSettings(UvSettings(minutes = 1, delaySeconds = 15))
-        c.startRoute(points.map { it.name }.toSet())
+        c.startPlan(points.map { it.name }, WhenDone.CHARGER)
         runTask(c, maxMs = 120_000L * points.size + 120_000) { it.taskRun == null }
         val r = c.state.value.taskReport!!
         assertTrue(log(c), r.completed)
@@ -1388,13 +1357,13 @@ class DriveControllerTest {
     }
 
     @Test
-    fun cleanIsRefusedWithNoRoomPickedOrOnlyRoomsNotOnTheMap() = runTest {
+    fun startDisinfectionIsRefusedWithNoPointsOrPointsNotOnTheMap() = runTest {
         val (c, _) = withPoints()
-        assertEquals("Pick a room first.", c.state.value.routeProblem(emptySet()))
-        assertEquals("Pick a room first.", c.state.value.routeProblem(setOf("Nowhere")))
-        c.startRoute(setOf("Nowhere"))
+        c.startPlan(emptyList(), WhenDone.CHARGER)
         assertEquals(null, c.state.value.taskRun)
-        assertTrue(log(c), logged(c, "Disinfection not started: Pick a room first."))
+        c.startPlan(listOf("Bed 9"), WhenDone.CHARGER)
+        assertEquals(null, c.state.value.taskRun)
+        assertTrue(log(c), logged(c, "Disinfection not started: Not on this map: Bed 9"))
     }
 
     @Test
@@ -1536,7 +1505,6 @@ class DriveControllerTest {
         assertTrue(log(c), logged(c, "not started: Another task is running"))
         runTask(c) { it.uv is Uv.Countdown }
         c.startDisinfection() // the task's run is the only one
-        c.switchLampsOn()
         assertTrue(c.state.value.uv is Uv.Countdown)
     }
 
