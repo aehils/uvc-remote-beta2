@@ -96,7 +96,7 @@ While the robot isn't answering, the app looks for it and follows it to a new ad
 | Discard | `/cmd/set_mode` `{"mode":2}` | doesn't move |
 | Use this map / Rename / Delete / Undo | `/cmd/apply_map`, `/cmd/rename_map`, `/cmd/trash_map`, `/cmd/restore_map` | doesn't move |
 | Set position | `/cmd/reloc_pose` `{"x","y","theta"}` | doesn't move |
-| STOP | stop body, `/cmd/cancel_goal`, `/cmd/charge` type 1, the other stop body, UV lamps OFF | always active |
+| STOP | stop body, `/cmd/cancel_goal`, `/cmd/charge` type 1 (not while charging on the pile), the other stop body, UV lamps OFF | always active |
 
 ## Safety rules
 
@@ -111,7 +111,18 @@ While the robot isn't answering, the app looks for it and follows it to a new ad
   navigation and docking, and switches the UV lamps off, then watches the robot for 10 s and
   sends STOP again every 1.5 s if it moves. After 3 tries a red **USE THE PHYSICAL E-STOP**
   banner appears. STOP is a hard stop: for emergencies. Steps end on their own; to stop
-  driving, let go of the arrow.
+  driving, let go of the arrow. **STOP never ends charging:** while the robot sits still,
+  charging on its pile, the docking cancel isn't sent (on the pile it ends charging; UNDOCK uses
+  it for that). A dock under way, or a trip to the charger the robot started itself, is still
+  cancelled.
+- **On the charging pile the d-pad is locked** (greyed out, and the pad's corner says *On the
+  charger. Undock to drive*); its middle is **UNDOCK**, which ends charging, pauses, then pulls
+  15 cm forward off the pile. "On the pile" is latched when the robot reports charging there, and
+  only cleared by proof it left: UNDOCK's pull-away moving it, UNDOCK finding it far from the pile
+  on the map, or a docking reading. Charging ending alone (UNDOCK's first command, a full
+  battery) never unlocks the arrows. In late October 2026 an arrow pressed by accident on the
+  pile drove the robot off it; the likely cause is the old rule, which only counted the robot
+  as docked while it was charging (and STOP then ended charging).
 - **A task owns the robot while it runs.** GO, GO TO CHARGER, START DISINFECTION and the UV
   switch's ON are locked; STOP, the d-pad (only usable while the task waits, lamps off) and
   switching the lamps off are not. Switching the lamps off, STOP and the e-stop all end the task.
@@ -316,7 +327,9 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
 - How close counts as arrived (0.3 m), and how far away docking can find the pile (1.5 m).
 - The task battery margins (30% to start, 25% to carry on), kept above the robot's own app's
   auto-charge level (`low_power`, 20% on this robot).
-- That `/cmd/charge` type 1, sent on every STOP, does nothing while the robot sits on the pile.
+- That a robot sitting on its pile reports charging (`chargeFlag` 2) at least once after the app
+  connects. That reading is how the app knows it's on the pile; one docked with a full battery
+  that never reads 2 wouldn't lock the d-pad.
 - Which point `type` the robot's own app uses (the app saves `delivery`).
 - Whether the e-stop alone cuts the lamps.
 - How the map image lines up with the robot's coordinates: the app assumes the ROS map_server

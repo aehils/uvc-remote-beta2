@@ -319,6 +319,40 @@ class DriveControllerTest {
         advanceTimeBy(5000)
         assertFalse(log(c), logged(c, "Undock: sending /cmd/move"))
         assertEquals(-2.15, robotX(c), 0.02)
+        // UNDOCK's first command has ended charging, but the robot never left its pile: still
+        // locked, UNDOCK still offered.
+        assertTrue(log(c), c.state.value.docked)
+        assertFalse(log(c), c.state.value.canHold(Move.FORWARD))
+    }
+
+    @Test
+    fun stopOnThePileKeepsChargingAndTheDPadLocked() = runTest {
+        // Seen on the robot: an arrow pressed by accident on the pile drove it off. STOP used to
+        // send /cmd/charge type 1, which ends charging (chargeFlag drops from 2, the robot still
+        // on its pile), and that alone unlocked the arrows. STOP doesn't end charging now.
+        val c = docked()
+        c.stop()
+        advanceTimeBy(3000)
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertTrue(log(c), logged(c, "STOP: sent"))
+        // On the pile the simulated cancel ends charging, as the robot's does: still 2, none sent.
+        assertEquals("still charging", 2, chargeFlag(c))
+        val s = c.state.value
+        assertTrue(log(c), s.docked)
+        assertFalse(s.canDriveByHand)
+        Move.entries.forEach { assertFalse(it.name, s.canHold(it)) }
+        c.hold(Move.FORWARD)
+        c.drive(Move.BACK)
+        advanceTimeBy(2000)
+        assertEquals("still on the pile", -2.15, robotX(c), 0.02)
+        assertEquals("still charging", 2, chargeFlag(c))
+
+        // UNDOCK is still the way off, and unlocks the arrows once the robot has pulled away.
+        c.undock()
+        waitFor(c) { logged(c, "Undock: done") }
+        waitFor(c) { it.phase == StepPhase.Idle }
+        assertEquals("15 cm off the pile", -2.00, robotX(c), 0.02)
+        assertTrue(log(c), c.state.value.canHold(Move.FORWARD))
     }
 
     @Test

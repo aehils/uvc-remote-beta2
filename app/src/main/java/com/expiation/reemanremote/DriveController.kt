@@ -423,6 +423,12 @@ class DriveController(
     // Charging was ended (or the robot found far from its pile) since chargeFlag last changed, so
     // its "docked" reading is old. A new reading, or a dock, trusts it again.
     private var pileLeft = false
+    // On the pile: what locks the d-pad. Latched by a "charging on the pile" reading, and only
+    // cleared by evidence the robot isn't sitting on it (UNDOCK's pull-away moving it, UNDOCK
+    // finding it far from the pile, or a docking reading), never by charging ending: UNDOCK's
+    // first command ends charging with the robot still on its pile, and a full battery may too.
+    // Then the arrows must stay locked.
+    private var onPile = false
     // GO pressed while docked: the trip goes out once the robot is off its pile (see undockThen).
     private var goAfterUndock: Waypoint? = null
     private var vx = 0.0
@@ -770,6 +776,7 @@ class DriveController(
         battery = null
         chargeFlag = null
         pileLeft = false
+        onPile = false
         forgetNavStatus()
         robotAlert = null
         vx = 0.0
@@ -865,6 +872,9 @@ class DriveController(
                         raise("Docking failed: the robot couldn't find its charging pile")
                     }
                     chargeFlag = f
+                    if (f == CHARGE_DOCKED && !pileLeft) onPile = true
+                    // Docking, or failing to: not sitting on the pile (it may be driving onto it).
+                    if (f == CHARGE_DOCKING || f == CHARGE_NOT_FOUND) onPile = false
                 }
                 val l = link
                 if (o.has("emergencyButton") && l is Link.Connected) {
@@ -1323,6 +1333,7 @@ class DriveController(
             val d = if (pile != null && here != null) dist(here, pile) else null
             if (d != null && d > DOCK_NEAR_M) {
                 pileLeft = true
+                onPile = false
                 log(fmt("Undock: not needed. The robot is %.1f m from its pile on the map, so it isn't docked", d))
                 carryOn()
                 publish()
@@ -1347,6 +1358,8 @@ class DriveController(
                         else "the robot refused to end charging ($rejected), so it stayed on the pile"
                     }
                     else -> {
+                        // The old "charging" reading no longer counts, but the robot is still on its
+                        // pile, and the d-pad stays locked, until the pull-away has moved it.
                         pileLeft = true
                         log(fmt("Undock: charging ended, pulling away in %.1f s", UNDOCK_SETTLE_MS / 1000.0))
                         publish()
@@ -1688,20 +1701,24 @@ class DriveController(
      * (/cmd/charge type 1), and switches the UV lamps off, not only what this app started.
      * The robot can start a task on its own (it went to charge by itself on 2026-10-05), and
      * the stop bodies alone only paused that trip: it carried on right after.
+     *
+     * STOP never ends charging: while the robot sits still, charging on its pile, the docking
+     * cancel isn't sent (on the pile it ends charging, as UNDOCK uses it). Anything else, a dock
+     * under way or a trip to the charger the robot started itself, is cancelled as ever.
      */
     private fun sendStop(turnFirst: Boolean, label: String, report: Boolean = true, jog: Boolean = false) {
         val a = api
+        val charging = onPile && chargeFlag == CHARGE_DOCKED && abs(vx) <= MOVING_VX && abs(vth) <= MOVING_VTH
         scope.launch {
             // Driving by speed: zero it first. A hard stop, but STOP is for emergencies.
             if (jog) a.post(SPEED_PATH, speedJson(ZERO))
             val first = if (turnFirst) a.post("/cmd/turn", TURN_STOP) else a.post("/cmd/move", MOVE_STOP)
             val nav = a.post(CANCEL_NAV_PATH, "{}")
-            // GUESS: assumed harmless while charging on the pile (not tried on the real robot).
-            val dock = a.post(DOCK_PATH, DOCK_CANCEL)
+            val dock = if (charging) null else a.post(DOCK_PATH, DOCK_CANCEL)
             val second = if (turnFirst) a.post("/cmd/move", MOVE_STOP) else a.post("/cmd/turn", TURN_STOP)
             // The lamps too, even if this app didn't switch them on. Queued behind any ON in flight.
             val lamps = lampLock.withLock { a.post(UV_PATH, UV_OFF) }
-            val failed = listOf("navigation" to nav, "docking" to dock, "lamps off" to lamps).firstOrNull { !it.second.ok }
+            val failed = listOfNotNull("navigation" to nav, dock?.let { "docking" to it }, "lamps off" to lamps).firstOrNull { !it.second.ok }
             if (report || !(first.ok || second.ok)) log(
                 "$label: " + if (first.ok || second.ok) {
                     "sent" + (failed?.let { (what, r) -> " ($what failed: ${r.error})" } ?: "")
@@ -1867,9 +1884,15 @@ class DriveController(
             else -> (p as StepPhase.Stopping).copy(track = tr)
         }
 
-        // Off the pile: a trip GO asked for while docked goes next. Not after STOP, a stall or a timeout.
+        // Off the pile: the d-pad unlocks, and a trip GO asked for while docked goes next. Not
+        // after STOP, a stall or a timeout: then the robot may still be on its pile, and stays locked.
         if (message != null && step.label == UNDOCK_LABEL) {
-            if (!stopping && tr.sawMotion && t <= tr.hardCap) carryOn() else dropUndockPlan()
+            if (!stopping && tr.sawMotion && t <= tr.hardCap) {
+                onPile = false
+                carryOn()
+            } else {
+                dropUndockPlan()
+            }
         }
 
         // Lined up in front of the pile: dock. Not after STOP, a stall or a timeout, nor if the trip
@@ -2765,7 +2788,7 @@ class DriveController(
         walls = walls,
         pendingPoints = pendingPoints,
         pendingWalls = pendingWalls,
-        docked = chargeFlag == CHARGE_DOCKED && !pileLeft,
+        docked = onPile,
         robotAlert = robotAlert,
         tasks = tasks,
         taskRun = taskRun,
@@ -2839,6 +2862,7 @@ class DriveController(
         /** /cmd/charge with the pile's point name on the map in use. */
         private fun chargeJson(type: Int, pile: String) = JSONObject().put("type", type).put("point", pile).toString()
         private const val CHARGE_DOCKED = 2             // chargeFlag: charging on the pile
+        private const val CHARGE_DOCKING = 8            // chargeFlag: connecting to the pile
         private const val CHARGE_NOT_FOUND = 9          // chargeFlag: no pile found while docking
         // UNDOCK only pulls away within this distance of the pile's point: farther, chargeFlag's
         // "docked" is stale. GUESS: kept short.
