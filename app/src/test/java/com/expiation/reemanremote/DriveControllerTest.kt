@@ -331,11 +331,12 @@ class DriveControllerTest {
         // send /cmd/charge type 1, which ends charging (chargeFlag drops from 2, the robot still
         // on its pile), and that alone unlocked the arrows. STOP doesn't end charging now.
         val c = docked()
+        val cancels = c.demoRobot.chargeCancels
         c.stop()
         advanceTimeBy(3000)
         waitFor(c) { it.phase == StepPhase.Idle }
         assertTrue(log(c), logged(c, "STOP: sent"))
-        // On the pile the simulated cancel ends charging, as the robot's does: still 2, none sent.
+        assertEquals("STOP sent no docking cancel", cancels, c.demoRobot.chargeCancels)
         assertEquals("still charging", 2, chargeFlag(c))
         val s = c.state.value
         assertTrue(log(c), s.docked)
@@ -364,6 +365,38 @@ class DriveControllerTest {
         advanceTimeBy(2000)
         assertEquals("e-stop pressed", StepPhase.Idle, c.state.value.phase)
         assertFalse(logged(c, "/cmd/charge"))
+    }
+
+    @Test
+    fun stopWhileDockingCancelsTheDock() = runTest {
+        // Reversing onto the pile: not charging yet, so STOP cancels the dock as ever.
+        val c = nearThePile()
+        c.goToCharger()
+        waitFor(c, maxMs = 90_000) { chargeFlag(c) == 8 && moving(c) }
+        val cancels = c.demoRobot.chargeCancels
+        c.stop()
+        advanceTimeBy(3000)
+        assertEquals("the docking cancel went out", cancels + 1, c.demoRobot.chargeCancels)
+        staysStill(c, 5000)
+        assertFalse(log(c), c.state.value.docked)
+    }
+
+    @Test
+    fun stopAfterLeavingThePileWithoutThisAppSendsTheCancel() = runTest {
+        // The robot's own app (not this one) takes it off its pile: the app still holds it "on the
+        // pile" (only UNDOCK's proof clears that), but it's no longer charging, so STOP cancels.
+        val c = docked()
+        c.demoRobot.handle("POST", "/cmd/move", """{"distance":40,"direction":1,"speed":0.20}""")
+        waitFor(c) { moving(c) }
+        val whileMoving = c.demoRobot.chargeCancels
+        c.stop()
+        advanceTimeBy(3000)
+        assertEquals("cancel sent while it moved", whileMoving + 1, c.demoRobot.chargeCancels)
+        staysStill(c, 3000)
+        val whileStill = c.demoRobot.chargeCancels
+        c.stop()
+        advanceTimeBy(3000)
+        assertEquals("and when still, off charge", whileStill + 1, c.demoRobot.chargeCancels)
     }
 
     @Test
@@ -545,12 +578,14 @@ class DriveControllerTest {
         assertTrue(log(c), logged(c, "Robot is moving, but not by this app"))
         assertFalse("no driving while the robot moves by itself", c.state.value.canDrive)
 
+        val cancels = c.demoRobot.chargeCancels
         c.stop()
         advanceTimeBy(2500)
         staysStill(c, 12_000) // the old STOP only paused it: it carried on ~1 s later
         assertTrue(log(c), logged(c, "STOP: sent"))
         assertFalse(log(c), logged(c, "sending STOP again"))
         assertEquals("not docking", 0, chargeFlag(c))
+        assertEquals("the docking cancel went out", cancels + 1, c.demoRobot.chargeCancels)
     }
 
     @Test
@@ -560,8 +595,11 @@ class DriveControllerTest {
         advanceTimeBy(4000)
         c.stop()
         advanceTimeBy(3000)
+        val cancels = c.demoRobot.chargeCancels
         c.demoRobot.goChargeOnItsOwn() // something on the robot starts the trip again
         waitFor(c) { logged(c, "Robot moving after STOP: sending STOP again (1)") }
+        advanceTimeBy(500)
+        assertTrue("the resent STOP cancels the dock too", c.demoRobot.chargeCancels > cancels)
         advanceTimeBy(2500)
         staysStill(c, 5000)
         assertFalse(c.state.value.runaway)

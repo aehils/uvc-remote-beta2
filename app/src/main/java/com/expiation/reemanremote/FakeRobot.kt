@@ -109,6 +109,9 @@ class FakeRobot(
     private var mode = MODE_NAVIGATION
     private var mapCount = 0
     private var chargeFlag = CHARGE_NONE
+    /** How many docking cancels (/cmd/charge type 1) have come in: for the tests of what STOP sends. */
+    var chargeCancels = 0
+        private set
 
     /** What /reeman/nav_status answers, set by tests; null answers as the idle robot does. */
     var navStatus: String? = null
@@ -367,6 +370,7 @@ class FakeRobot(
                 OK
             }
             1.0 -> {
+                chargeCancels++
                 halt()
                 if (chargeFlag == CHARGE_DOCKED) chargeFlag = CHARGE_NONE // still on the pile, not charging
                 OK
