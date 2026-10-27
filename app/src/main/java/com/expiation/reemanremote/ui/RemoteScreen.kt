@@ -85,10 +85,15 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.drawscope.Fill
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -908,7 +913,7 @@ internal fun DriveSheet(state: RemoteState, actions: RemoteActions, sheet: Drive
 
 /** Why the pad is locked, in a few words, or null. */
 private fun driveLock(state: RemoteState): String? = when {
-    !state.connected -> "Not connected"
+    !state.connected -> null // the line under the readings says so, on every page
     state.docked -> "Docked"
     state.estop == EStop.PRESSED -> "E-stop pressed"
     state.uv != null || state.lampsOffOwed -> "Locked while the UV lamps may be on"
@@ -917,22 +922,46 @@ private fun driveLock(state: RemoteState): String? = when {
 
 /**
  * The d-pad on the Map page, in the card under the map: opened and closed by the Drive button.
- * Spaced like the bar below it, so its buttons line up with the bar's.
+ * Spaced like the bar below it, so its buttons line up with the bar's. Why it's locked, if it
+ * is, sits in the pad's own empty corner (see [PadNote]), not on a line of its own.
  */
 @Composable
 internal fun DrivePanel(state: RemoteState, actions: RemoteActions) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        driveLock(state)?.let {
+    DrivePad(state, actions, buttonHeight = 64.dp, spacing = 6.dp, notes = true)
+}
+
+/** What the pad's corner says: why the arrows are locked, in a few words, or null. */
+private fun padNote(state: RemoteState): String? = when {
+    !state.connected -> null // the line under the readings says so
+    state.estop == EStop.PRESSED -> "E-stop pressed"
+    state.undocking -> "Undocking …"
+    state.docked -> "On the charger. Undock to drive"
+    state.uv != null || state.lampsOffOwed -> "Locked while the UV lamps may be on"
+    else -> null
+}
+
+/** The note in the pad's top-left corner, left of FORWARD and above LEFT, in the colour of its cause. */
+@Composable
+private fun RowScope.PadNote(state: RemoteState, height: Dp) {
+    val status = RemoteTheme.status
+    Box(
+        Modifier
+            .weight(1f)
+            .height(height)
+            .padding(horizontal = 4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        padNote(state)?.let {
             Text(
                 it,
+                color = if (state.estop == EStop.PRESSED) status.danger else status.warn,
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 8.dp),
-                maxLines = 1,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        DrivePad(state, actions, buttonHeight = 60.dp, spacing = 6.dp)
     }
 }
 
@@ -1496,24 +1525,24 @@ private fun ChargerButton(label: String, enabled: Boolean, onClick: () -> Unit) 
  * arrows are locked and the middle is UNDOCK instead: driving by hand starts with leaving the pile.
  */
 @Composable
-private fun DrivePad(state: RemoteState, actions: RemoteActions, buttonHeight: Dp, spacing: Dp = 8.dp) {
+private fun DrivePad(state: RemoteState, actions: RemoteActions, buttonHeight: Dp, spacing: Dp = 8.dp, notes: Boolean = false) {
     val gap = Arrangement.spacedBy(spacing)
     Column(verticalArrangement = gap) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
-            Spacer(Modifier.weight(1f))
-            HoldButton(Move.FORWARD, "▲", state, actions, buttonHeight)
+            if (notes) PadNote(state, buttonHeight) else Spacer(Modifier.weight(1f))
+            HoldButton(Move.FORWARD, state, actions, buttonHeight)
             Spacer(Modifier.weight(1f))
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
-            HoldButton(Move.LEFT, "\u25C0\uFE0E", state, actions, buttonHeight)
-            // ↺: the 180° turn goes left (counter-clockwise), the same /cmd/turn direction as LEFT.
+            HoldButton(Move.LEFT, state, actions, buttonHeight)
+            // The 180° turn goes left (counter-clockwise), the same /cmd/turn direction as LEFT.
             if (state.docked || state.undocking) UndockPadButton(state, actions.onUndock, buttonHeight)
-            else PadButton(Move.AROUND, "↺", "180°", state.canDriveByHand, actions.onMove, buttonHeight, tonal = true)
-            HoldButton(Move.RIGHT, "\u25B6\uFE0E", state, actions, buttonHeight)
+            else PadButton(Move.AROUND, R.drawable.ic_turn_around, "180°", state.canDriveByHand, actions.onMove, buttonHeight, tonal = true)
+            HoldButton(Move.RIGHT, state, actions, buttonHeight)
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
             Spacer(Modifier.weight(1f))
-            HoldButton(Move.BACK, "▼", state, actions, buttonHeight)
+            HoldButton(Move.BACK, state, actions, buttonHeight)
             Spacer(Modifier.weight(1f))
         }
     }
@@ -1534,7 +1563,7 @@ private val PAD_SHAPE = RoundedCornerShape(8.dp)
  * screen stops reporting at all, the controller lets go by itself.
  */
 @Composable
-private fun RowScope.HoldButton(move: Move, glyph: String, state: RemoteState, actions: RemoteActions, height: Dp) {
+private fun RowScope.HoldButton(move: Move, state: RemoteState, actions: RemoteActions, height: Dp) {
     val enabled = state.canHold(move)
     val held = state.holding == move
     // Read inside the gesture, which must not restart (and so let go) when these change mid-press.
@@ -1583,7 +1612,50 @@ private fun RowScope.HoldButton(move: Move, glyph: String, state: RemoteState, a
             },
         contentAlignment = Alignment.Center,
     ) {
-        Text(glyph, fontSize = 30.sp, color = content)
+        PadArrow(move, content)
+    }
+}
+
+/**
+ * A d-pad arrow: a solid triangle pointing [move]'s way, drawn rather than typed, so it sits in
+ * the middle of its button. A triangle's weight is towards its base, so centring its box looks
+ * off; it is centred halfway between its box and its centroid, nudged toward the point.
+ */
+@Composable
+private fun PadArrow(move: Move, color: Color) {
+    // Drawn opaque and faded as a whole: the softening stroke over a see-through fill would
+    // double up into a dark outline on the greyed-out (locked) arrows.
+    val ink = color.copy(alpha = 1f)
+    Canvas(
+        Modifier
+            .size(26.dp)
+            .graphicsLayer { alpha = color.alpha }
+    ) {
+        val w = size.width
+        val long = w * 0.78f // tip to base
+        val wide = w * 0.86f // across the base
+        // Optical centre: the centroid is a third of the way from the base; meet it halfway.
+        val nudge = long / 12f
+        // Built pointing up, then turned: up, right, down, left.
+        val turns = when (move) {
+            Move.FORWARD -> 0f
+            Move.RIGHT -> 90f
+            Move.BACK -> 180f
+            else -> 270f
+        }
+        rotate(turns) {
+            val cx = w / 2
+            val top = (w - long) / 2 - nudge
+            val path = Path().apply {
+                moveTo(cx, top)
+                lineTo(cx + wide / 2, top + long)
+                lineTo(cx - wide / 2, top + long)
+                close()
+            }
+            drawPath(path, ink, style = Fill)
+            // Softened corners, like the icons around it.
+            drawPath(path, ink, style = Stroke(width = 2.dp.toPx(), join = StrokeJoin.Round))
+        }
     }
 }
 
@@ -1612,7 +1684,7 @@ private fun RowScope.UndockPadButton(state: RemoteState, onUndock: () -> Unit, h
 }
 
 @Composable
-private fun RowScope.PadButton(move: Move, glyph: String, label: String, enabled: Boolean, onMove: (Move) -> Unit, height: Dp, tonal: Boolean = false) {
+private fun RowScope.PadButton(move: Move, icon: Int, label: String, enabled: Boolean, onMove: (Move) -> Unit, height: Dp, tonal: Boolean = false) {
     Button(
         onClick = { onMove(move) },
         enabled = enabled,
@@ -1624,8 +1696,9 @@ private fun RowScope.PadButton(move: Move, glyph: String, label: String, enabled
         contentPadding = PaddingValues(4.dp),
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(glyph, fontSize = 26.sp)
-            Text(label, style = MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center)
+            Icon(painterResource(icon), contentDescription = null, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.height(4.dp))
+            Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
         }
     }
 }
