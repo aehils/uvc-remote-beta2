@@ -377,6 +377,9 @@ drive rules end to end: interlocks, the step lock, STOP, e-stop, Wi-Fi loss, hol
 
 ## Network
 
+Setting up a new site (fixed addresses, the robot's Wi-Fi, what to ask IT for): see
+[`SITE_SETUP.md`](SITE_SETUP.md).
+
 **Finding the robot.** Staff shouldn't need to know the robot's address. When the robot stops
 answering where it was, the app looks for it on the phone's Wi-Fi by itself (every 20 s while
 it's missing, and at once when the phone changes Wi-Fi): every address on the phone's network
