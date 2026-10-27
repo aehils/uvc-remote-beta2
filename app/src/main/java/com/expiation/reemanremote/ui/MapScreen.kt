@@ -3,6 +3,7 @@ package com.expiation.reemanremote.ui
 import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -19,6 +20,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -195,14 +197,16 @@ internal class MapUi(tool: MapTool = MapTool.LOOK) {
 @Composable
 internal fun rememberMapUi(): MapUi = rememberSaveable(saver = MapUi.Saver) { MapUi() }
 
-/** The Map page's buttons in the dock. */
+/** The Map page's buttons either side of STOP in the dock. */
 internal class MapDock(val start: List<DockItem>, val end: List<DockItem>)
 
 /**
- * The dock on the Map page, whose STOP is in the middle of the drive pad. Looking: Add and
- * Position, Save in place of Position while mapping. With a tool in hand: Cancel, and the tool's tick.
+ * The dock on the Map page: one button either side of STOP, so STOP stays in the middle of the
+ * bar. Looking: Drive (the pad) and Edit (a menu: set position, mark points, the pile, walls).
+ * With a tool in hand: Cancel and the tool's tick. Save and Discard for a scan are on the map's
+ * Scanning badge.
  */
-internal fun mapDock(state: RemoteState, actions: RemoteActions, ui: MapUi): MapDock {
+internal fun mapDock(state: RemoteState, actions: RemoteActions, ui: MapUi, drive: DriveSheetState): MapDock {
     if (ui.tool != MapTool.LOOK) {
         val confirm = when (ui.tool) {
             MapTool.PLACE -> DockItem(
@@ -235,32 +239,41 @@ internal fun mapDock(state: RemoteState, actions: RemoteActions, ui: MapUi): Map
         )
     }
     val drawable = state.mapImage?.placeable == true
-    val add = DockItem(
-        R.drawable.ic_add_point, "Add", "Add to the map",
+    val driveItem = DockItem(
+        R.drawable.ic_tab_remote, "Drive",
+        if (drive.open) "Hide the drive controls" else "Show the drive controls",
+        selected = drive.open,
+    ) { drive.onOpenChange(!drive.open) }
+    val edit = DockItem(
+        R.drawable.ic_add_point, "Edit", "Edit the map",
         selected = ui.menu,
-        menu = { AddMenu(state, ui, drawable) },
+        menu = { EditMenu(state, ui, drawable) },
     ) { ui.menu = true }
-    val last = if (state.mapping) {
-        DockItem(R.drawable.ic_save, "Save", "Save the map", enabled = state.canChangeMap, prominent = true) { ui.saving = true }
-    } else {
-        DockItem(
-            R.drawable.ic_set_position, "Position", "Set the robot's position",
-            enabled = state.canStartMapping && drawable,
-        ) { ui.use(MapTool.PLACE) }
-    }
-    return MapDock(start = listOf(add), end = listOf(last))
+    return MapDock(start = listOf(driveItem), end = listOf(edit))
 }
 
-/** The Add button's menu: what to mark on the map. */
+/** The Edit button's menu: set the robot's position, or mark something on the map. */
 @Composable
-private fun AddMenu(state: RemoteState, ui: MapUi, drawable: Boolean) {
+private fun EditMenu(state: RemoteState, ui: MapUi, drawable: Boolean) {
     val layers = mapLayers(state)
     DropdownMenu(
         expanded = ui.menu,
         onDismissRequest = { ui.menu = false },
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(14.dp),
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
+        // Setting the position is for a saved map only.
+        if (!state.mapping) {
+            DropdownMenuItem(
+                text = { Text("Set position") },
+                enabled = state.canStartMapping && drawable,
+                onClick = {
+                    ui.menu = false
+                    ui.use(MapTool.PLACE)
+                },
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        }
         DropdownMenuItem(
             text = { Text("Disinfection point here") },
             enabled = state.canMark,
@@ -298,13 +311,14 @@ private fun AddMenu(state: RemoteState, ui: MapUi, drawable: Boolean) {
 
 /**
  * The Map page: the robot on its map (or, while mapping, the scan as it grows) with the saved
- * points, the charging pile and the virtual walls, and, under it, the drive pad with STOP in its
- * middle (the dock has none here, so the pad is always on screen). The page's buttons are in the
- * dock ([mapDock]): Add marks a disinfection point or the charging pile where the robot stands,
- * or draws or removes a virtual wall; while mapping these wait in the app and are saved with the map.
+ * points, the charging pile and the virtual walls, and, under it, the drive pad when the dock's
+ * Drive button is on. The page's buttons are in the dock ([mapDock]): Edit sets the robot's
+ * position, marks a disinfection point or the charging pile where the robot stands, or draws or
+ * removes a virtual wall; while mapping these wait in the app and are saved with the map. Mapping
+ * pulls the pad up by itself.
  */
 @Composable
-internal fun MapTab(state: RemoteState, actions: RemoteActions, ui: MapUi, modifier: Modifier) {
+internal fun MapTab(state: RemoteState, actions: RemoteActions, ui: MapUi, drive: DriveSheetState, modifier: Modifier) {
     // The robot's pose and the map image are only read while a map is on screen.
     val onVisible by rememberUpdatedState(actions.onMapVisible)
     DisposableEffect(Unit) {
@@ -389,8 +403,9 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, ui: MapUi, modif
             if (state.mapping) {
                 MappingBadge(
                     extending = state.mode == RobotMode.EXTENDING,
-                    canDiscard = state.canChangeMap,
+                    canFinish = state.canChangeMap,
                     onDiscard = { ui.discarding = true },
+                    onSave = { ui.saving = true },
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(8.dp),
@@ -434,7 +449,7 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, ui: MapUi, modif
                 )
             }
         }
-        DrivePanel(state, actions)
+        AnimatedVisibility(drive.open) { DrivePanel(state, actions) }
     }
 
     if (ui.adding) {
@@ -513,11 +528,11 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, ui: MapUi, modif
 }
 
 /**
- * Over the map's top left while mapping: a live dot, what the robot is doing, and Discard. Save
- * is the dock's job; Discard is the quieter way out, so it sits here rather than beside it.
+ * Over the map's top left while mapping: a live dot, what the robot is doing, and the two ways
+ * to finish, Discard (quiet) and Save.
  */
 @Composable
-private fun MappingBadge(extending: Boolean, canDiscard: Boolean, onDiscard: () -> Unit, modifier: Modifier) {
+private fun MappingBadge(extending: Boolean, canFinish: Boolean, onDiscard: () -> Unit, onSave: () -> Unit, modifier: Modifier) {
     val good = RemoteTheme.status.good
     val pulse by rememberInfiniteTransition(label = "mapping").animateFloat(
         initialValue = 0.35f,
@@ -531,7 +546,7 @@ private fun MappingBadge(extending: Boolean, canDiscard: Boolean, onDiscard: () 
             .clip(shape)
             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
             .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
-            .padding(start = 12.dp, end = 4.dp),
+            .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -548,7 +563,14 @@ private fun MappingBadge(extending: Boolean, canDiscard: Boolean, onDiscard: () 
             color = good,
         )
         Spacer(Modifier.width(4.dp))
-        TextButton(onClick = onDiscard, enabled = canDiscard) { Text("Discard") }
+        TextButton(onClick = onDiscard, enabled = canFinish) { Text("Discard") }
+        Button(
+            onClick = onSave,
+            enabled = canFinish,
+            modifier = Modifier.height(36.dp),
+            shape = RoundedCornerShape(8.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp),
+        ) { Text("Save", fontWeight = FontWeight.Bold) }
     }
 }
 

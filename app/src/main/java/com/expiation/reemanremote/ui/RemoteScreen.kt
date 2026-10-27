@@ -2,7 +2,6 @@ package com.expiation.reemanremote.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -256,9 +255,8 @@ private enum class Tab(val label: String, val icon: Int) {
  * Layout, top to bottom: DEMO strip (from [RemoteScreen]), title bar, the robot's readings (pinned, on every tab),
  * the current tab or the Map page, and the dock with STOP in its centre so STOP is on every tab too.
  *
- * The dock's left tile opens the Map page. There the tile becomes the way out, the rest of the
- * dock carries the map's own buttons (add, set position, save), and STOP moves into the middle
- * of the drive pad, which stays on screen there for that reason.
+ * The dock's left button opens the Map page. There it becomes the way out, and either side of
+ * STOP the bar carries the map's own buttons (Drive, Edit), so the map itself gets the page.
  */
 @Composable
 private fun MainPage(
@@ -281,7 +279,7 @@ private fun MainPage(
         onMapOpenChange(false)
     }
     BackHandler(enabled = mapOpen, onBack = closeMap)
-    val dock = if (mapOpen) mapDock(state, actions, map) else null
+    val dock = if (mapOpen) mapDock(state, actions, map, drive) else null
     fun tabItem(t: Tab) = DockItem(t.icon, t.label, selected = tab == t, isTab = true) { onTabChange(t) }
 
     Scaffold(
@@ -294,15 +292,15 @@ private fun MainPage(
         },
         bottomBar = {
             Column {
-                // The Map page has the pad on the page; the Tasks tab has none.
+                // The Map page has the pad behind its Drive button; the Tasks tab has none.
                 if (!mapOpen && tab == Tab.ACTIVITY) DriveSheet(state, actions, drive)
                 NavDock(
-                    module = if (mapOpen) DockModule(R.drawable.ic_back, "Exit", "Leave the map", active = true, onClick = closeMap)
-                    else DockModule(R.drawable.ic_tab_map, "Map", "Open the map and drive the robot", active = false) { onMapOpenChange(true) },
+                    // Tinted while it is the way in; plain once it is the way out.
+                    module = if (mapOpen) DockItem(R.drawable.ic_back, "Exit", "Leave the map", onClick = closeMap)
+                    else DockItem(R.drawable.ic_tab_map, "Map", "Open the map and drive the robot", prominent = true) { onMapOpenChange(true) },
                     start = dock?.start ?: listOf(tabItem(Tab.TASKS)),
                     end = dock?.end ?: listOf(tabItem(Tab.ACTIVITY)),
-                    // On the Map page STOP is in the middle of the pad.
-                    stop = if (mapOpen) null else DockStop(moving = state.busy || !state.still, onStop = actions.onStop),
+                    stop = DockStop(moving = state.busy || !state.still, onStop = actions.onStop),
                 )
             }
         },
@@ -311,13 +309,10 @@ private fun MainPage(
         val content = Modifier
             .padding(padding)
             .fillMaxSize()
-        // null is the Map page.
-        Crossfade(targetState = tab.takeUnless { mapOpen }, animationSpec = tween(220), label = "page") { shown ->
-            when (shown) {
-                null -> MapTab(state, actions, map, content)
-                Tab.TASKS -> TasksTab(state, actions, onOpenPoints, onEditTask, content)
-                Tab.ACTIVITY -> ActivityLog(state.log, content)
-            }
+        when {
+            mapOpen -> MapTab(state, actions, map, drive, content)
+            tab == Tab.TASKS -> TasksTab(state, actions, onOpenPoints, onEditTask, content)
+            else -> ActivityLog(state.log, content)
         }
     }
 }
@@ -607,11 +602,12 @@ internal fun StopBar(onStop: () -> Unit) {
             onClick = onStop,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp)
-                .height(76.dp),
-            shape = RoundedCornerShape(22.dp),
+                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 12.dp)
+                .height(72.dp),
+            // Flat, with the card corner: the dock's STOP, the width of the screen.
+            shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(containerColor = RemoteTheme.status.stop, contentColor = Color.White),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
+            elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp, pressedElevation = 0.dp),
         ) {
             Text("STOP", fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 6.sp)
         }
@@ -909,7 +905,7 @@ private fun Reading(label: String, value: String, unit: String, valueColor: Colo
 
 /**
  * The d-pad, pulled up from the bottom of the Activity tab and the pages over the main one (the
- * Map page has the pad on the page, the Tasks tab none). Only the handle takes the open and
+ * Map page has its own Drive button, the Tasks tab none). Only the handle takes the open and
  * close gesture (a tap, or a flick up or down), so the arrows keep their presses to themselves. Closing it mid-press lets go of the arrow, as
  * lifting the finger does. Closed, the handle still says why the pad is locked.
  */
@@ -981,10 +977,7 @@ private fun driveLock(state: RemoteState): String? = when {
     else -> null
 }
 
-/**
- * The d-pad on the Map page, under the map, with STOP in its middle. Always there: it is the
- * page's STOP.
- */
+/** The d-pad on the Map page, under the map: opened and closed by the dock's Drive button. */
 @Composable
 internal fun DrivePanel(state: RemoteState, actions: RemoteActions) {
     Surface(
@@ -1003,7 +996,8 @@ internal fun DrivePanel(state: RemoteState, actions: RemoteActions) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            DrivePad(state, actions, buttonHeight = 60.dp, stopInCentre = true)
+            // Spaced like the dock below it: the panel's inset, between the buttons too.
+            DrivePad(state, actions, buttonHeight = 60.dp, spacing = 6.dp)
         }
     }
 }
@@ -1567,37 +1561,21 @@ private fun ChargerButton(label: String, enabled: Boolean, onClick: () -> Unit) 
 /**
  * The arrows drive while held; Turn 180° in the middle is a fixed step. On the charging pile the
  * arrows are locked and the middle is UNDOCK instead: driving by hand starts with leaving the pile.
- *
- * [stopInCentre] (the Map page, whose dock has no STOP): STOP takes the middle, and UNDOCK the
- * forward arrow's place, the way the robot pulls off its pile.
  */
 @Composable
-private fun DrivePad(state: RemoteState, actions: RemoteActions, buttonHeight: Dp, stopInCentre: Boolean = false) {
-    val gap = Arrangement.spacedBy(if (stopInCentre) 6.dp else if (buttonHeight < 80.dp) 8.dp else 10.dp)
-    val onPile = state.docked || state.undocking
+private fun DrivePad(state: RemoteState, actions: RemoteActions, buttonHeight: Dp, spacing: Dp = 8.dp) {
+    val gap = Arrangement.spacedBy(spacing)
     Column(verticalArrangement = gap) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
             Spacer(Modifier.weight(1f))
-            if (stopInCentre && onPile) UndockPadButton(state, actions.onUndock, buttonHeight)
-            else HoldButton(Move.FORWARD, "▲", state, actions, buttonHeight)
+            HoldButton(Move.FORWARD, "▲", state, actions, buttonHeight)
             Spacer(Modifier.weight(1f))
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
             HoldButton(Move.LEFT, "\u25C0\uFE0E", state, actions, buttonHeight)
-            when {
-                stopInCentre -> StopKey(
-                    moving = state.busy || !state.still,
-                    onStop = actions.onStop,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(buttonHeight),
-                    shape = PAD_SHAPE,
-                    fontSize = 18.sp,
-                )
-                onPile -> UndockPadButton(state, actions.onUndock, buttonHeight)
-                // ↺: the 180° turn goes left (counter-clockwise), the same /cmd/turn direction as LEFT.
-                else -> PadButton(Move.AROUND, "↺", "180°", state.canDriveByHand, actions.onMove, buttonHeight, tonal = true)
-            }
+            // ↺: the 180° turn goes left (counter-clockwise), the same /cmd/turn direction as LEFT.
+            if (state.docked || state.undocking) UndockPadButton(state, actions.onUndock, buttonHeight)
+            else PadButton(Move.AROUND, "↺", "180°", state.canDriveByHand, actions.onMove, buttonHeight, tonal = true)
             HoldButton(Move.RIGHT, "\u25B6\uFE0E", state, actions, buttonHeight)
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {

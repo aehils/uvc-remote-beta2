@@ -16,28 +16,29 @@ Two tabs, **Tasks** (GO TO CHARGER, the UV switch, the saved **disinfection task
 and the **Map** page (the robot on its map, and the drive pad). The robot's readings (e-stop badge
 and speed; on the Map page, the mode and the map in use, whose name opens the **Maps** page) are
 pinned at the top of every page, the battery sits in the title bar, and **STOP** is the red key in
-the middle of the dock's bar at the bottom (a full-width bar on the other pages; on the Map page,
-the middle of the drive pad).
+the middle of the dock's bar at the bottom (a full-width bar on the other pages). It is the only
+solid fill in the dock, and never narrower than 72dp.
 
-**The dock.** Its left tile, set apart from the rest, opens the Map page; then the bar: **Tasks**,
-**STOP**, **Activity**, in slots of one width. On the Map page the tile becomes **Exit** (back to
+**The dock.** On the left, in a container of its own, **Map** opens the Map page; then the bar:
+**Tasks**, **STOP**, **Activity**. Every button is the same size and shape; the selected tab has a
+tinted icon and a short bar under its label. On the Map page **Map** becomes **Exit** (back to
 the tab it was opened from; Tasks unless you were on Activity, and the phone's back does the
-same), STOP moves into the middle of the drive pad (in place of Turn 180°; UNDOCK takes the
-forward arrow's place while docked), and the bar carries the map's own buttons:
+same), and either side of STOP the bar carries the map's own buttons, one each side so STOP stays
+in the middle:
 
-| On the Map page | The bar |
-|---|---|
-| Looking | **Add** (menu), **Position** (set position) |
-| Mapping | **Add**, **Save**; **Discard** is on the map's *Scanning* badge |
-| Setting a position, drawing or removing a wall | **Cancel**, and **Set here**, **Add wall** or **Remove** |
+| On the Map page | Left of STOP | Right of STOP |
+|---|---|---|
+| Looking (and mapping) | **Drive** (the pad, under the map) | **Edit** (menu) |
+| Setting a position, drawing or removing a wall | **Cancel** | **Set here**, **Add wall** or **Remove** |
 
-**Driving from anywhere.** There is one drive pad. On the Map page it is always under the map,
-since its STOP is the page's; elsewhere (the Activity tab, and the Points, Maps and DEMO pages) a **DRIVE**
+While mapping, **Save** and **Discard** are on the map's *Scanning* badge.
+
+**Driving from anywhere.** There is one drive pad. On the Map page the dock's **Drive** button puts
+it under the map; elsewhere (the Activity tab, and the Points, Maps and DEMO pages) a **DRIVE**
 handle sits just above the dock or STOP: tap it, or flick it up, to pull the pad up under whatever
 is on screen, and tap or flick down to put it away. Only the handle takes that gesture, so a held
 arrow keeps its press. Closed, the handle still says what the robot is doing. The Tasks tab has no
-pad. Starting a map pulls it up by itself. The pulled-up pad keeps Turn 180° in its middle, since
-STOP is right under it there.
+pad. Starting a map pulls it up by itself.
 
 **The robot pill** (top right, after the battery) shows which robot the app talks to (its address, or DEMO) and a
 connection light: green answering, orange not. Its menu holds the address and Ping, the DEMO
@@ -205,7 +206,7 @@ never wait behind a big image. The robot's mode (`/reeman/get_mode`) and map in 
 
 The map shows the disinfection points (dots), the **charging pile** (a green square) and the
 **virtual walls** (red lines). Its buttons are in the dock (see "The dock"), so the map has the
-page. **Add** opens a menu:
+page. **Edit** opens a menu: **Set position** (see below), then:
 - **Disinfection point here**: saves where the robot stands, as on the Disinfection Points page.
 - **Charging pile here**: with the robot docked on its pile; saves `charging_pile` (type
   `charge`), replacing any pile already marked. GO TO CHARGER drives to it.
@@ -214,8 +215,8 @@ page. **Add** opens a menu:
 
 Walls are read from `/reeman/restrict_layer` and written with `/cmd/restrict_layer`, which
 replaces the whole set, so the app reads the walls, adds or removes one, and sends them all back.
-**Position**: tap where the robot really is, drag the way it faces, then **Set here**. While
-mapping, **Save** takes its place, and **Discard** sits on the map's *Scanning* badge. What a map command did shows on the map for a few seconds (tap to hide),
+**Set position**: tap where the robot really is, drag the way it faces, then **Set here**. Not
+offered while mapping, when **Save** and **Discard** sit on the map's *Scanning* badge. What a map command did shows on the map for a few seconds (tap to hide),
 and stays in the Activity tab. The map's name in the readings opens the Maps page.
   Needed after switching maps away from the pile (see below).
 
