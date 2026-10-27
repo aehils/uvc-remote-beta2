@@ -208,7 +208,7 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
 
     val drive = DriveSheetState(driveOpen) { driveOpen = it }
     val demoStatus = state.demoStatus
-    // The connection lives in Settings: the status strip, on any page, goes there.
+    // The connection lives in Settings: the status line, on any page, goes there.
     val openSettings: () -> Unit = remember {
         {
             page = Page.MAIN
@@ -218,7 +218,7 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
     }
     CompositionLocalProvider(LocalOpenSettings provides openSettings) {
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-            StatusStrip(state)
+            StatusLine(state)
             AnimatedVisibility(state.demo) { DemoStrip() }
             Box(Modifier.weight(1f)) {
                 when {
@@ -265,7 +265,7 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
     }
 }
 
-/** Opens Settings, where the connection is: for the status strip at the top of every page. */
+/** Opens Settings, where the connection is: for the status line at the top of every page. */
 private val LocalOpenSettings = staticCompositionLocalOf<(() -> Unit)?> { null }
 
 /** Pages over the main (tabbed) page. Each keeps STOP, the drive sheet and the robot's readings on screen. */
@@ -380,57 +380,63 @@ internal fun StatusHeader(state: RemoteState, onDismissAlert: () -> Unit, onOpen
 }
 
 /**
- * The slim strip at the very top of the app, on every page, like the phone's own status bar:
- * BETA on the left, and on the right whether the robot is there. A dot, green while the robot
- * answers and orange while it doesn't, and its name (or what the app is doing about it). Tapping
- * it opens Settings, where the robot is.
+ * The top line of the app, on every page, on the page's own background: BETA on the left, and in
+ * the middle whether the robot is there, in capitals: a dot, green while the robot answers and
+ * orange while it doesn't, and its name (or what the app is doing about it). Tapping it opens
+ * Settings, where the robot is.
  */
 @Composable
-private fun StatusStrip(state: RemoteState) {
+private fun StatusLine(state: RemoteState) {
     val status = RemoteTheme.status
     val open = LocalOpenSettings.current
     val link = state.link
-    Row(
+    Box(
         Modifier
             .fillMaxWidth()
-            .background(status.betaContainer)
             .then(if (open != null) Modifier.clickable(onClickLabel = "Open the robot's settings", onClick = open) else Modifier)
-            .padding(horizontal = 16.dp, vertical = 3.dp)
-            .semantics(mergeDescendants = true) {},
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
         Text(
             "BETA",
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.align(Alignment.CenterStart),
             color = status.beta,
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
             letterSpacing = 2.sp,
             maxLines = 1,
         )
-        Box(
+        Row(
             Modifier
-                .size(7.dp)
-                .background(if (state.connected) status.good else status.offline, CircleShape)
-        )
-        Spacer(Modifier.width(6.dp))
-        Text(
-            when {
-                state.connected -> if (state.demo) "DEMO robot" else robotLabel(state)
-                state.searching -> "Searching …"
-                link is Link.Disconnected && link.lastError != null -> "Not connected"
-                else -> "Connecting …"
-            },
-            color = status.beta,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+                .align(Alignment.Center)
+                // Clear of BETA either side, so a long name stays centred and never runs into it.
+                .widthIn(max = 220.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .size(8.dp)
+                    .background(if (state.connected) status.good else status.offline, CircleShape)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                when {
+                    state.connected -> if (state.demo) "DEMO robot" else robotLabel(state)
+                    state.searching -> "Searching …"
+                    link is Link.Disconnected && link.lastError != null -> "Not connected"
+                    else -> "Connecting …"
+                }.uppercase(Locale.US),
+                color = if (state.connected) MaterialTheme.colorScheme.onSurface else status.offline,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.5.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
-/** A thin band at the top of every page, under the status strip, while DEMO is on. */
+/** A thin band at the top of every page, under the status line, while DEMO is on. */
 @Composable
 private fun DemoStrip() {
     Text(

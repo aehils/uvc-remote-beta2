@@ -99,7 +99,7 @@ data class StatusColors(
     val demoBold: Color, // fill for white text: active demo buttons and switches
     val stop: Color,
     val exit: Color, // the dock's Exit, leaving the Map page: its icon and label, never a fill
-    val beta: Color, val betaContainer: Color, // the BETA banner at the very top: pastel blue, apart from DEMO's purple
+    val beta: Color, // BETA, top left: pastel blue, apart from DEMO's purple
 )
 
 private val LightStatus = StatusColors(
@@ -111,7 +111,7 @@ private val LightStatus = StatusColors(
     demoBold = Color(0xFF5B4B98),
     stop = Color(0xFFB3342C),
     exit = Color(0xFFB0520F), // 5.2:1 on the white dock
-    beta = Color(0xFF2C4C73), betaContainer = Color(0xFFDCE9F8),
+    beta = Color(0xFF2C4C73),
 )
 
 private val DarkStatus = StatusColors(
@@ -123,7 +123,7 @@ private val DarkStatus = StatusColors(
     demoBold = Color(0xFF5B4B98), // same in both themes so white text stays readable
     stop = Color(0xFFB3342C), // STOP stays the same deep red in both themes
     exit = Color(0xFFEE9A4E), // 8.1:1 on the dark dock
-    beta = Color(0xFFA9C7EC), betaContainer = Color(0xFF16243A),
+    beta = Color(0xFFA9C7EC),
 )
 
 private val LocalStatusColors = staticCompositionLocalOf { LightStatus }
