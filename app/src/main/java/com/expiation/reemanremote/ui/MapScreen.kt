@@ -242,6 +242,7 @@ internal fun mapDock(state: RemoteState, actions: RemoteActions, ui: MapUi, driv
     val driveItem = DockItem(
         R.drawable.ic_tab_remote, "Drive",
         if (drive.open) "Hide the drive controls" else "Show the drive controls",
+        selectedIcon = R.drawable.ic_tab_remote_filled,
         selected = drive.open,
     ) { drive.onOpenChange(!drive.open) }
     val edit = DockItem(
@@ -333,7 +334,7 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, ui: MapUi, drive
     LaunchedEffect(state.mapping) { if (state.mapping && ui.tool == MapTool.PLACE) ui.use(MapTool.LOOK) }
 
     // The outcome of the last map or point command, shown on the map for a while (tap to hide
-    // it sooner; the Activity tab keeps it). Not the ones from before the page was opened.
+    // it sooner; the activity log keeps it). Not the ones from before the page was opened.
     var note by remember { mutableStateOf<String?>(null) }
     val seenMap = remember { state.mapMessage }
     val seenPoint = remember { state.pointMessage }

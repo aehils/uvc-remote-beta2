@@ -98,6 +98,7 @@ data class StatusColors(
     val demo: Color, val demoContainer: Color, // demo is also the DEMO strip's text, demoContainer its fill
     val demoBold: Color, // fill for white text: active demo buttons and switches
     val stop: Color,
+    val exit: Color, // the dock's Exit, leaving the Map page: its icon and label, never a fill
 )
 
 private val LightStatus = StatusColors(
@@ -108,6 +109,7 @@ private val LightStatus = StatusColors(
     demo = Color(0xFF4E3F86), demoContainer = Color(0xFFE9E5F5),
     demoBold = Color(0xFF5B4B98),
     stop = Color(0xFFB3342C),
+    exit = Color(0xFFB0520F), // 5.2:1 on the white dock
 )
 
 private val DarkStatus = StatusColors(
@@ -118,6 +120,7 @@ private val DarkStatus = StatusColors(
     demo = Color(0xFFB9ACE0), demoContainer = Color(0xFF241C3A),
     demoBold = Color(0xFF5B4B98), // same in both themes so white text stays readable
     stop = Color(0xFFB3342C), // STOP stays the same deep red in both themes
+    exit = Color(0xFFEE9A4E), // 8.1:1 on the dark dock
 )
 
 /** Fill for the BETA pill. Decoration, not state, so it is the same in both themes (white text on it). */

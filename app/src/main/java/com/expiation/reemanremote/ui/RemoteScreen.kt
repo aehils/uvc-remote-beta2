@@ -213,6 +213,12 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
                 page == Page.DEMO_CONTROLS && demoStatus != null ->
                     DemoControlsPage(state, demoStatus, actions, drive, onBack = { page = Page.MAIN })
                 page == Page.POINTS -> PointsPage(state, actions, drive, onBack = { page = Page.MAIN })
+                page == Page.ACTIVITY -> SubPage("Activity log", state, actions, drive, onBack = { page = Page.MAIN }) {
+                    ActivityLog(state.log, it)
+                }
+                page == Page.ROBOT_INFO -> SubPage("Robot information", state, actions, drive, onBack = { page = Page.MAIN }) {
+                    RobotInfo(state, actions, it)
+                }
                 page == Page.TASK_EDIT -> TaskEditorPage(
                     state, actions,
                     original = state.tasks.firstOrNull { it.id == editingTask },
@@ -234,6 +240,8 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
                     onOpenDemoControls = { page = Page.DEMO_CONTROLS },
                     onOpenPoints = { page = Page.POINTS },
                     onOpenMaps = { page = Page.MAPS },
+                    onOpenActivity = { page = Page.ACTIVITY },
+                    onOpenRobotInfo = { page = Page.ROBOT_INFO },
                     onEditTask = {
                         editingTask = it
                         page = Page.TASK_EDIT
@@ -245,14 +253,15 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
 }
 
 /** Pages over the main (tabbed) page. Each keeps STOP, the drive sheet and the robot's readings on screen. */
-private enum class Page { MAIN, DEMO_CONTROLS, POINTS, MAPS, TASK_EDIT }
+private enum class Page { MAIN, DEMO_CONTROLS, POINTS, MAPS, TASK_EDIT, ACTIVITY, ROBOT_INFO }
 
 /** Whether the drive sheet is pulled up, and how to change that. */
 internal class DriveSheetState(val open: Boolean, val onOpenChange: (Boolean) -> Unit)
 
-private enum class Tab(val label: String, val icon: Int) {
-    TASKS("Tasks", R.drawable.ic_tab_tasks),
-    ACTIVITY("Activity", R.drawable.ic_tab_activity),
+/** The tabs, each with its outline icon and the filled one it takes while it is open. */
+private enum class Tab(val label: String, val icon: Int, val selectedIcon: Int) {
+    TASKS("Tasks", R.drawable.ic_tab_tasks, R.drawable.ic_tab_tasks_filled),
+    SETTINGS("Settings", R.drawable.ic_tab_settings, R.drawable.ic_tab_settings_filled),
 }
 
 /**
@@ -274,6 +283,8 @@ private fun MainPage(
     onOpenDemoControls: () -> Unit,
     onOpenPoints: () -> Unit,
     onOpenMaps: () -> Unit,
+    onOpenActivity: () -> Unit,
+    onOpenRobotInfo: () -> Unit,
     onEditTask: (String) -> Unit,
 ) {
     // The Map page's tools and dialogs live here, so the dock can carry its buttons.
@@ -284,7 +295,7 @@ private fun MainPage(
     }
     BackHandler(enabled = mapOpen, onBack = closeMap)
     val dock = if (mapOpen) mapDock(state, actions, map, drive) else null
-    fun tabItem(t: Tab) = DockItem(t.icon, t.label, selected = tab == t, isTab = true) { onTabChange(t) }
+    fun tabItem(t: Tab) = DockItem(t.icon, t.label, selectedIcon = t.selectedIcon, selected = tab == t, isTab = true) { onTabChange(t) }
 
     Scaffold(
         topBar = {
@@ -296,14 +307,13 @@ private fun MainPage(
         },
         bottomBar = {
             Column {
-                // The Map page has the pad behind its Drive button; the Tasks tab has none.
-                if (!mapOpen && tab == Tab.ACTIVITY) DriveSheet(state, actions, drive)
+                // The pad is the Map page's (behind its Drive button); Tasks and Settings have none.
                 NavDock(
-                    // Tinted while it is the way in; plain once it is the way out.
-                    module = if (mapOpen) DockItem(R.drawable.ic_back, "Exit", "Leave the map", onClick = closeMap)
-                    else DockItem(R.drawable.ic_tab_map, "Map", "Open the map and drive the robot", prominent = true) { onMapOpenChange(true) },
+                    // Plain as the way in; orange, with a door, as the way out.
+                    module = if (mapOpen) DockItem(R.drawable.ic_exit, "Exit", "Leave the map", accent = RemoteTheme.status.exit, onClick = closeMap)
+                    else DockItem(R.drawable.ic_tab_map, "Map", "Open the map and drive the robot") { onMapOpenChange(true) },
                     start = dock?.start ?: listOf(tabItem(Tab.TASKS)),
-                    end = dock?.end ?: listOf(tabItem(Tab.ACTIVITY)),
+                    end = dock?.end ?: listOf(tabItem(Tab.SETTINGS)),
                     stop = DockStop(moving = state.busy || !state.still, onStop = actions.onStop),
                 )
             }
@@ -316,7 +326,7 @@ private fun MainPage(
         when {
             mapOpen -> MapTab(state, actions, map, drive, content)
             tab == Tab.TASKS -> TasksTab(state, actions, onOpenPoints, onEditTask, content)
-            else -> ActivityLog(state.log, content)
+            else -> SettingsTab(state, actions, onOpenActivity, onOpenRobotInfo, onOpenDemoControls, onOpenMaps, content)
         }
     }
 }
@@ -958,10 +968,10 @@ private fun Reading(label: String, value: String, unit: String, valueColor: Colo
 }
 
 /**
- * The d-pad, pulled up from the bottom of the Activity tab and the pages over the main one (the
- * Map page has its own Drive button, the Tasks tab none). Only the handle takes the open and
- * close gesture (a tap, or a flick up or down), so the arrows keep their presses to themselves. Closing it mid-press lets go of the arrow, as
- * lifting the finger does. Closed, the handle still says why the pad is locked.
+ * The d-pad, pulled up from the bottom of the pages over the main one (the Map page has its own
+ * Drive button, the Tasks and Settings tabs none). Only the handle takes the open and close
+ * gesture (a tap, or a flick up or down), so the arrows keep their presses to themselves.
+ * Closing it mid-press lets go of the arrow, as lifting the finger does. Closed, the handle still says why the pad is locked.
  */
 @Composable
 internal fun DriveSheet(state: RemoteState, actions: RemoteActions, sheet: DriveSheetState) {
@@ -1839,7 +1849,7 @@ internal fun SectionLabel(text: String) {
 }
 
 @Composable
-private fun DemoToggle(title: String, detail: String, on: Boolean, onToggle: () -> Unit) {
+private fun DemoToggle(title: String, detail: String, on: Boolean, onToggle: () -> Unit, enabled: Boolean = true) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -1849,8 +1859,226 @@ private fun DemoToggle(title: String, detail: String, on: Boolean, onToggle: () 
         Switch(
             checked = on,
             onCheckedChange = { onToggle() },
+            enabled = enabled,
             colors = SwitchDefaults.colors(checkedTrackColor = RemoteTheme.status.demoBold),
         )
+    }
+}
+
+/**
+ * Settings: what isn't running the robot, grouped by subject, each row opening a page or a
+ * dialog. The activity log comes first: it is what's looked at most, after something odd.
+ */
+@Composable
+private fun SettingsTab(
+    state: RemoteState,
+    actions: RemoteActions,
+    onOpenActivity: () -> Unit,
+    onOpenRobotInfo: () -> Unit,
+    onOpenDemoControls: () -> Unit,
+    onOpenMaps: () -> Unit,
+    modifier: Modifier,
+) {
+    var editingUv by rememberSaveable { mutableStateOf(false) }
+    val uv = state.uvSettings
+    Column(
+        modifier
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        SectionLabel("Records")
+        // The newest line, without its time: what happened last.
+        SettingsItem(
+            R.drawable.ic_tab_activity, "Activity log",
+            state.log.firstOrNull()?.substringAfter("  ")?.trim() ?: "Nothing yet",
+            onOpenActivity,
+        )
+        SectionLabel("Disinfection")
+        SettingsItem(R.drawable.ic_tune, "Disinfection timing", "${uv.minutes} min UV · ${uv.delaySeconds} s exit delay") { editingUv = true }
+        SectionLabel("Robot")
+        SettingsItem(
+            R.drawable.ic_ping, "Robot information",
+            (if (state.demo) "DEMO robot" else robotLabel(state)) + if (state.connected) " · connected" else " · not connected",
+            onOpenRobotInfo,
+        )
+        Panel {
+            // Never switch robots mid-step: the controller refuses, so the switch is held too.
+            DemoToggle(
+                "DEMO mode",
+                if (state.demo) "Operating a simulated robot. Nothing is sent." else "Off: the robot is live.",
+                state.demo,
+                onToggle = { actions.onDemoChange(!state.demo) },
+                enabled = !state.busy,
+            )
+        }
+        // Controls simulate robot events, so they only exist while DEMO is on.
+        if (state.demo) SettingsItem(R.drawable.ic_tune, "DEMO controls", "Simulate faults: e-stop, Wi-Fi, obstacles", onOpenDemoControls)
+        SectionLabel("Mapping")
+        SettingsItem(R.drawable.ic_tab_map, "Maps", state.currentMap?.let { "In use: ${it.label}" } ?: "The maps saved on the robot", onOpenMaps)
+    }
+    if (editingUv) {
+        UvSettingsDialog(
+            current = uv,
+            onDismiss = { editingUv = false },
+            onSave = {
+                editingUv = false
+                actions.onUvSettings(it)
+            },
+        )
+    }
+}
+
+/** A Settings row: what it is, and its current value. The whole card opens it. */
+@Composable
+private fun SettingsItem(icon: Int, title: String, value: String, onClick: () -> Unit) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(painterResource(icon), contentDescription = null, modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(value, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Spacer(Modifier.width(8.dp))
+            Text("›", fontSize = 28.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/** A page opened from Settings. Like the other pages, it keeps STOP, the drive sheet and the robot's readings on screen. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SubPage(
+    title: String,
+    state: RemoteState,
+    actions: RemoteActions,
+    drive: DriveSheetState,
+    onBack: () -> Unit,
+    content: @Composable (Modifier) -> Unit,
+) {
+    BackHandler(onBack = onBack)
+    Scaffold(
+        topBar = {
+            Column {
+                TopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
+                        }
+                    },
+                    title = { Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
+                    actions = {
+                        BatteryReading(state)
+                        Spacer(Modifier.width(16.dp))
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+                )
+                StatusHeader(state, actions.onDismissAlert)
+            }
+        },
+        bottomBar = {
+            Column {
+                DriveSheet(state, actions, drive)
+                StopBar(actions.onStop)
+            }
+        },
+        containerColor = MaterialTheme.colorScheme.background,
+    ) { padding ->
+        content(
+            Modifier
+                .padding(padding)
+                .fillMaxSize()
+        )
+    }
+}
+
+/**
+ * What the app knows about the robot: the connection (and, while it isn't answering, finding it
+ * or typing its address), its software, power and navigation. Read only, but for the connection.
+ */
+@Composable
+private fun RobotInfo(state: RemoteState, actions: RemoteActions, modifier: Modifier) {
+    val link = state.link
+    Column(
+        modifier
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        SectionLabel("Connection")
+        Panel {
+            InfoRow("Robot", if (state.demo) "DEMO robot" else robotLabel(state))
+            InfoRow(
+                "Status",
+                when {
+                    state.connected -> "Connected"
+                    state.searching -> "Looking for it on this Wi-Fi …"
+                    link is Link.Disconnected && link.lastError != null -> "Not answering: ${link.lastError}"
+                    else -> "Not connected yet"
+                },
+            )
+            if (!state.demo) {
+                InfoRow("Robot ID", state.robotName ?: "—", mono = true)
+                InfoRow("Address", state.host, mono = true)
+                if (!state.connected) RobotSearch(state, actions)
+                AddressEntry(state, actions.onPing)
+            }
+        }
+        SectionLabel("Software")
+        Panel {
+            InfoRow("Navigation firmware", state.version ?: "—", mono = true)
+        }
+        SectionLabel("Power")
+        Panel {
+            InfoRow("Battery", state.battery?.let { "$it%" } ?: "—", mono = true)
+            InfoRow("On the charger", if (state.docked) "Yes" else "No")
+            InfoRow(
+                "E-stop",
+                when (state.estop) {
+                    EStop.PRESSED -> "Pressed"
+                    EStop.RELEASED -> "Released"
+                    null -> "—"
+                },
+            )
+        }
+        SectionLabel("Navigation")
+        Panel {
+            InfoRow(
+                "Mode",
+                when (state.mode) {
+                    RobotMode.MAPPING -> "Mapping"
+                    RobotMode.EXTENDING -> "Extending the map"
+                    RobotMode.NAVIGATION -> "Navigating"
+                    null -> "—"
+                },
+            )
+            InfoRow("Map in use", state.currentMap?.label ?: "—")
+            InfoRow("Saved points", (state.points as? Points.Loaded)?.list?.size?.toString() ?: "—", mono = true)
+        }
+    }
+}
+
+/** A label and its value on one line. The value is selectable, for copying into a report. */
+@Composable
+private fun InfoRow(label: String, value: String, mono: Boolean = false) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.width(12.dp))
+        SelectionContainer {
+            Text(
+                value,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                fontFamily = if (mono) FontFamily.Monospace else null,
+                textAlign = TextAlign.End,
+            )
+        }
     }
 }
 
@@ -1863,7 +2091,7 @@ private fun ActivityLog(lines: List<String>, modifier: Modifier) {
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        SectionLabel("Activity · newest first")
+        SectionLabel("Newest first")
         SelectionContainer {
             Text(
                 lines.joinToString("\n").ifEmpty { "—" },

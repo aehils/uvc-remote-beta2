@@ -50,19 +50,22 @@ import androidx.compose.ui.unit.max
 import androidx.compose.ui.unit.sp
 
 /**
- * One button of the dock: an icon over a short label. [selected] shows as a tinted icon and a
- * short bar under the label. [prominent] (the Map tile, a tool's tick) is tinted with the accent,
- * never solid: STOP is the dock's only solid fill. [menu] is drawn anchored to the button, for a
- * DropdownMenu it opens.
+ * One button of the dock: an icon over a short label. [selected] swaps the outline icon for its
+ * filled twin, [selectedIcon], in the accent, with the label in bold: the way the phone's own
+ * apps mark the page you're on, and it takes no room. [prominent] (a tool's tick) is tinted with
+ * the accent, never solid: STOP is the dock's only solid fill. [accent] colours the icon and the
+ * label, for Exit. [menu] is drawn anchored to the button, for a DropdownMenu it opens.
  */
 internal class DockItem(
     val icon: Int,
     val label: String,
     val description: String = label,
+    val selectedIcon: Int = icon,
     val selected: Boolean = false,
     val enabled: Boolean = true,
     val prominent: Boolean = false,
     val isTab: Boolean = false,
+    val accent: Color? = null,
     val menu: (@Composable () -> Unit)? = null,
     val onClick: () -> Unit,
 )
@@ -73,8 +76,8 @@ internal class DockStop(val moving: Boolean, val onStop: () -> Unit)
 /**
  * The bottom of the main page: the module (the Map page's way in, and on it, its way out) in a
  * container of its own, then the bar, with STOP in its middle. Every button in both is the same
- * size and shape; the module stands apart only by the gap and its tint. STOP is the one solid
- * fill, never narrower than [STOP_MIN_WIDTH].
+ * size and shape; the module stands apart only by the gap. STOP is the one solid fill, never
+ * narrower than [STOP_MIN_WIDTH].
  */
 @Composable
 internal fun NavDock(module: DockItem, start: List<DockItem>, end: List<DockItem>, stop: DockStop) {
@@ -137,12 +140,14 @@ private fun DockButton(item: DockItem, modifier: Modifier) {
     }
     val iconInk = when {
         !item.enabled -> faded
+        item.accent != null -> item.accent
         item.prominent -> colors.onPrimaryContainer
         item.selected -> colors.primary
         else -> colors.onSurfaceVariant
     }
     val labelInk = when {
         !item.enabled -> faded
+        item.accent != null -> item.accent
         item.prominent -> colors.onPrimaryContainer
         item.selected -> colors.onSurface
         else -> colors.onSurfaceVariant
@@ -166,23 +171,20 @@ private fun DockButton(item: DockItem, modifier: Modifier) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            // The marker's room is kept when it's hidden, so every icon sits at the same height.
-            Spacer(Modifier.height(MARKER_HEIGHT + 4.dp))
-            Icon(painterResource(item.icon), contentDescription = null, modifier = Modifier.size(22.dp), tint = iconInk)
+            Icon(
+                painterResource(if (item.selected) item.selectedIcon else item.icon),
+                contentDescription = null,
+                modifier = Modifier.size(24.dp),
+                tint = iconInk,
+            )
             Spacer(Modifier.height(4.dp))
             Text(
                 item.label,
                 style = MaterialTheme.typography.labelMedium,
-                fontWeight = if (item.selected || item.prominent) FontWeight.Bold else FontWeight.Medium,
+                fontWeight = if (item.selected || item.prominent || item.accent != null) FontWeight.Bold else FontWeight.Medium,
                 color = labelInk,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(4.dp))
-            Box(
-                Modifier
-                    .size(width = 16.dp, height = MARKER_HEIGHT)
-                    .background(if (item.selected) colors.primary else Color.Transparent, RoundedCornerShape(2.dp))
             )
         }
         item.menu?.invoke()
@@ -227,7 +229,6 @@ private val DOCK_HEIGHT = 72.dp // buttons 60dp tall inside
 private val DOCK_GUTTER = 12.dp
 private val MODULE_GAP = 8.dp
 private val DOCK_INSET = 6.dp
-private val MARKER_HEIGHT = 3.dp
 private val STOP_MIN_WIDTH = 72.dp
 // The app's card radius outside; inside, the outer radius less the inset, so the corners nest.
 private val DOCK_SHAPE = RoundedCornerShape(14.dp)
