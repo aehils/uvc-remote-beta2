@@ -42,6 +42,20 @@ data class DisinfectionTask(
         const val MAX_NAME = 32
         const val MAX_STOPS = 20
         const val MAX_ROUNDS = 10
+        const val PLAN_ID = "plan"
+
+        /**
+         * What START DISINFECTION runs: the points picked on the Tasks tab, in the order they were
+         * picked, each for the same UV time and countdown, then [whenDone]. Named after its point
+         * when there is one, so the run card and the report say "Bed 3".
+         */
+        fun plan(points: List<String>, settings: UvSettings, whenDone: WhenDone) = DisinfectionTask(
+            id = PLAN_ID,
+            name = points.singleOrNull() ?: "Disinfection",
+            stops = points.map { TaskStop(it, settings.minutes) },
+            delaySeconds = settings.delaySeconds,
+            whenDone = whenDone,
+        ).coerced()
 
         fun listToJson(list: List<DisinfectionTask>): String = JSONArray().apply {
             list.forEach { t ->
