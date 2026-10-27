@@ -253,16 +253,18 @@ never wait behind a big image. The robot's mode (`/reeman/get_mode`) and map in 
 
 The map shows the disinfection points (dots), the **charging pile** (a green square) and the
 **virtual walls** (red lines). Its buttons are in the dock (see "The dock"), so the map has the
-page. **Edit** opens a menu: **Set position** (see below), then:
-- **Disinfection point here**: saves where the robot stands, as on the Disinfection Points page.
-- **Charging pile here**: with the robot docked on its pile; saves `charging_pile` (type
-  `charge`), replacing any pile already marked. GO TO CHARGER drives to it.
-- **Virtual wall**: drag from one end to the other, then **Add wall**. A line the robot won't cross.
-- **Remove a virtual wall**: tap it, then **Remove**.
+page. **Edit** opens a menu, its options (each with an icon) under small grey headings that
+can't be tapped:
+- ROBOT: **Set the robot's position** (see below; not while mapping).
+- ADD WHERE THE ROBOT STANDS: **Disinfection point**, saved as on the Disinfection Points page;
+  **Charging pile**, with the robot docked on its pile, saved as `charging_pile` (type `charge`),
+  replacing any pile already marked (GO TO CHARGER drives to it).
+- VIRTUAL WALLS: **Draw a wall** (drag from one end to the other, then **Add wall**; a line the
+  robot won't cross) and **Remove a wall** (tap it, then **Remove**).
 
 Walls are read from `/reeman/restrict_layer` and written with `/cmd/restrict_layer`, which
 replaces the whole set, so the app reads the walls, adds or removes one, and sends them all back.
-**Set position**: tap where the robot really is, drag the way it faces, then **Set here**. Not
+**Set the robot's position**: tap where the robot really is, drag the way it faces, then **Set here**. Not
 offered while mapping, when **Save** and **Discard** sit on the map's *Scanning* badge. What a map command did shows on the map for a few seconds (tap to hide),
 and stays in the activity log. The map's name in the readings opens the Maps page.
   Needed after switching maps away from the pile (see below).

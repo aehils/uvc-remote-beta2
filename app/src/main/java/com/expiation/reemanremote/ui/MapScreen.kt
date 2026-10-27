@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -87,6 +88,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -110,6 +112,7 @@ import com.expiation.reemanremote.RobotMode
 import com.expiation.reemanremote.SavedMap
 import com.expiation.reemanremote.Wall
 import com.expiation.reemanremote.Waypoint
+import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -252,61 +255,77 @@ internal fun mapDock(state: RemoteState, actions: RemoteActions, ui: MapUi, driv
     return MapDock(start = listOf(driveItem), end = listOf(edit))
 }
 
-/** The Edit button's menu: set the robot's position, or mark something on the map. */
+/**
+ * The Edit button's menu. Small grey headings (never tappable) group the options, each of which
+ * has an icon, so a heading is never taken for an option: where the robot is, what to add where
+ * it stands, and the virtual walls. Setting the position is for a saved map, so not while mapping.
+ */
 @Composable
 private fun EditMenu(state: RemoteState, ui: MapUi, drawable: Boolean) {
     val layers = mapLayers(state)
+    fun pick(action: () -> Unit) {
+        ui.menu = false
+        action()
+    }
     DropdownMenu(
         expanded = ui.menu,
         onDismissRequest = { ui.menu = false },
+        modifier = Modifier.widthIn(min = 264.dp),
         shape = RoundedCornerShape(14.dp),
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
-        // Setting the position is for a saved map only.
         if (!state.mapping) {
-            DropdownMenuItem(
-                text = { Text("Set position") },
-                enabled = state.canStartMapping && drawable,
-                onClick = {
-                    ui.menu = false
-                    ui.use(MapTool.PLACE)
-                },
-            )
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            MenuHeading("Robot", first = true)
+            MenuOption(R.drawable.ic_set_position, "Set the robot's position", enabled = state.canStartMapping && drawable) {
+                pick { ui.use(MapTool.PLACE) }
+            }
         }
-        DropdownMenuItem(
-            text = { Text("Disinfection point here") },
-            enabled = state.canMark,
-            onClick = {
-                ui.menu = false
-                ui.adding = true
-            },
-        )
-        DropdownMenuItem(
-            text = { Text("Charging pile here") },
-            enabled = state.canMark,
-            onClick = {
-                ui.menu = false
-                ui.addingPile = true
-            },
-        )
-        DropdownMenuItem(
-            text = { Text("Virtual wall") },
-            enabled = drawable && (state.mapping || state.canStartMapping),
-            onClick = {
-                ui.menu = false
-                ui.use(MapTool.WALL)
-            },
-        )
-        DropdownMenuItem(
-            text = { Text("Remove a virtual wall") },
+        MenuHeading("Add where the robot stands", first = state.mapping)
+        MenuOption(R.drawable.ic_add_point, "Disinfection point", enabled = state.canMark) { pick { ui.adding = true } }
+        MenuOption(R.drawable.ic_dock, "Charging pile", enabled = state.canMark) { pick { ui.addingPile = true } }
+        MenuHeading("Virtual walls")
+        MenuOption(R.drawable.ic_wall, "Draw a wall", enabled = drawable && (state.mapping || state.canStartMapping)) {
+            pick { ui.use(MapTool.WALL) }
+        }
+        MenuOption(
+            R.drawable.ic_delete, "Remove a wall",
             enabled = drawable && (layers.walls.isNotEmpty() || layers.pendingWalls.isNotEmpty()),
-            onClick = {
-                ui.menu = false
-                ui.use(MapTool.ERASE)
-            },
-        )
+        ) { pick { ui.use(MapTool.ERASE) } }
     }
+}
+
+/** A heading in a menu: small grey capitals, not tappable. A hairline above it, but for the first. */
+@Composable
+private fun MenuHeading(text: String, first: Boolean = false) {
+    if (!first) HorizontalDivider(Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant)
+    Text(
+        text.uppercase(Locale.US),
+        modifier = Modifier
+            .padding(start = 16.dp, end = 16.dp, top = if (first) 8.dp else 4.dp, bottom = 2.dp)
+            .semantics { heading() },
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 1.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/** An option in a menu: its icon, in the accent, and what it does. */
+@Composable
+private fun MenuOption(icon: Int, text: String, enabled: Boolean, onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = { Text(text, style = MaterialTheme.typography.bodyLarge) },
+        onClick = onClick,
+        enabled = enabled,
+        leadingIcon = {
+            Icon(
+                painterResource(icon),
+                contentDescription = null,
+                modifier = Modifier.size(22.dp),
+                tint = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+            )
+        },
+    )
 }
 
 /**

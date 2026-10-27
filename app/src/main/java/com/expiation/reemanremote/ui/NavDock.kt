@@ -228,8 +228,8 @@ private fun dockWidths(maxWidth: Dp, buttons: Int): DockWidths {
 
 /**
  * A rounded rectangle with its bottom-left corner cut out, [notchWidth] by [notchHeight]: the
- * card corner on every outer corner, and a smaller fillet where the cut-out meets the bar, so
- * the bar flows out of the card rather than being stuck to it.
+ * card corner on every outer corner, and where the cut-out meets the bar, an inside corner that
+ * wraps Exit's own corner ([NOTCH_FILLET]), so the bar flows out of the card around it.
  */
 private class NotchedShape(private val notchWidth: Dp, private val notchHeight: Dp) : Shape {
     override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
@@ -388,7 +388,9 @@ private val STOP_MIN_WIDTH = 72.dp
 // The app's card radius outside; inside, the outer radius less the inset, so the corners nest.
 private val DOCK_RADIUS = 14.dp
 private val DOCK_SHAPE = RoundedCornerShape(DOCK_RADIUS)
-private val NOTCH_FILLET = 8.dp
+// The cut-out's inside corner wraps Exit's corner at the gap's distance: concentric with it, so
+// the gap is the same all the way round and the two pieces read as fitting together.
+private val NOTCH_FILLET = DOCK_RADIUS + MODULE_GAP
 private val MARK_HEIGHT = 3.dp
 private val MARK_SIDE = 6.dp // the bar runs nearly the button's width: a line on the edge, not a puck
 private val INNER_SHAPE = RoundedCornerShape(8.dp)
