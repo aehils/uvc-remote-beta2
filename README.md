@@ -13,11 +13,16 @@ with the robot switched off.
 
 Two tabs, **Tasks** (GO TO CHARGER, the UV switch, the saved **disinfection tasks**, and
 **Disinfection Points**, which opens its own page; the app opens here) and **Settings** (below),
-and the **Map** page (the robot on its map, and the drive pad). The robot's readings (e-stop badge
-and speed; on the Map page, the mode and the map in use, whose name opens the **Maps** page) are
-pinned at the top of every page, the battery sits in the title bar, and **STOP** is the red key in
-the middle of the dock's bar at the bottom (a full-width bar on the other pages). It is the only
-solid fill in the dock, and never narrower than 72dp.
+and the **Map** page (the robot on its map, and the drive pad). A slim pastel-blue **BETA** banner
+runs across the very top of every page (the purple DEMO one under it in DEMO). The main page has no
+title bar: the robot's readings (the e-stop, motion and battery badges, then the speed; on the Map
+page, the map in use, whose name opens the **Maps** page) are the top of the page, pinned there on
+every page, and **STOP** is the red key in the middle of the dock's bar at the bottom (a full-width
+bar on the other pages). It is the only solid fill in the dock, and never narrower than 72dp.
+
+**The connection** is in Settings. On screen it only shows when it's a problem: while the robot
+isn't answering (or the app is still connecting, or looking for it) an amber strip under the
+readings says so, and tapping it opens Settings.
 
 **The dock.** On the left, in a container of its own, **Map** opens the Map page; then the bar:
 **Tasks**, **STOP**, **Settings**. Every button is the same size and shape, and none is filled but
@@ -45,16 +50,15 @@ Settings tabs have no pad. Starting a map pulls it up by itself.
   newest first, selectable for copying.
 - **Disinfection: Disinfection timing**, the UV time and the exit delay (as the tune button on the
   Disinfection Points page).
-- **Robot: Robot information** (the connection, with Find robots and the address entry while it
-  isn't answering; the robot's ID, address and firmware; battery, charger and e-stop; mode, map
-  and points), the **DEMO mode** switch, and, in DEMO, **DEMO controls**.
+- **Robot**: the robot the app talks to (its name, like `UV 3-07`, or DEMO) with a connection
+  light, green answering, orange not. While it isn't answering: the robots the app found, to
+  pick from, **Find robots**, and an address entry (folded away). Then **Robot information**: its
+  full ID, address and firmware; battery, charger and e-stop; mode, map and points.
+- **DEMO**: the **DEMO mode** switch, and, in DEMO, **DEMO controls**.
 - **Mapping: Maps**, the Maps page.
 
-**The robot pill** (top right, after the battery) shows which robot the app talks to (its name,
-like `UV 3-07`, or DEMO) and a connection light: green answering, orange not. Its menu lists the
-robots the app found to pick from, an address entry (folded away), the DEMO switch, and the robot's
-full ID and firmware. While the robot isn't answering, the app looks for it and follows it to a new
-address by itself (see Network). Addresses aren't shown: staff pick robots by name.
+While the robot isn't answering, the app looks for it and follows it to a new address by itself
+(see Network). Staff pick robots by name, in **Settings › Robot**.
 
 | Button | Command sent | Speed |
 |---|---|---|
@@ -312,7 +316,7 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
 ## Real-robot tests
 
 **First drive test.** Robot off the pile, ~1 m clear all round, physical e-stop in reach.
-1. Open the app: Ping icon green, battery shown, grey **E** badge.
+1. Open the app: no amber not-connected strip, the battery badge shows a figure, grey **E** badge.
 2. **Hold** Left for 2 s, let go: it should start turning within ~0.5 s, then ease to a stop
    within ~10°. Then Right, Back, Forward, and Turn 180° (a tap).
 3. Hold Forward and let go: note how far it runs on (~20 cm) and whether the mast rocks.
@@ -354,7 +358,7 @@ Copy anything odd from **Settings › Activity log** (long-press to select).
 
 ## Demo mode
 
-Tap the **DEMO** pill (top right) and **Turn on DEMO**, or switch on **Settings › DEMO mode**. The app then talks to a simulated robot
+Switch on **Settings › DEMO mode**. The app then talks to a simulated robot
 inside the app (`FakeRobot.kt`): **nothing is sent over the network**, so it is safe on the
 robot's Wi-Fi. A purple strip stays pinned at the top and every log line starts with `[DEMO]`.
 All the app's own logic runs unchanged. Mode can't be switched while something runs or the
@@ -377,7 +381,7 @@ set up on the real robot:
 | Control | What the app should do |
 |---|---|
 | E-stop pressed | **E** badge solid red, driving blocked; mid-step, the robot stops |
-| Wi-Fi dropped | Ping icon orange after ~3 failed polls, driving blocked |
+| Wi-Fi dropped | the amber not-connected strip after ~3 failed polls, driving blocked |
 | Obstacle ahead | next step accepted but never starts: "no motion seen" |
 | Robot goes to charge by itself | "moving, but not by this app"; STOP ends the trip for good |
 | Person in the way (during a trip) | robot waits 5 s then carries on; the trip stays locked |
@@ -424,8 +428,8 @@ while it's missing, and at once when the phone changes Wi-Fi), in this order:
 | Found | The app |
 |---|---|
 | **This robot** (its hostname) | follows it to its new address without asking, and logs it |
-| Other robots | lists them by name in the robot pill's menu; staff tap theirs |
-| Nothing | says so in the menu |
+| Other robots | lists them by name in **Settings › Robot**; staff tap theirs |
+| Nothing | says so there |
 
 A hospital can have several robots, so the app never moves to a robot it can't recognise without
 a tap: driving or lighting the wrong one has to be deliberate. For the same reason, a robot
@@ -472,7 +476,7 @@ Under `app/src/main/java/com/expiation/reemanremote/`:
   choice and UV settings.
 - `MainActivity.kt`: hosts the screen; leaving the app pauses polling and switches the lamps off.
 - `ui/RemoteScreen.kt`: the Compose screen. It only draws `RemoteState` and forwards taps.
-  The tabs, the drive sheet, the robot pill, the Tasks and Points pages.
+  The tabs, the drive sheet, the readings and banners, the Tasks, Points and Settings pages.
 - `ui/NavDock.kt`: the dock at the bottom of the main page: the Map tile, the tab or map buttons, and STOP.
 - `ui/MapScreen.kt`: the Map page (map view, set position, save/discard, and its dock buttons) and the Maps page.
 - `ui/Theme.kt`: colours, including the status colours.

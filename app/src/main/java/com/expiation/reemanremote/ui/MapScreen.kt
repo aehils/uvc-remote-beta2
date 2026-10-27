@@ -872,7 +872,6 @@ internal fun MapsPage(
                     },
                     title = { Text("Maps", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
                     actions = {
-                        BatteryReading(state)
                         TextButton(onClick = actions.onLoadMaps, enabled = state.connected && maps != Maps.Loading) { Text("Refresh") }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
