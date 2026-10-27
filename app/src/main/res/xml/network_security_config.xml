@@ -1,12 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Plain http is blocked for everything EXCEPT the robot's navigation computer,
-  which only speaks http. If the robot's address ever changes, update the
-  domain below (and ask IT to reserve the address on the router).
+  The robot's navigation computer only speaks plain http, and its address changes with the
+  network it is on (a new router hands out new addresses). Android can't limit plain http to
+  an address range here, so it is allowed in this file and RobotApi refuses every address
+  that isn't on a local network (10.x, 172.16-31.x, 192.168.x, 169.254.x): plain http never
+  leaves the LAN.
 -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false" />
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">192.168.1.228</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>
