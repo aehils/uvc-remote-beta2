@@ -611,38 +611,81 @@ private fun MapChipButton(label: String, onClickLabel: String, modifier: Modifie
 
 private const val NOTE_MS = 8_000L
 
-/** The map's name, in the Map page's readings; tapping it opens the Maps page. */
+/**
+ * The map's name, in the Map page's readings, and the map's own menu: start a new map or extend
+ * this one, right where the map and the pad are (the same confirm as the Maps page), or open the
+ * saved maps. While mapping only the last: Save and Discard are on the Scanning badge.
+ */
 @Composable
-internal fun MapChip(state: RemoteState, onOpenMaps: () -> Unit, modifier: Modifier = Modifier) {
+internal fun MapChip(state: RemoteState, onOpenMaps: () -> Unit, onStartMapping: (Boolean) -> Unit, modifier: Modifier = Modifier) {
     val shape = RoundedCornerShape(10.dp)
-    Row(
-        modifier
-            .clip(shape)
-            .border(1.dp, MaterialTheme.colorScheme.outline, shape)
-            .clickable(onClickLabel = "Open your saved maps", onClick = onOpenMaps)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            painterResource(R.drawable.ic_tab_map),
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-            tint = MaterialTheme.colorScheme.primary,
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            when {
-                state.mode == RobotMode.MAPPING -> "New map"
-                else -> state.currentMap?.label ?: "Map"
+    var menu by remember { mutableStateOf(false) }
+    // null: no dialog; false: a new map; true: extend the map in use.
+    var starting by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    Box(modifier) {
+        Row(
+            Modifier
+                .clip(shape)
+                .border(1.dp, MaterialTheme.colorScheme.outline, shape)
+                .clickable(onClickLabel = "Map options") { menu = true }
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                painterResource(R.drawable.ic_tab_map),
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                when {
+                    state.mode == RobotMode.MAPPING -> "New map"
+                    else -> state.currentMap?.label ?: "Map"
+                },
+                modifier = Modifier.weight(1f, fill = false),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.width(6.dp))
+            Text("▾", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        DropdownMenu(
+            expanded = menu,
+            onDismissRequest = { menu = false },
+            modifier = Modifier.widthIn(min = 240.dp),
+            shape = RoundedCornerShape(14.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            MenuHeading("Maps", first = true)
+            if (!state.mapping) {
+                MenuOption(R.drawable.ic_map_new, "Start a new map", enabled = state.canStartMapping) {
+                    menu = false
+                    starting = false
+                }
+                MenuOption(R.drawable.ic_map_extend, "Extend this map", enabled = state.canStartMapping && state.currentMap != null) {
+                    menu = false
+                    starting = true
+                }
+            }
+            MenuOption(R.drawable.ic_tab_map, "Saved maps", enabled = true) {
+                menu = false
+                onOpenMaps()
+            }
+        }
+    }
+    starting?.let { extend ->
+        StartMappingDialog(
+            extend = extend,
+            inUse = state.currentMap,
+            onDismiss = { starting = null },
+            onConfirm = {
+                starting = null
+                onStartMapping(extend)
             },
-            modifier = Modifier.weight(1f, fill = false),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
         )
-        Spacer(Modifier.width(6.dp))
-        Text("▾", color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -983,28 +1026,15 @@ internal fun MapsPage(
     }
 
     starting?.let { extend ->
-        AlertDialog(
-            onDismissRequest = { starting = null },
-            title = { Text(if (extend) "Extend ${inUse?.label ?: "this map"}?" else "Start a new map?") },
-            text = {
-                Text(
-                    if (extend) "The robot adds to the map as you drive it into new areas. Check first that it's in " +
-                        "the right place on the map (Map page), or the new part won't line up. Trips and " +
-                        "disinfection wait until you save or discard."
-                    else "The robot starts a fresh scan; your saved maps stay as they are. Drive it slowly round " +
-                        "the whole area with DRIVE, coming back past where you started, then save it on the Map " +
-                        "page. Trips and disinfection wait until you save or discard.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+        StartMappingDialog(
+            extend = extend,
+            inUse = inUse,
+            onDismiss = { starting = null },
+            onConfirm = {
+                starting = null
+                actions.onStartMapping(extend)
+                onShowMap()
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    starting = null
-                    actions.onStartMapping(extend)
-                    onShowMap()
-                }) { Text(if (extend) "Extend" else "Start mapping", fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = { TextButton(onClick = { starting = null }) { Text("Cancel") } },
         )
     }
     using?.let { m ->
@@ -1061,6 +1091,30 @@ internal fun MapsPage(
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
         )
     }
+}
+
+/** Asks before a new map ([extend] false) or extending the one in use: what happens, and what waits. */
+@Composable
+internal fun StartMappingDialog(extend: Boolean, inUse: SavedMap?, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (extend) "Extend ${inUse?.label ?: "this map"}?" else "Start a new map?") },
+        text = {
+            Text(
+                if (extend) "The robot adds to the map as you drive it into new areas. Check first that it's in " +
+                    "the right place on the map, or the new part won't line up. Trips and disinfection wait " +
+                    "until you save or discard."
+                else "The robot starts a fresh scan; your saved maps stay as they are. Drive it slowly round " +
+                    "the whole area with Drive, coming back past where you started, then save it with the " +
+                    "Scanning badge's Save. Trips and disinfection wait until you save or discard.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text(if (extend) "Extend" else "Start mapping", fontWeight = FontWeight.Bold) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 /** One saved map: its picture, its name, and a menu to use, rename or delete it. */

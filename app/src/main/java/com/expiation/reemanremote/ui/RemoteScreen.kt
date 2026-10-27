@@ -322,7 +322,13 @@ private fun MainPage(
         topBar = {
             // No title bar: the readings are the top of the page. On the Map page they show the
             // map in use, not the speed.
-            Column { StatusHeader(state, actions.onDismissAlert, onOpenMaps = onOpenMaps.takeIf { mapOpen }) }
+            Column {
+                StatusHeader(
+                    state, actions.onDismissAlert,
+                    onOpenMaps = onOpenMaps.takeIf { mapOpen },
+                    onStartMapping = actions.onStartMapping,
+                )
+            }
         },
         bottomBar = {
             // The Map page draws its own: the bar is part of its card (below).
@@ -374,8 +380,13 @@ private const val DEMO_HELP_URL = "https://github.com/aehils/uvc-remote-beta2#de
  * connected, and the runaway and UV banners.
  */
 @Composable
-internal fun StatusHeader(state: RemoteState, onDismissAlert: () -> Unit, onOpenMaps: (() -> Unit)? = null) {
-    Box(Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 8.dp)) { Telemetry(state, onOpenMaps) }
+internal fun StatusHeader(
+    state: RemoteState,
+    onDismissAlert: () -> Unit,
+    onOpenMaps: (() -> Unit)? = null,
+    onStartMapping: (Boolean) -> Unit = {},
+) {
+    Box(Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 8.dp)) { Telemetry(state, onOpenMaps, onStartMapping) }
     ConnectionDivider(state)
     AnimatedVisibility(state.runaway) { RunawayBanner() }
     AnimatedVisibility(state.uv != null || state.lampsOffOwed) { UvBanner(state) }
@@ -689,11 +700,11 @@ private fun AddressField(
 
 /**
  * The e-stop badge (which also shows motion) and the battery ring, then velocity (the main read), on the right. With
- * [onOpenMaps] (the Map page): the map in use instead, its name opening the Maps page. Readings
+ * [onOpenMaps] (the Map page): the map in use instead, its name the map's menu (see [MapChip]). Readings
  * fade when not connected, since they are stale.
  */
 @Composable
-private fun Telemetry(state: RemoteState, onOpenMaps: (() -> Unit)?) {
+private fun Telemetry(state: RemoteState, onOpenMaps: (() -> Unit)?, onStartMapping: (Boolean) -> Unit) {
     val live = state.connected
     Row(
         Modifier
@@ -709,7 +720,7 @@ private fun Telemetry(state: RemoteState, onOpenMaps: (() -> Unit)?) {
         if (onOpenMaps != null) {
             // Mapping shows on the map itself (its Scanning badge), so the map's name has the room.
             Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End) {
-                MapChip(state, onOpenMaps)
+                MapChip(state, onOpenMaps, onStartMapping)
             }
         } else {
             // Velocity is the main read, in fixed-width slots so the figures never shift as they change.
@@ -1833,6 +1844,8 @@ private fun SettingsTab(
             "ID, firmware, power and navigation",
             onOpenRobotInfo,
         )
+        SectionLabel("Maps")
+        SettingsItem(R.drawable.ic_tab_map, "Saved maps", state.currentMap?.let { "In use: ${it.label}" } ?: "The maps saved on the robot", onOpenMaps)
         SectionLabel("Records")
         // The newest line, without its time: what happened last.
         SettingsItem(
@@ -1868,8 +1881,6 @@ private fun SettingsTab(
         }
         // Controls simulate robot events, so they only exist while DEMO is on.
         if (state.demo) SettingsItem(R.drawable.ic_tune, "DEMO controls", "Simulate faults: e-stop, Wi-Fi, obstacles", onOpenDemoControls)
-        SectionLabel("Mapping")
-        SettingsItem(R.drawable.ic_tab_map, "Maps", state.currentMap?.let { "In use: ${it.label}" } ?: "The maps saved on the robot", onOpenMaps)
     }
     if (editingUv) {
         UvSettingsDialog(

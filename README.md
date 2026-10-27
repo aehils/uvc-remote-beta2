@@ -16,7 +16,7 @@ Two tabs, **Tasks** (GO TO CHARGER, the UV switch, the saved **disinfection task
 and the **Map** page (the robot on its map, and the drive pad). A small pastel-blue **BETA**
 sits centred at the very top of every page (the purple DEMO band under it in DEMO). The main page has no
 title bar: the robot's readings (the e-stop badge and the battery ring, then the speed; on the Map
-page, the map in use, whose name opens the **Maps** page) are the top of the page, pinned there on
+page, the map in use, whose name is the map's menu) are the top of the page, pinned there on
 every page, and **STOP** is the red key in the middle of the dock's bar at the bottom (a full-width
 bar on the other pages). It is the only solid fill in the dock, and never narrower than 72dp.
 
@@ -70,12 +70,12 @@ Settings tabs have no pad. Starting a map pulls it up by itself.
   light, green answering, orange not. While it isn't answering: the robots the app found, to
   pick from, **Find robots**, and an address entry (folded away). Then **Robot information**: its
   full ID, address and firmware; battery, charger and e-stop; mode, map and points.
+- **Maps: Saved maps**, the Maps page.
 - **Records: Activity log** (its row shows the latest line). The log as a page of its own,
   newest first, selectable for copying.
 - **Disinfection: Disinfection timing**, the UV time and the exit delay (as the tune button on the
   Disinfection Points page).
 - **DEMO**: the **DEMO mode** switch, and, in DEMO, **DEMO controls**.
-- **Mapping: Maps**, the Maps page.
 
 While the robot isn't answering, the app looks for it and follows it to a new address by itself
 (see Network). Staff pick robots by name, in **Settings › Robot**.
@@ -266,13 +266,16 @@ Walls are read from `/reeman/restrict_layer` and written with `/cmd/restrict_lay
 replaces the whole set, so the app reads the walls, adds or removes one, and sends them all back.
 **Set the robot's position**: tap where the robot really is, drag the way it faces, then **Set here**. Not
 offered while mapping, when **Save** and **Discard** sit on the map's *Scanning* badge. What a map command did shows on the map for a few seconds (tap to hide),
-and stays in the activity log. The map's name in the readings opens the Maps page.
+and stays in the activity log. The map's name in the readings (**Ward 3 ▾**) is the map's own
+menu: **Start a new map** and **Extend this map** (each asks first, as on the Maps page; not
+while mapping), and **Saved maps**, the Maps page.
   Needed after switching maps away from the pile (see below).
 
-**Mapping.** On the **Maps** page, **+ New map** starts a fresh scan and **Extend this map** adds
-to the map in use (the robot must know where it is on it first). Either way the app goes to the
-Map page with the drive pad up: drive slowly round the whole area, come back past where you
-started so the map closes up, and watch the scan grow (refreshed every 2 s). The add menu works
+**Mapping.** From the map's name on the Map page (or **+ New map** and **Extend this map** on the
+**Maps** page), a new map starts a fresh scan and extending adds to the map in use (the robot must
+know where it is on it first). Either way the Map page shows it with the drive pad up: drive
+slowly round the whole area, come back past where you started so the map closes up, and watch
+the scan grow (refreshed every 2 s). The Edit menu works
 while mapping too (the charging pile, points, walls): the robot can't store them on a map that
 isn't saved yet, so they wait in the app (drawn dashed) and are written onto the map straight
 after it is saved, and only if the new map is the one in use. Discarding drops them. Then save
