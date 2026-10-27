@@ -208,7 +208,7 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
 
     val drive = DriveSheetState(driveOpen) { driveOpen = it }
     val demoStatus = state.demoStatus
-    // The connection lives in Settings: the status line, on any page, goes there.
+    // The connection lives in Settings: the connection line under the readings, on any page, goes there.
     val openSettings: () -> Unit = remember {
         {
             page = Page.MAIN
@@ -218,7 +218,7 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
     }
     CompositionLocalProvider(LocalOpenSettings provides openSettings) {
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-            StatusLine(state)
+            BetaMark()
             AnimatedVisibility(state.demo) { DemoStrip() }
             Box(Modifier.weight(1f)) {
                 when {
@@ -265,7 +265,7 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
     }
 }
 
-/** Opens Settings, where the connection is: for the status line at the top of every page. */
+/** Opens Settings, where the connection is: for the connection line under every page's readings. */
 private val LocalOpenSettings = staticCompositionLocalOf<(() -> Unit)?> { null }
 
 /** Pages over the main (tabbed) page. Each keeps STOP, the drive sheet and the robot's readings on screen. */
@@ -365,78 +365,88 @@ private const val DEMO_HELP_URL = "https://github.com/aehils/uvc-remote-beta2#de
 
 /**
  * At the top of every page (under the title bar, where a page has one), pinned so it never
- * scrolls away: the robot's readings, and the runaway and UV banners.
+ * scrolls away: the robot's readings, the line under them that says whether the robot is
+ * connected, and the runaway and UV banners.
  */
 @Composable
 internal fun StatusHeader(state: RemoteState, onDismissAlert: () -> Unit, onOpenMaps: (() -> Unit)? = null) {
-    Box(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) { Telemetry(state, onOpenMaps) }
+    Box(Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 8.dp)) { Telemetry(state, onOpenMaps) }
+    ConnectionDivider(state)
     AnimatedVisibility(state.runaway) { RunawayBanner() }
     AnimatedVisibility(state.uv != null || state.lampsOffOwed) { UvBanner(state) }
     // Kept while it hides, so the text doesn't vanish before the banner has slid away.
     var alert by remember { mutableStateOf("") }
     state.robotAlert?.let { alert = it }
     AnimatedVisibility(state.robotAlert != null) { RobotAlertBanner(alert, onDismissAlert) }
-    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+}
+
+/** BETA, small and centred at the very top of every page: all that's left of the top line. */
+@Composable
+private fun BetaMark() {
+    Text(
+        "BETA",
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp),
+        color = RemoteTheme.status.beta,
+        fontSize = 9.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 2.sp,
+        textAlign = TextAlign.Center,
+        maxLines = 1,
+    )
 }
 
 /**
- * The top line of the app, on every page, on the page's own background: BETA on the left, and in
- * the middle whether the robot is there, in capitals: a dot, green while the robot answers and
- * orange while it doesn't, and its name (or what the app is doing about it). Tapping it opens
- * Settings, where the robot is.
+ * The line under the readings, with whether the robot is connected set into its middle: the
+ * rule runs from the left edge to the word and on from it to the right. A dot, green while the
+ * robot answers and orange while it doesn't, and in small capitals CONNECTED (with the robot's
+ * name once known) or what the app is doing about it. Tapping it opens Settings, where the robot is.
  */
 @Composable
-private fun StatusLine(state: RemoteState) {
+private fun ConnectionDivider(state: RemoteState) {
     val status = RemoteTheme.status
     val open = LocalOpenSettings.current
     val link = state.link
-    Box(
+    // On the darker page the hairline colour would vanish: the line takes the badge borders' grey.
+    val rule = MaterialTheme.colorScheme.outline
+    Row(
         Modifier
             .fillMaxWidth()
             .then(if (open != null) Modifier.clickable(onClickLabel = "Open the robot's settings", onClick = open) else Modifier)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(vertical = 4.dp)
+            .semantics(mergeDescendants = true) {},
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            "BETA",
-            modifier = Modifier.align(Alignment.CenterStart),
-            color = status.beta,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 2.sp,
-            maxLines = 1,
-        )
-        Row(
+        HorizontalDivider(Modifier.weight(1f), color = rule)
+        Spacer(Modifier.width(10.dp))
+        Box(
             Modifier
-                .align(Alignment.Center)
-                // Clear of BETA either side, so a long name stays centred and never runs into it.
-                .widthIn(max = 220.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier
-                    .size(8.dp)
-                    .background(if (state.connected) status.good else status.offline, CircleShape)
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                when {
-                    state.connected -> if (state.demo) "DEMO robot" else robotLabel(state)
-                    state.searching -> "Searching …"
-                    link is Link.Disconnected && link.lastError != null -> "Not connected"
-                    else -> "Connecting …"
-                }.uppercase(Locale.US),
-                color = if (state.connected) MaterialTheme.colorScheme.onSurface else status.offlineText,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.5.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
+                .size(6.dp)
+                .background(if (state.connected) status.good else status.offline, CircleShape)
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            when {
+                state.connected && state.demo -> "Connected · DEMO"
+                state.connected -> state.robotName?.let { "Connected · ${RobotName.short(it)}" } ?: "Connected"
+                state.searching -> "Searching …"
+                link is Link.Disconnected && link.lastError != null -> "Not connected"
+                else -> "Connecting …"
+            }.uppercase(Locale.US),
+            color = if (state.connected) MaterialTheme.colorScheme.onSurfaceVariant else status.offlineText,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.5.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.width(10.dp))
+        HorizontalDivider(Modifier.weight(1f), color = rule)
     }
 }
 
-/** A thin band at the top of every page, under the status line, while DEMO is on. */
+/** A thin band at the top of every page, under BETA, while DEMO is on. */
 @Composable
 private fun DemoStrip() {
     Text(

@@ -13,9 +13,8 @@ with the robot switched off.
 
 Two tabs, **Tasks** (GO TO CHARGER, the UV switch, the saved **disinfection tasks**, and
 **Disinfection Points**, which opens its own page; the app opens here) and **Settings** (below),
-and the **Map** page (the robot on its map, and the drive pad). A **status line** runs across
-the very top of every page, on the page's background (the purple DEMO band under it in DEMO):
-**BETA** on the left, in pastel blue, and in the middle whether the robot is there. The main page has no
+and the **Map** page (the robot on its map, and the drive pad). A small pastel-blue **BETA**
+sits centred at the very top of every page (the purple DEMO band under it in DEMO). The main page has no
 title bar: the robot's readings (the e-stop badge and the battery ring, then the speed; on the Map
 page, the map in use, whose name opens the **Maps** page) are the top of the page, pinned there on
 every page, and **STOP** is the red key in the middle of the dock's bar at the bottom (a full-width
@@ -31,15 +30,20 @@ pulses quickly in amber, and if the robot moves with none running (pushed, or a 
 the border stays amber. The **battery** is a ring the same size: the figure in the middle, and a
 green arc from the top, clockwise, that drains with the charge; orange at 20% and below, red at 10%.
 
-**The connection.** The middle of the status line is always on screen: a dot, green while the
-robot answers and orange while it doesn't, and in capitals the robot's name (or CONNECTING …,
-SEARCHING … or NOT CONNECTED, in orange). Not connected, the readings and the controls are
-greyed out too. Tapping the line opens Settings, where the robot is found, picked or its address typed in.
+**The connection** is set into the line under the readings, on every page: the rule runs from the
+left edge to it and on to the right. A dot, green while the robot answers and orange while it
+doesn't, and in small capitals CONNECTED (with the robot's name, like `CONNECTED · UV 3-07`), or
+CONNECTING …, SEARCHING … or NOT CONNECTED in orange. Not connected, the readings and the controls
+are greyed out too. Tapping the line opens Settings, where the robot is found, picked or its
+address typed in.
 
 **The dock.** On the left, in a container of its own, **Map** opens the Map page; then the bar:
 **Tasks**, **STOP**, **Settings**. Every button is the same size and shape, and none is filled but
-STOP: the open tab gets a frame in the accent round it, the shape of STOP, and its icon turns
-from outline to filled, its label bold, both in the accent.
+STOP. The open tab has an accent bar on the dock's top edge above it, the edge toward the page
+(nearly the button's width, its lower corners rounded like a tab's), and its icon turns from
+outline to filled, its label bold, both in the accent. On the Map page the bar is part of the card,
+so there is no edge: there the bar marks Drive while its pad is open, in the gap between the
+button and the pad above it. It means the same on both: this is what's open above.
 On the Map page **Map** becomes **Exit**, in orange, an arrow leaving a door to the left (back to
 the tab it was opened from; Tasks unless you were on Settings, and the phone's back does the same).
 The page is one piece: the map card (the map, and the pad when it's open) runs straight down into
@@ -49,7 +53,7 @@ map's own buttons, one each side so STOP stays in the middle:
 
 | On the Map page | Left of STOP | Right of STOP |
 |---|---|---|
-| Looking (and mapping) | **Drive** (the pad, under the map; framed while it's open) | **Edit** (menu) |
+| Looking (and mapping) | **Drive** (the pad, under the map; marked while it's open) | **Edit** (menu) |
 | Setting a position, drawing or removing a wall | **Cancel** | **Set here**, **Add wall** or **Remove** |
 
 While mapping, **Save** and **Discard** are on the map's *Scanning* badge.
@@ -332,7 +336,7 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
 ## Real-robot tests
 
 **First drive test.** Robot off the pile, ~1 m clear all round, physical e-stop in reach.
-1. Open the app: a green dot and the robot's name in the status line, the battery ring shows a figure, grey **E** badge.
+1. Open the app: CONNECTED and the robot's name in the line under the readings, the battery ring shows a figure, grey **E** badge.
 2. **Hold** Left for 2 s, let go: it should start turning within ~0.5 s, then ease to a stop
    within ~10°. Then Right, Back, Forward, and Turn 180° (a tap).
 3. Hold Forward and let go: note how far it runs on (~20 cm) and whether the mast rocks.
@@ -397,7 +401,7 @@ set up on the real robot:
 | Control | What the app should do |
 |---|---|
 | E-stop pressed | **E** badge solid red, driving blocked; mid-step, the robot stops |
-| Wi-Fi dropped | the status line's dot orange, NOT CONNECTED, after ~3 failed polls; driving blocked |
+| Wi-Fi dropped | NOT CONNECTED, orange, in the line under the readings after ~3 failed polls; driving blocked |
 | Obstacle ahead | next step accepted but never starts: "no motion seen" |
 | Robot goes to charge by itself | "moving, but not by this app"; STOP ends the trip for good |
 | Person in the way (during a trip) | robot waits 5 s then carries on; the trip stays locked |

@@ -247,7 +247,6 @@ internal fun mapDock(state: RemoteState, actions: RemoteActions, ui: MapUi, driv
     ) { drive.onOpenChange(!drive.open) }
     val edit = DockItem(
         R.drawable.ic_add_point, "Edit", "Edit the map",
-        selected = ui.menu,
         menu = { EditMenu(state, ui, drawable) },
     ) { ui.menu = true }
     return MapDock(start = listOf(driveItem), end = listOf(edit))
