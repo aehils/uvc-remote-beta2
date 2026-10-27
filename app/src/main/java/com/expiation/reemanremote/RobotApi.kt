@@ -52,6 +52,7 @@ class RobotApi private constructor(host: String, private val fake: FakeRobot?) {
     }
 
     private fun blockingRequest(method: String, path: String, json: String?, connectMs: Int, readMs: Int): Result {
+        if (!isLocalAddress(host)) return Result(false, -1, "", NOT_LOCAL)
         var c: HttpURLConnection? = null
         return try {
             c = URL("http://$host$path").openConnection() as HttpURLConnection
@@ -80,6 +81,22 @@ class RobotApi private constructor(host: String, private val fake: FakeRobot?) {
     companion object {
         fun demo(fake: FakeRobot) = RobotApi("demo", fake)
 
+        const val NOT_LOCAL = "not a local network address: enter the robot's IP, like 192.168.1.228"
+
+        /**
+         * Plain http is only sent to an IPv4 address on a local network (an optional :port is
+         * allowed), so a mistyped address can't send robot commands across the internet.
+         */
+        fun isLocalAddress(host: String): Boolean {
+            val port = host.substringAfter(':', "")
+            if (port.isNotEmpty() && port.toIntOrNull() !in 1..65535) return false
+            val octets = host.substringBefore(':').split('.')
+                .map { if (it.length in 1..3 && it.all(Char::isDigit)) it.toInt() else return false }
+            if (octets.size != 4 || octets.any { it > 255 }) return false
+            val (a, b) = octets
+            return a == 10 || (a == 172 && b in 16..31) || (a == 192 && b == 168) || (a == 169 && b == 254)
+        }
+
         private fun toResult(code: Int, body: String): Result {
             val ok = code in 200..299
             return Result(ok, code, body, if (ok) null else "HTTP $code $body")
@@ -89,10 +106,10 @@ class RobotApi private constructor(host: String, private val fake: FakeRobot?) {
             val m = e.message ?: e.javaClass.simpleName
             return when {
                 "CLEARTEXT" in m || "network security policy" in m ->
-                    "Android blocked plain http to this address. The app only allows 192.168.1.228 (see README)."
+                    "Android blocked plain http to this address (see network_security_config.xml)."
                 e is SocketTimeoutException -> "timed out: robot not answering"
                 e is ConnectException || e is NoRouteToHostException ->
-                    "can't reach robot: is the phone on the robot's Wi-Fi?"
+                    "can't reach robot: is the phone on the robot's network, and is this its address?"
                 else -> m
             }
         }

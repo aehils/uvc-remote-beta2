@@ -375,12 +375,17 @@ drive rules end to end: interlocks, the step lock, STOP, e-stop, Wi-Fi loss, hol
 
 ## Network
 
-- The phone must be on the robot's Wi-Fi (192.168.1.x). Turn mobile data off while testing.
-- Quick check: open `http://192.168.1.228` in the phone's browser; if the robot console loads,
-  the app can reach it.
-- Plain http is allowed **only** for `192.168.1.228`
-  (`app/src/main/res/xml/network_security_config.xml`). If the address changes, edit that file
-  and rebuild, or better, reserve the address on the router.
+- The phone must be on the same network as the robot. Turn mobile data off while testing.
+- Quick check: open `http://<robot address>` (e.g. `http://192.168.1.228`) in the phone's
+  browser; if the robot console loads, the app can reach it.
+- Plain http goes to **any local network address** (10.x, 172.16–31.x, 192.168.x, 169.254.x)
+  and nowhere else (`RobotApi.isLocalAddress`). If the robot's address changes, type the new one
+  in the robot pill's menu and tap Ping; no rebuild needed. Reserve the address on the router so
+  it stays put.
+- **After a router change** the robot must first be joined to the new Wi-Fi (from its own
+  screen), then its new address entered in the app. Separate 2.4 GHz and 5 GHz networks on one
+  router are fine as long as both are the same LAN: not a guest network, and with client/AP
+  isolation off. If in doubt, put the phone on the same band's network as the robot.
 
 ## Files
 
