@@ -31,9 +31,9 @@ the border stays amber. The **battery** is a ring the same size: the figure in t
 green arc from the top, clockwise, that drains with the charge; orange at 20% and below, red at 10%.
 
 **The connection** is set into the line under the readings, on every page: the rule runs from the
-left edge to it and on to the right. A dot, green while the robot answers and orange while it
-doesn't, and in small capitals CONNECTED (with the robot's name, like `CONNECTED · UV 3-07`), or
-CONNECTING …, SEARCHING … or NOT CONNECTED in orange. Not connected, the readings and the controls
+left edge to it and on to the right. In small capitals, CONNECTED in green, or CONNECTING …,
+SEARCHING … or NOT CONNECTED in orange: the colour says it. The robot's name, with a green or
+orange dot, is first in Settings. Not connected, the readings and the controls
 are greyed out too. Tapping the line opens Settings, where the robot is found, picked or its
 address typed in.
 
@@ -41,9 +41,9 @@ address typed in.
 **Tasks**, **STOP**, **Settings**. Every button is the same size and shape, and none is filled but
 STOP. The open tab has an accent bar on the dock's top edge above it, the edge toward the page
 (nearly the button's width, its lower corners rounded like a tab's), and its icon turns from
-outline to filled, its label bold, both in the accent. On the Map page the bar is part of the card,
-so there is no edge: there the bar marks Drive while its pad is open, in the gap between the
-button and the pad above it. It means the same on both: this is what's open above.
+outline to filled, its label bold, both in the accent. The Map page has no tabs and no edge (the
+bar is part of the card): there Drive shows it's on by its filled icon and accent label, and by
+the pad itself, rising above it.
 On the Map page **Map** becomes **Exit**, in orange, an arrow leaving a door to the left (back to
 the tab it was opened from; Tasks unless you were on Settings, and the phone's back does the same).
 The page is one piece: the map card (the map, and the pad when it's open) runs straight down into
@@ -53,7 +53,7 @@ map's own buttons, one each side so STOP stays in the middle:
 
 | On the Map page | Left of STOP | Right of STOP |
 |---|---|---|
-| Looking (and mapping) | **Drive** (the pad, under the map; marked while it's open) | **Edit** (menu) |
+| Looking (and mapping) | **Drive** (the pad, under the map; its icon filled while it's open) | **Edit** (menu) |
 | Setting a position, drawing or removing a wall | **Cancel** | **Set here**, **Add wall** or **Remove** |
 
 While mapping, **Save** and **Discard** are on the map's *Scanning* badge.
@@ -66,14 +66,14 @@ arrow keeps its press. Closed, the handle still says what the robot is doing. Th
 Settings tabs have no pad. Starting a map pulls it up by itself.
 
 **Settings** is grouped by subject, each row opening a page or a dialog:
-- **Records: Activity log**, first (its row shows the latest line). The log as a page of its own,
-  newest first, selectable for copying.
-- **Disinfection: Disinfection timing**, the UV time and the exit delay (as the tune button on the
-  Disinfection Points page).
-- **Robot**: the robot the app talks to (its name, like `UV 3-07`, or DEMO) with a connection
+- **Robot**, first: the robot the app talks to (its name, like `UV 3-07`, or DEMO) with a connection
   light, green answering, orange not. While it isn't answering: the robots the app found, to
   pick from, **Find robots**, and an address entry (folded away). Then **Robot information**: its
   full ID, address and firmware; battery, charger and e-stop; mode, map and points.
+- **Records: Activity log** (its row shows the latest line). The log as a page of its own,
+  newest first, selectable for copying.
+- **Disinfection: Disinfection timing**, the UV time and the exit delay (as the tune button on the
+  Disinfection Points page).
 - **DEMO**: the **DEMO mode** switch, and, in DEMO, **DEMO controls**.
 - **Mapping: Maps**, the Maps page.
 
@@ -336,7 +336,7 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
 ## Real-robot tests
 
 **First drive test.** Robot off the pile, ~1 m clear all round, physical e-stop in reach.
-1. Open the app: CONNECTED and the robot's name in the line under the readings, the battery ring shows a figure, grey **E** badge.
+1. Open the app: a green CONNECTED in the line under the readings, the battery ring shows a figure, grey **E** badge.
 2. **Hold** Left for 2 s, let go: it should start turning within ~0.5 s, then ease to a stop
    within ~10°. Then Right, Back, Forward, and Turn 180° (a tap).
 3. Hold Forward and let go: note how far it runs on (~20 cm) and whether the mast rocks.

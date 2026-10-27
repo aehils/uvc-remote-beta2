@@ -62,12 +62,13 @@ import androidx.compose.ui.unit.max
 import androidx.compose.ui.unit.sp
 
 /**
- * One button of the dock: an icon over a short label. [selected] means "this is what's open
- * above": the tab whose page is on screen, or Drive while its pad is. It puts an accent bar on
- * the edge between the button and the page (see [EdgeMark]), and swaps the outline icon for its
- * filled twin, [selectedIcon], with the label in bold, both in the accent. No fill, no frame. [prominent] (a tool's tick) is tinted with
- * the accent, never solid: STOP is the dock's only solid fill. [accent] colours the icon and the
- * label, for Exit. [menu] is drawn anchored to the button, for a DropdownMenu it opens.
+ * One button of the dock: an icon over a short label. [selected] means "this is what's open":
+ * the tab whose page is on screen, or Drive while its pad is. It swaps the outline icon for its
+ * filled twin, [selectedIcon], with the label in bold, both in the accent; a tab also gets an
+ * accent bar on the dock's top edge above it, the edge toward its page (see [drawEdgeMark]).
+ * [prominent] (a tool's tick) is tinted with the accent, never solid: STOP is the dock's only
+ * solid fill. [accent] colours the icon and the label, for Exit. [menu] is drawn anchored to the
+ * button, for a DropdownMenu it opens.
  */
 internal class DockItem(
     val icon: Int,
@@ -169,7 +170,7 @@ internal fun JoinedDock(
                         .padding(start = DOCK_INSET, end = DOCK_INSET, top = MODULE_GAP + DOCK_INSET, bottom = DOCK_INSET),
                     horizontalArrangement = Arrangement.spacedBy(DOCK_INSET),
                 ) {
-                    BarButtons(start, stop, end, widths, EdgeMark.Neck)
+                    BarButtons(start, stop, end, widths)
                 }
             }
         }
@@ -186,42 +187,25 @@ internal fun JoinedDock(
 
 /** The bar's buttons, STOP in the middle. */
 @Composable
-private fun RowScope.BarButtons(
-    start: List<DockItem>,
-    stop: DockStop,
-    end: List<DockItem>,
-    widths: DockWidths,
-    edge: EdgeMark = EdgeMark.Container,
-) {
-    start.forEach { DockButton(it, Modifier.weight(1f), edge) }
+private fun RowScope.BarButtons(start: List<DockItem>, stop: DockStop, end: List<DockItem>, widths: DockWidths) {
+    start.forEach { DockButton(it, Modifier.weight(1f)) }
     StopKey(stop, Modifier.width(widths.stop))
-    end.forEach { DockButton(it, Modifier.weight(1f), edge) }
+    end.forEach { DockButton(it, Modifier.weight(1f)) }
 }
 
 /**
- * Where a selected button's bar goes: on the edge between the button and the page above.
- * [Container]: the dock's own top edge, flush with it, its lower corners rounded, like a tab's.
- * [Neck]: on the Map page the bar is part of the card, so there is no edge; the bar sits in the
- * gap between the button and what it opened (the pad), rounded all round.
+ * The open tab's bar: on the dock's top edge above the tab, flush with it, the edge toward the
+ * page; nearly the button's width, its lower corners rounded like a tab's.
  */
-internal enum class EdgeMark { Container, Neck }
-
-private fun DrawScope.drawEdgeMark(edge: EdgeMark, color: Color) {
+private fun DrawScope.drawEdgeMark(color: Color) {
     val h = MARK_HEIGHT.toPx()
     val left = MARK_SIDE.toPx()
-    val right = size.width - left
+    val top = -DOCK_INSET.toPx()
     val r = CornerRadius(h, h)
-    val mark = when (edge) {
-        EdgeMark.Container -> {
-            val top = -DOCK_INSET.toPx()
-            RoundRect(Rect(left, top, right, top + h), topLeft = CornerRadius.Zero, topRight = CornerRadius.Zero, bottomRight = r, bottomLeft = r)
-        }
-        // Halfway up the gap above the button.
-        EdgeMark.Neck -> {
-            val top = -(MODULE_GAP + DOCK_INSET).toPx() / 2 - h / 2
-            RoundRect(Rect(left, top, right, top + h), r)
-        }
-    }
+    val mark = RoundRect(
+        Rect(left, top, size.width - left, top + h),
+        topLeft = CornerRadius.Zero, topRight = CornerRadius.Zero, bottomRight = r, bottomLeft = r,
+    )
     drawPath(Path().apply { addRoundRect(mark) }, color)
 }
 
@@ -292,7 +276,7 @@ private fun DockContainer(modifier: Modifier, content: @Composable RowScope.() -
 }
 
 @Composable
-private fun DockButton(item: DockItem, modifier: Modifier, edge: EdgeMark = EdgeMark.Container) {
+private fun DockButton(item: DockItem, modifier: Modifier) {
     val colors = MaterialTheme.colorScheme
     val faded = colors.onSurface.copy(alpha = 0.38f)
     val fill = when {
@@ -314,13 +298,15 @@ private fun DockButton(item: DockItem, modifier: Modifier, edge: EdgeMark = Edge
         item.selected -> colors.primary
         else -> colors.onSurfaceVariant
     }
-    val marked = item.selected && item.enabled && !item.prominent
+    // Tabs only: on the Map page the bar is part of the card, so there is no edge to mark, and
+    // Drive's pad, rising above it, says it's open.
+    val marked = item.isTab && item.selected && item.enabled
     val markColor = colors.primary
     Box(
         modifier
             .fillMaxHeight()
             // Drawn above the button, in the inset between it and the page: the container clips it there.
-            .drawBehind { if (marked) drawEdgeMark(edge, markColor) }
+            .drawBehind { if (marked) drawEdgeMark(markColor) }
     ) {
         Column(
             Modifier

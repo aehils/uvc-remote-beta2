@@ -399,9 +399,9 @@ private fun BetaMark() {
 
 /**
  * The line under the readings, with whether the robot is connected set into its middle: the
- * rule runs from the left edge to the word and on from it to the right. A dot, green while the
- * robot answers and orange while it doesn't, and in small capitals CONNECTED (with the robot's
- * name once known) or what the app is doing about it. Tapping it opens Settings, where the robot is.
+ * rule runs from the left edge to the word and on from it to the right. In small capitals,
+ * CONNECTED in green, or what the app is doing about it in orange: the colour says it, so there
+ * is no dot (that, and the robot's name, are in Settings). Tapping it opens Settings.
  */
 @Composable
 private fun ConnectionDivider(state: RemoteState) {
@@ -420,21 +420,14 @@ private fun ConnectionDivider(state: RemoteState) {
     ) {
         HorizontalDivider(Modifier.weight(1f), color = rule)
         Spacer(Modifier.width(10.dp))
-        Box(
-            Modifier
-                .size(6.dp)
-                .background(if (state.connected) status.good else status.offline, CircleShape)
-        )
-        Spacer(Modifier.width(6.dp))
         Text(
             when {
-                state.connected && state.demo -> "Connected · DEMO"
-                state.connected -> state.robotName?.let { "Connected · ${RobotName.short(it)}" } ?: "Connected"
+                state.connected -> "Connected"
                 state.searching -> "Searching …"
                 link is Link.Disconnected && link.lastError != null -> "Not connected"
                 else -> "Connecting …"
             }.uppercase(Locale.US),
-            color = if (state.connected) MaterialTheme.colorScheme.onSurfaceVariant else status.offlineText,
+            color = if (state.connected) status.goodText else status.offlineText,
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = 1.5.sp,
@@ -1739,7 +1732,7 @@ private fun DemoToggle(title: String, detail: String, on: Boolean, onToggle: () 
 
 /**
  * Settings: what isn't running the robot, grouped by subject, each row opening a page or a
- * dialog. The activity log comes first: it is what's looked at most, after something odd.
+ * dialog. The robot comes first (its name, with the connection light), then the activity log.
  */
 @Composable
 private fun SettingsTab(
@@ -1759,6 +1752,14 @@ private fun SettingsTab(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        // The robot first: which one the app talks to, and whether it's there.
+        SectionLabel("Robot")
+        RobotConnection(state, actions)
+        SettingsItem(
+            R.drawable.ic_ping, "Robot information",
+            "ID, firmware, power and navigation",
+            onOpenRobotInfo,
+        )
         SectionLabel("Records")
         // The newest line, without its time: what happened last.
         SettingsItem(
@@ -1768,13 +1769,6 @@ private fun SettingsTab(
         )
         SectionLabel("Disinfection")
         SettingsItem(R.drawable.ic_tune, "Disinfection timing", "${uv.minutes} min UV · ${uv.delaySeconds} s exit delay") { editingUv = true }
-        SectionLabel("Robot")
-        RobotConnection(state, actions)
-        SettingsItem(
-            R.drawable.ic_ping, "Robot information",
-            "ID, firmware, power and navigation",
-            onOpenRobotInfo,
-        )
         SectionLabel("DEMO")
         Panel {
             // Never switch robots mid-step: the controller refuses, so the switch is held too.
@@ -1817,8 +1811,8 @@ private fun SettingsTab(
 }
 
 /**
- * The robot the app talks to, at the top of Settings' Robot section: its name and a connection
- * light (green answering, orange not). While it isn't answering: what the last search found, the
+ * The robot the app talks to, first in Settings: its name and a connection light (green
+ * answering, orange not). While it isn't answering: what the last search found, the
  * robots to pick, Find robots, and the address entry (folded away: staff pick robots by name).
  */
 @Composable

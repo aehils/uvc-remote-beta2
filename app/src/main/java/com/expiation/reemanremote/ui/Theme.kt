@@ -94,6 +94,7 @@ private val DarkColors = darkColorScheme(
 @Immutable
 data class StatusColors(
     val good: Color, val goodContainer: Color,
+    val goodText: Color, // the same, for small words on the page (CONNECTED): darker, to read on the darker page
     val warn: Color, val warnContainer: Color,
     val danger: Color, val dangerContainer: Color,
     val offline: Color, // the connection dot while the robot is not answering, and the low battery ring
@@ -107,6 +108,7 @@ data class StatusColors(
 
 private val LightStatus = StatusColors(
     good = Color(0xFF2E7A4E), goodContainer = Color(0xFFDCEDE2),
+    goodText = Color(0xFF276B44), // 4.9:1 on the page
     warn = Color(0xFF94661C), warnContainer = Color(0xFFF3E7CF),
     danger = Color(0xFFA8392F), dangerContainer = Color(0xFFF6DEDA),
     offline = Color(0xFFB4612A),
@@ -120,6 +122,7 @@ private val LightStatus = StatusColors(
 
 private val DarkStatus = StatusColors(
     good = Color(0xFF7BC496), goodContainer = Color(0xFF1B3125),
+    goodText = Color(0xFF7BC496), // 9.4:1 on the page already
     warn = Color(0xFFD6A75E), warnContainer = Color(0xFF382C17),
     danger = Color(0xFFE0857B), dangerContainer = Color(0xFF3D1E1B),
     offline = Color(0xFFD48A5A),

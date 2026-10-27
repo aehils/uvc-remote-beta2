@@ -106,7 +106,7 @@ connection that drops mid-drive makes the robot carry on for about 1.2 s before 
 - [ ] Both robot computers have fixed addresses (DHCP reservations); ROS and Android addresses recorded privately
 - [ ] Only the robot's network is saved on the robot
 - [ ] `http://<ROS address>` loads the robot's console in a staff phone's browser
-- [ ] The app connects (CONNECTED and the robot's name in the line under the readings) from each staff phone
+- [ ] The app connects (a green CONNECTED in the line under the readings, and the robot's name with a green dot first in Settings) from each staff phone
 - [ ] The robot stays connected while it drives its routes, past every access point
 - [ ] The charging pile is saved on the map, and GO TO CHARGER works (with Confirm on the robot)
 - [ ] Staff know where the physical e-stop is
