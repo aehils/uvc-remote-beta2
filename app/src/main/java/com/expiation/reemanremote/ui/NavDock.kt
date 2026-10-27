@@ -12,7 +12,6 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
@@ -35,7 +34,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -48,12 +46,9 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
@@ -63,6 +58,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -92,80 +88,75 @@ internal class DockModule(
     val onClick: () -> Unit,
 )
 
+/** STOP in the dock's bar, between its [start] and [end] buttons. */
+internal class DockStop(val moving: Boolean, val onStop: () -> Unit)
+
+/** What the bar carries: buttons, with STOP between them or not. */
+private class DockBar(val start: List<DockItem>, val stop: DockStop?, val end: List<DockItem>) {
+    // Names the set, so a new set animates in and the same buttons in a new state don't.
+    val key get() = (start.map { it.label } + listOfNotNull(stop?.let { "STOP" }) + end.map { it.label }).joinToString("|")
+}
+
 /**
- * The bottom of the main page: the module tile on the left, then one bar with STOP in it.
- * STOP sits at the centre of the screen whatever the bar carries, so the thumb finds it in the
- * same place on every page (the other pages' STOP bar is centred too). The bar's buttons
- * either side of it change with the page: a new set animates in; one whose buttons only
- * change state (selected, enabled) doesn't.
+ * The bottom of the main page: the module tile on the left, then the bar. Every slot of the bar
+ * is the same width, STOP's too, so with STOP it sits in the middle of the bar. On the Map page
+ * STOP is in the middle of the drive pad instead, and the bar has [stop] null.
  */
 @Composable
-internal fun NavDock(module: DockModule, start: List<DockItem>, end: List<DockItem>, moving: Boolean, onStop: () -> Unit) {
+internal fun NavDock(module: DockModule, start: List<DockItem>, end: List<DockItem>, stop: DockStop?) {
     Surface(color = MaterialTheme.colorScheme.background) {
-        Box(
+        Row(
             Modifier
                 .fillMaxWidth()
                 .windowInsetsPadding(WindowInsets.navigationBars)
                 .padding(start = DOCK_GUTTER, end = DOCK_GUTTER, top = 8.dp, bottom = 12.dp)
-                .height(DOCK_HEIGHT)
+                .height(DOCK_HEIGHT),
+            horizontalArrangement = Arrangement.spacedBy(MODULE_GAP),
         ) {
-            // The bar behind everything right of the module: one piece, so STOP sits in it, not on it.
-            Box(
+            ModuleTile(module, Modifier.width(MODULE_WIDTH).fillMaxHeight())
+            DockSlots(
+                DockBar(start, stop, end),
                 Modifier
-                    .fillMaxSize()
-                    .padding(start = MODULE_WIDTH + MODULE_GAP)
-                    .dockSurface(DOCK_SHAPE)
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .dockSurface(MaterialTheme.colorScheme.surface),
             )
-            Row(Modifier.fillMaxSize()) {
-                // Both sides of STOP take the same width, which is what keeps it centred.
-                Row(Modifier.weight(1f).fillMaxHeight()) {
-                    ModuleTile(module, Modifier.width(MODULE_WIDTH).fillMaxHeight())
-                    Spacer(Modifier.width(MODULE_GAP))
-                    DockSide(start, Modifier.weight(1f).fillMaxHeight())
-                }
-                StopKey(moving, onStop, Modifier.width(STOP_WIDTH).fillMaxHeight())
-                DockSide(end, Modifier.weight(1f).fillMaxHeight())
-            }
         }
     }
 }
 
-/** The dock's raised look: a soft shadow (it shows in the light theme), the fill, and a hairline (it shows in the dark). */
+/** The dock's look: flat, a fill and a hairline, nothing raised. */
 @Composable
-private fun Modifier.dockSurface(shape: Shape, color: Color = MaterialTheme.colorScheme.surface): Modifier = this
-    .shadow(10.dp, shape, ambientColor = DOCK_SHADOW, spotColor = DOCK_SHADOW)
-    .background(color, shape)
-    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
+private fun Modifier.dockSurface(color: Color): Modifier = this
+    .clip(DOCK_SHAPE)
+    .background(color)
+    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, DOCK_SHAPE)
 
-private fun List<DockItem>.dockKey() = joinToString("|") { it.label }
-
-/** Buttons on one side of STOP, sharing its width equally. */
+/** The bar's slots, all one width. */
 @Composable
-private fun DockSide(items: List<DockItem>, modifier: Modifier) {
-    // Animated by the buttons' labels, not the list: the same buttons in a new state (a tab
-    // selected, a button enabled) are the same set, and must not fade in again on every frame
-    // the robot's readings change.
-    val key = items.dockKey()
-    val latest by rememberUpdatedState(items)
-    val last = remember { HashMap<String, List<DockItem>>() } // for the set fading out
-    last[key] = items
+private fun DockSlots(bar: DockBar, modifier: Modifier) {
+    // Animated by the set's name, not the bar itself: the same buttons in a new state (a tab
+    // selected, a button enabled) must not fade in again on every frame the readings change.
+    val key = bar.key
+    val latest by rememberUpdatedState(bar)
+    val last = remember { HashMap<String, DockBar>() } // for the set fading out
+    last[key] = bar
     AnimatedContent(
         targetState = key,
         modifier = modifier,
-        transitionSpec = {
-            (fadeIn(tween(220, delayMillis = 70)) + scaleIn(tween(260, delayMillis = 70), initialScale = 0.9f))
-                .togetherWith(fadeOut(tween(90)))
-        },
+        transitionSpec = { fadeIn(tween(200, delayMillis = 60)).togetherWith(fadeOut(tween(90))) },
         label = "dock",
     ) { shown ->
-        val set = latest.takeIf { it.dockKey() == shown } ?: last[shown].orEmpty()
+        val b = latest.takeIf { it.key == shown } ?: last[shown] ?: return@AnimatedContent
         Row(
             Modifier
                 .fillMaxSize()
-                .padding(horizontal = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .padding(DOCK_INSET),
+            horizontalArrangement = Arrangement.spacedBy(DOCK_INSET),
         ) {
-            set.forEach { DockButton(it, Modifier.weight(1f)) }
+            b.start.forEach { DockButton(it, Modifier.weight(1f)) }
+            b.stop?.let { StopKey(it.moving, it.onStop, Modifier.weight(1f).fillMaxHeight()) }
+            b.end.forEach { DockButton(it, Modifier.weight(1f)) }
         }
     }
 }
@@ -175,7 +166,7 @@ private fun DockButton(item: DockItem, modifier: Modifier) {
     val colors = MaterialTheme.colorScheme
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) 0.9f else 1f, spring(stiffness = Spring.StiffnessMedium), label = "press")
+    val scale by animateFloatAsState(if (pressed) 0.94f else 1f, spring(stiffness = Spring.StiffnessMedium), label = "press")
     val faded = colors.onSurface.copy(alpha = 0.38f)
     val fill by animateColorAsState(
         when {
@@ -195,24 +186,17 @@ private fun DockButton(item: DockItem, modifier: Modifier) {
         },
         label = "ink",
     )
-    val labelInk = when {
-        !item.enabled -> faded
-        item.prominent -> colors.onPrimary
-        item.selected -> colors.onSurface
-        else -> colors.onSurfaceVariant
-    }
     Box(modifier.fillMaxHeight(), contentAlignment = Alignment.Center) {
+        // Selected or prominent, the whole slot fills, the same shape as STOP beside it.
         Column(
             Modifier
                 .fillMaxSize()
-                .padding(vertical = DOCK_INSET, horizontal = 2.dp)
                 .graphicsLayer {
                     scaleX = scale
                     scaleY = scale
                 }
                 .clip(INNER_SHAPE)
-                // A prominent button is filled whole, like STOP; the others light a pill behind the icon.
-                .background(if (item.prominent) fill else Color.Transparent)
+                .background(fill)
                 .clickable(
                     interactionSource = interaction,
                     indication = LocalIndication.current,
@@ -228,21 +212,13 @@ private fun DockButton(item: DockItem, modifier: Modifier) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Box(
-                Modifier
-                    .height(30.dp)
-                    .width(52.dp)
-                    .background(if (item.prominent) Color.Transparent else fill, CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(painterResource(item.icon), contentDescription = null, modifier = Modifier.size(22.dp), tint = ink)
-            }
-            Spacer(Modifier.height(2.dp))
+            Icon(painterResource(item.icon), contentDescription = null, modifier = Modifier.size(22.dp), tint = ink)
+            Spacer(Modifier.height(4.dp))
             Text(
                 item.label,
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = if (item.selected || item.prominent) FontWeight.SemiBold else FontWeight.Medium,
-                color = labelInk,
+                color = ink,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -260,17 +236,16 @@ private fun ModuleTile(module: DockModule, modifier: Modifier) {
     val colors = MaterialTheme.colorScheme
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) 0.93f else 1f, spring(stiffness = Spring.StiffnessMedium), label = "press")
-    val container by animateColorAsState(if (module.active) colors.surface else colors.primaryContainer, tween(260), label = "module")
-    val ink by animateColorAsState(if (module.active) colors.onSurface else colors.onPrimaryContainer, tween(260), label = "moduleInk")
+    val scale by animateFloatAsState(if (pressed) 0.95f else 1f, spring(stiffness = Spring.StiffnessMedium), label = "press")
+    val container by animateColorAsState(if (module.active) colors.surface else colors.primaryContainer, tween(220), label = "module")
+    val ink by animateColorAsState(if (module.active) colors.onSurface else colors.onPrimaryContainer, tween(220), label = "moduleInk")
     Box(
         modifier
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
-            .dockSurface(DOCK_SHAPE, container)
-            .clip(DOCK_SHAPE)
+            .dockSurface(container)
             .clickable(
                 interactionSource = interaction,
                 indication = LocalIndication.current,
@@ -282,14 +257,11 @@ private fun ModuleTile(module: DockModule, modifier: Modifier) {
     ) {
         AnimatedContent(
             targetState = module.icon to module.label,
-            transitionSpec = {
-                (fadeIn(tween(200, delayMillis = 60)) + scaleIn(tween(240, delayMillis = 60), initialScale = 0.8f))
-                    .togetherWith(fadeOut(tween(90)))
-            },
+            transitionSpec = { fadeIn(tween(200, delayMillis = 60)).togetherWith(fadeOut(tween(90))) },
             label = "moduleContent",
         ) { (icon, label) ->
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(painterResource(icon), contentDescription = null, modifier = Modifier.size(24.dp), tint = ink)
+                Icon(painterResource(icon), contentDescription = null, modifier = Modifier.size(22.dp), tint = ink)
                 Spacer(Modifier.height(4.dp))
                 Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = ink, maxLines = 1)
             }
@@ -298,21 +270,27 @@ private fun ModuleTile(module: DockModule, modifier: Modifier) {
 }
 
 /**
- * STOP, set into the bar. While the robot moves a ring pulses round it, so it is found fastest
- * then. A firm haptic tick confirms the press.
+ * STOP: in the dock's bar, or in the middle of the drive pad on the Map page. Flat red, filling
+ * its slot exactly, so it lines up with the buttons beside it. While the robot moves a white
+ * outline pulses inside its edge, so it is found fastest then. A firm haptic tick confirms the press.
  */
 @Composable
-private fun StopKey(moving: Boolean, onStop: () -> Unit, modifier: Modifier) {
-    val stop = RemoteTheme.status.stop
+internal fun StopKey(
+    moving: Boolean,
+    onStop: () -> Unit,
+    modifier: Modifier,
+    shape: Shape = INNER_SHAPE,
+    fontSize: TextUnit = 15.sp,
+) {
     val haptics = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) 0.94f else 1f, spring(stiffness = Spring.StiffnessMedium), label = "press")
+    val scale by animateFloatAsState(if (pressed) 0.95f else 1f, spring(stiffness = Spring.StiffnessMedium), label = "press")
     // Only animates while moving, so an idle robot costs no frames.
     val ring = if (moving) {
         val pulse by rememberInfiniteTransition(label = "stop").animateFloat(
-            initialValue = 0.2f,
-            targetValue = 0.8f,
+            initialValue = 0.15f,
+            targetValue = 0.85f,
             animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
             label = "ring",
         )
@@ -320,17 +298,13 @@ private fun StopKey(moving: Boolean, onStop: () -> Unit, modifier: Modifier) {
     } else 0f
     Box(
         modifier
-            .padding(vertical = 2.dp)
-            .border(2.5.dp, stop.copy(alpha = ring), RING_SHAPE)
-            .padding(4.dp)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
-            .shadow(4.dp, INNER_SHAPE, ambientColor = stop, spotColor = stop)
-            // A touch lighter at the top: the key looks pressable, not painted on.
-            .background(Brush.verticalGradient(listOf(lerp(stop, Color.White, 0.12f), stop)), INNER_SHAPE)
-            .clip(INNER_SHAPE)
+            .clip(shape)
+            .background(RemoteTheme.status.stop)
+            .border(2.dp, Color.White.copy(alpha = ring), shape)
             .clickable(
                 interactionSource = interaction,
                 indication = LocalIndication.current,
@@ -342,18 +316,15 @@ private fun StopKey(moving: Boolean, onStop: () -> Unit, modifier: Modifier) {
             },
         contentAlignment = Alignment.Center,
     ) {
-        Text("STOP", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
+        Text("STOP", color = Color.White, fontSize = fontSize, fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
     }
 }
 
 private val DOCK_HEIGHT = 72.dp
 private val DOCK_GUTTER = 12.dp
 private val MODULE_WIDTH = 64.dp
-private val MODULE_GAP = 6.dp
-private val STOP_WIDTH = 80.dp
+private val MODULE_GAP = 8.dp
 private val DOCK_INSET = 6.dp
-// Nested corners stay concentric: the inner radius is the outer one less the inset.
-private val DOCK_SHAPE = RoundedCornerShape(24.dp)
-private val RING_SHAPE = RoundedCornerShape(22.dp)
-private val INNER_SHAPE = RoundedCornerShape(18.dp)
-private val DOCK_SHADOW = Color.Black.copy(alpha = 0.18f)
+// The app's card radius outside; inside, the outer radius less the inset, so the corners nest.
+private val DOCK_SHAPE = RoundedCornerShape(14.dp)
+private val INNER_SHAPE = RoundedCornerShape(8.dp)

@@ -3,16 +3,11 @@ package com.expiation.reemanremote.ui
 import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -200,14 +195,14 @@ internal class MapUi(tool: MapTool = MapTool.LOOK) {
 @Composable
 internal fun rememberMapUi(): MapUi = rememberSaveable(saver = MapUi.Saver) { MapUi() }
 
-/** The Map page's buttons either side of STOP in the dock. */
+/** The Map page's buttons in the dock. */
 internal class MapDock(val start: List<DockItem>, val end: List<DockItem>)
 
 /**
- * The dock on the Map page. Looking: Drive (the pad) left of STOP; Add and Position right of it,
- * Save in place of Position while mapping. With a tool in hand: Cancel, and the tool's tick.
+ * The dock on the Map page, whose STOP is in the middle of the drive pad. Looking: Add and
+ * Position, Save in place of Position while mapping. With a tool in hand: Cancel, and the tool's tick.
  */
-internal fun mapDock(state: RemoteState, actions: RemoteActions, ui: MapUi, drive: DriveSheetState): MapDock {
+internal fun mapDock(state: RemoteState, actions: RemoteActions, ui: MapUi): MapDock {
     if (ui.tool != MapTool.LOOK) {
         val confirm = when (ui.tool) {
             MapTool.PLACE -> DockItem(
@@ -240,11 +235,6 @@ internal fun mapDock(state: RemoteState, actions: RemoteActions, ui: MapUi, driv
         )
     }
     val drawable = state.mapImage?.placeable == true
-    val driveItem = DockItem(
-        R.drawable.ic_tab_remote, "Drive",
-        if (drive.open) "Hide the drive controls" else "Show the drive controls",
-        selected = drive.open,
-    ) { drive.onOpenChange(!drive.open) }
     val add = DockItem(
         R.drawable.ic_add_point, "Add", "Add to the map",
         selected = ui.menu,
@@ -258,7 +248,7 @@ internal fun mapDock(state: RemoteState, actions: RemoteActions, ui: MapUi, driv
             enabled = state.canStartMapping && drawable,
         ) { ui.use(MapTool.PLACE) }
     }
-    return MapDock(start = listOf(driveItem), end = listOf(add, last))
+    return MapDock(start = listOf(add), end = listOf(last))
 }
 
 /** The Add button's menu: what to mark on the map. */
@@ -308,13 +298,13 @@ private fun AddMenu(state: RemoteState, ui: MapUi, drawable: Boolean) {
 
 /**
  * The Map page: the robot on its map (or, while mapping, the scan as it grows) with the saved
- * points, the charging pile and the virtual walls, and, under it, the drive pad when the dock's
- * Drive button is on. The page's buttons are in the dock ([mapDock]): Add marks a disinfection
- * point or the charging pile where the robot stands, or draws or removes a virtual wall; while
- * mapping these wait in the app and are saved with the map. Mapping pulls the pad up by itself.
+ * points, the charging pile and the virtual walls, and, under it, the drive pad with STOP in its
+ * middle (the dock has none here, so the pad is always on screen). The page's buttons are in the
+ * dock ([mapDock]): Add marks a disinfection point or the charging pile where the robot stands,
+ * or draws or removes a virtual wall; while mapping these wait in the app and are saved with the map.
  */
 @Composable
-internal fun MapTab(state: RemoteState, actions: RemoteActions, ui: MapUi, drive: DriveSheetState, modifier: Modifier) {
+internal fun MapTab(state: RemoteState, actions: RemoteActions, ui: MapUi, modifier: Modifier) {
     // The robot's pose and the map image are only read while a map is on screen.
     val onVisible by rememberUpdatedState(actions.onMapVisible)
     DisposableEffect(Unit) {
@@ -353,7 +343,7 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, ui: MapUi, drive
     val image = state.mapImage
     val layers = mapLayers(state)
     val drawable = image?.placeable == true
-    val shape = RoundedCornerShape(20.dp)
+    val shape = RoundedCornerShape(14.dp)
     Column(
         modifier.padding(start = 12.dp, end = 12.dp, top = 10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -434,9 +424,9 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, ui: MapUi, drive
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .padding(10.dp)
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(8.dp))
                         .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
-                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
                         .clickable(onClickLabel = "Hide") { note = null }
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     style = MaterialTheme.typography.bodySmall,
@@ -444,13 +434,7 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, ui: MapUi, drive
                 )
             }
         }
-        AnimatedVisibility(
-            drive.open,
-            enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(),
-            exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(),
-        ) {
-            DrivePanel(state, actions)
-        }
+        DrivePanel(state, actions)
     }
 
     if (ui.adding) {
@@ -541,7 +525,7 @@ private fun MappingBadge(extending: Boolean, canDiscard: Boolean, onDiscard: () 
         animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
         label = "dot",
     )
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(8.dp)
     Row(
         modifier
             .clip(shape)
@@ -571,7 +555,7 @@ private fun MappingBadge(extending: Boolean, canDiscard: Boolean, onDiscard: () 
 /** A small floating button over the map. */
 @Composable
 private fun MapChipButton(label: String, onClickLabel: String, modifier: Modifier, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(8.dp)
     Text(
         label,
         modifier = modifier
