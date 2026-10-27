@@ -150,11 +150,13 @@ internal fun JoinedDock(
                 .background(MaterialTheme.colorScheme.surface)
                 .border(1.dp, MaterialTheme.colorScheme.outlineVariant, piece)
         ) {
+            // A deeper lip at the bottom, where the card turns into the cut-out: a real frame under
+            // the map there, not a sliver. The sides and top keep the buttons' inset.
             Box(
                 Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(DOCK_INSET)
+                    .padding(start = DOCK_INSET, end = DOCK_INSET, top = DOCK_INSET, bottom = CARD_LIP)
             ) { content() }
             Row(
                 Modifier
@@ -391,6 +393,7 @@ private val DOCK_SHAPE = RoundedCornerShape(DOCK_RADIUS)
 // The cut-out's inside corner wraps Exit's corner at the gap's distance: concentric with it, so
 // the gap is the same all the way round and the two pieces read as fitting together.
 private val NOTCH_FILLET = DOCK_RADIUS + MODULE_GAP
+private val CARD_LIP = 12.dp // the Map page card's frame below the map: twice the inset
 private val MARK_HEIGHT = 3.dp
 private val MARK_SIDE = 6.dp // the bar runs nearly the button's width: a line on the edge, not a puck
 private val INNER_SHAPE = RoundedCornerShape(8.dp)
