@@ -22,7 +22,8 @@ import java.net.Inet4Address
  *
  * It also follows the phone's Wi-Fi. Requests go out over Wi-Fi even when mobile data is on (the
  * robot's Wi-Fi often has no internet, so Android would send them over mobile data), and when
- * the robot stops answering, the controller searches the Wi-Fi for it (see [RobotFinder]).
+ * the robot stops answering, the controller searches the Wi-Fi for it: by its name first (see
+ * [Mdns]), then at every address it has had, then across the phone's network (see [RobotFinder]).
  */
 class RemoteViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -60,7 +61,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         val demo = prefs.getBoolean(KEY_DEMO, emulatorDefault)
         controller = DriveController(
             viewModelScope, RobotApi(host), FakeRobot(), demo,
-            search = ::searchWifi, robotMap = prefs.getString(KEY_ROBOT_MAP, null),
+            search = ::searchWifi, robotName = prefs.getString(KEY_ROBOT_NAME, null),
         )
         val defaults = UvSettings()
         controller.setUvSettings(
@@ -70,10 +71,19 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         if (emulatorDefault) controller.note("Emulator detected: starting in DEMO mode")
         controller.note(if (demo) "App started in DEMO MODE (simulated robot)" else "App started. Robot address $host")
         controller.testConnection(null)
-        // Remember where the robot is (it may be found at a new address) and how to recognise it.
+        // Remember where the robot is (it may be found at a new address), how to recognise it, and
+        // every address it has answered at (a search tries them all).
         viewModelScope.launch {
-            controller.state.map { if (it.demo) null else it.host to it.robotMap }.distinctUntilChanged().collect { live ->
-                if (live != null) prefs.edit().putString(KEY_HOST, live.first).putString(KEY_ROBOT_MAP, live.second).apply()
+            controller.state.map { if (it.demo) null else Triple(it.host, it.robotName, it.connected) }.distinctUntilChanged().collect { live ->
+                val (host, name, connected) = live ?: return@collect
+                var past = if (name == prefs.getString(KEY_ROBOT_NAME, null)) pastHosts() else emptyList()
+                if (connected) past = (listOf(host) + past).distinct().take(MAX_PAST_HOSTS)
+                prefs.edit()
+                    .putString(KEY_HOST, host)
+                    .putString(KEY_ROBOT_NAME, name)
+                    .putString(KEY_PAST_HOSTS, past.joinToString(","))
+                    .remove(KEY_ROBOT_MAP) // how earlier builds recognised the robot
+                    .apply()
             }
         }
         connectivity.registerNetworkCallback(
@@ -86,14 +96,27 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         connectivity.bindProcessToNetwork(null)
     }
 
-    /** Every address on the phone's Wi-Fi network that a robot could be at, asked at once. */
-    private suspend fun searchWifi(lastHost: String): SearchResult {
+    /**
+     * Looks for robots from the phone's Wi-Fi. The robot with [hostname] is asked for by name
+     * first, which takes a moment; failing that, every address it has had and every address on
+     * the phone's network are asked at once.
+     */
+    private suspend fun searchWifi(lastHost: String, hostname: String?): SearchResult {
         val none = SearchResult(0, emptyList())
         val network = wifi ?: return none
+        if (hostname != null) {
+            val ip = Mdns.resolve(hostname, bind = network::bindSocket)?.takeIf(RobotApi::isLocalAddress)
+            val robot = ip?.let { RobotFinder.identify(RobotApi(it)) }
+            if (robot?.hostname == hostname) return SearchResult(1, listOf(robot))
+        }
         val v4 = connectivity.getLinkProperties(network)?.linkAddresses?.firstOrNull { it.address is Inet4Address } ?: return none
-        val hosts = RobotFinder.candidates(v4.address.hostAddress ?: return none, v4.prefixLength, lastHost)
+        val known = (listOf(lastHost) + pastHosts()).distinct()
+        val hosts = RobotFinder.candidates(v4.address.hostAddress ?: return none, v4.prefixLength, known)
         return SearchResult(hosts.size, RobotFinder.find(hosts) { RobotFinder.identify(RobotApi(it)) })
     }
+
+    private fun pastHosts(): List<String> =
+        prefs.getString(KEY_PAST_HOSTS, null)?.split(',')?.filter { it.isNotBlank() }.orEmpty()
 
     fun setDemo(on: Boolean) {
         if (controller.setDemo(on)) prefs.edit().putBoolean(KEY_DEMO, on).apply()
@@ -130,7 +153,10 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_UV_MINUTES = "uv_minutes"
         const val KEY_UV_DELAY = "uv_delay_s"
         const val KEY_TASKS = "tasks"
-        const val KEY_ROBOT_MAP = "robot_map" // the robot's map in use: how it is recognised at a new address
+        const val KEY_ROBOT_MAP = "robot_map"   // earlier builds: removed
+        const val KEY_ROBOT_NAME = "robot_name" // the robot's hostname: how it is recognised at a new address
+        const val KEY_PAST_HOSTS = "past_hosts" // addresses it has answered at, most recent first
+        const val MAX_PAST_HOSTS = 6
 
         fun isEmulator() = Build.FINGERPRINT.startsWith("generic") || "emulator" in Build.FINGERPRINT ||
             "ranchu" in Build.HARDWARE || "goldfish" in Build.HARDWARE || "sdk" in Build.PRODUCT

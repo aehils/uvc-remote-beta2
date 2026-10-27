@@ -28,6 +28,7 @@ class MainActivity : ComponentActivity() {
             onDemoChange = vm::setDemo,
             onPing = vm::testConnection,
             onFindRobot = c::findRobot,
+            onPickRobot = c::pickRobot,
             onMove = c::drive,
             onHold = c::hold,
             onHoldAlive = c::holdAlive,

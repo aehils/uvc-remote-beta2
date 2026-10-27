@@ -8,8 +8,9 @@ import kotlinx.coroutines.sync.withPermit
 import org.json.JSONObject
 
 /** A robot that answered on the network: enough to recognise it, or for staff to pick it. */
-data class FoundRobot(val host: String, val version: String, val map: SavedMap?) {
-    val label: String get() = "$host · " + (map?.let { "map ${it.label}" } ?: "map not known") + " · $version"
+data class FoundRobot(val host: String, val version: String, val hostname: String?) {
+    /** What staff call it (see [RobotName]); its address if it doesn't say its hostname. */
+    val name: String get() = hostname?.let(RobotName::short) ?: host
 }
 
 /** What a search of the phone's network turned up. [checked] is 0 when the phone isn't on Wi-Fi. */
@@ -18,8 +19,8 @@ data class SearchResult(val checked: Int, val robots: List<FoundRobot>)
 /**
  * Finds robots on the phone's Wi-Fi when the one in use stops answering at its address (a new
  * router, or another access point handing out addresses): every address on the phone's network
- * is asked for /reeman/current_version, and those that answer like a robot for their map in use.
- * The map in use is how the app recognises its robot again (see [DriveController]).
+ * is asked for /reeman/current_version, and those that answer like a robot for their hostname.
+ * The hostname is how the app recognises its robot again (see [DriveController]).
  */
 object RobotFinder {
 
@@ -27,17 +28,17 @@ object RobotFinder {
     private const val MAX_HOSTS = 1022
 
     /**
-     * The addresses to ask, the last known one first: the whole of the phone's network when it is
-     * a /22 or smaller, otherwise the /24 around the phone, plus the /24 around [lastHost].
+     * The addresses to ask, the robot's known ones first ([known], most recent first; they may be
+     * on another, routed network), then the whole of the phone's network when it is a /22 or
+     * smaller, otherwise the /24 around the phone, plus the /24 around the most recent address.
      */
-    fun candidates(phoneIp: String, prefix: Int, lastHost: String?): List<String> {
+    fun candidates(phoneIp: String, prefix: Int, known: List<String>): List<String> {
         val phone = toInt(phoneIp) ?: return emptyList()
-        val hosts = LinkedHashSet<Int>()
-        val last = lastHost?.substringBefore(':')?.let(::toInt)
-        if (last != null && RobotApi.isLocalAddress(lastHost)) hosts += last
+        val local = known.filter(RobotApi::isLocalAddress).mapNotNull { toInt(it.substringBefore(':')) }
+        val hosts = LinkedHashSet<Int>(local)
         val size = if (prefix in 22..30) 1L shl (32 - prefix) else 256L
         if (size - 2 <= MAX_HOSTS) hosts += range(phone, size) else hosts += range(phone, 256)
-        if (last != null && RobotApi.isLocalAddress(lastHost)) hosts += range(last, 256)
+        local.firstOrNull()?.let { hosts += range(it, 256) }
         hosts -= phone
         return hosts.map(::toIp).filter(RobotApi::isLocalAddress)
     }
@@ -55,8 +56,8 @@ object RobotFinder {
         val v = api.probe("/reeman/current_version")
         if (!v.ok) return null
         val version = runCatching { JSONObject(v.body).getString("version") }.getOrNull() ?: return null
-        val m = api.probe(DriveController.CURRENT_MAP_PATH)
-        return FoundRobot(api.host, version, if (m.ok) DriveController.parseCurrentMap(m.body) else null)
+        val h = api.probe(DriveController.HOSTNAME_PATH)
+        return FoundRobot(api.host, version, if (h.ok) DriveController.parseHostname(h.body) else null)
     }
 
     /** The usable addresses of the [size]-address block holding [ip] (not its first and last). */

@@ -23,11 +23,11 @@ nav bar or STOP: tap it, or flick it up, to pull the pad up under whatever is on
 or flick down to put it away. Only the handle takes that gesture, so a held arrow keeps its
 press. Closed, the handle still says what the robot is doing. Starting a map pulls it up by itself.
 
-**The robot pill** (top right, after the battery) shows which robot the app talks to (its address, or DEMO) and a
-connection light: green answering, orange not. Its menu holds the address and Ping, the DEMO
-switch and the firmware version. While the robot isn't answering, the app looks for it on the
-phone's Wi-Fi and follows it to a new address by itself; the menu lists any other robots it found
-(see Network).
+**The robot pill** (top right, after the battery) shows which robot the app talks to (its name,
+like `UV 3-07`, or DEMO) and a connection light: green answering, orange not. Its menu lists the
+robots the app found to pick from, an address entry (folded away), the DEMO switch, and the robot's
+full ID and firmware. While the robot isn't answering, the app looks for it and follows it to a new
+address by itself (see Network). Addresses aren't shown: staff pick robots by name.
 
 | Button | Command sent | Speed |
 |---|---|---|
@@ -380,24 +380,32 @@ drive rules end to end: interlocks, the step lock, STOP, e-stop, Wi-Fi loss, hol
 Setting up a new site (fixed addresses, the robot's Wi-Fi, what to ask IT for): see
 [`SITE_SETUP.md`](SITE_SETUP.md).
 
-**Finding the robot.** Staff shouldn't need to know the robot's address. When the robot stops
-answering where it was, the app looks for it on the phone's Wi-Fi by itself (every 20 s while
-it's missing, and at once when the phone changes Wi-Fi): every address on the phone's network
-(up to a /22; on bigger networks the /24 around the phone and around the last address) is asked
-for `/reeman/current_version`, ~1–5 s in all. What happens next depends on what answers:
+**Finding the robot.** Staff shouldn't need to know the robot's address. Each robot's navigation
+computer has a hostname unique to it (`/reeman/hostname`, like `wbot11u-250101-003-007`), which
+the app learns on connecting and keeps. It shows it short (see `RobotName`): the last two numbers,
+`UV 3-07`. When the robot stops answering where it was, the app looks for it by itself (every 20 s
+while it's missing, and at once when the phone changes Wi-Fi), in this order:
+
+1. **By name.** The robot answers to `<hostname>.local` (multicast DNS) on its network: one
+   question, an answer in milliseconds. Only on the phone's own network, and only where the
+   network passes multicast (some enterprise Wi-Fi doesn't).
+2. **Every address it has had** (the last six), even on another network IT routes to.
+3. **The phone's whole network** (up to a /22; on bigger networks the /24 around the phone and
+   around the last address), each address asked for `/reeman/current_version` and
+   `/reeman/hostname`, ~1–5 s in all.
 
 | Found | The app |
 |---|---|
-| One robot on **the map this robot was using** | follows it to its new address without asking, and logs it |
-| Any other robot, or two on that map | lists them in the robot pill's menu; staff tap theirs |
-| Nothing | says so: "Is the phone on the robot's Wi-Fi?" |
+| **This robot** (its hostname) | follows it to its new address without asking, and logs it |
+| Other robots | lists them by name in the robot pill's menu; staff tap theirs |
+| Nothing | says so in the menu |
 
-The robot is recognised by its map in use (`/reeman/current_map`'s id), learnt while connected and
-kept across restarts. A hospital can have several robots, so the app never moves to a robot it
-can't recognise without a tap: driving or lighting the wrong one has to be deliberate. A map
-switched on the robot's own screen while the app couldn't see it means one tap to pick it again.
-**Find robot on this Wi-Fi** in the menu searches on demand. Typing an address and tapping Ping
-still works.
+A hospital can have several robots, so the app never moves to a robot it can't recognise without
+a tap: driving or lighting the wrong one has to be deliberate. For the same reason, a robot
+answering at the saved address is checked by its hostname before the app counts it as connected:
+the router may have given that address to another robot. **Find robots** in the menu searches on
+demand. **Enter address** still takes an address (for a robot on a routed network the app can't
+search).
 
 **Mobile data can stay on.** The app sends everything over Wi-Fi, even when Android prefers mobile
 data because the robot's Wi-Fi has no internet.

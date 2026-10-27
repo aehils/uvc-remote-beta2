@@ -20,7 +20,7 @@ class RobotFinderTest {
 
     @Test
     fun searchesThePhonesWholeNetworkLastAddressFirst() {
-        val hosts = RobotFinder.candidates("192.168.0.20", 24, "192.168.0.228")
+        val hosts = RobotFinder.candidates("192.168.0.20", 24, listOf("192.168.0.228"))
         assertEquals("192.168.0.228", hosts.first())
         assertEquals(253, hosts.size) // .1 to .254, not the phone
         assertFalse("192.168.0.20" in hosts)
@@ -29,7 +29,7 @@ class RobotFinderTest {
 
     @Test
     fun aBigNetworkIsSearchedAroundThePhoneAndTheLastAddress() {
-        val hosts = RobotFinder.candidates("10.4.7.9", 16, "10.4.200.31")
+        val hosts = RobotFinder.candidates("10.4.7.9", 16, listOf("10.4.200.31"))
         assertEquals("10.4.200.31", hosts.first())
         assertEquals(254 + 253, hosts.size)
         assertTrue("10.4.7.1" in hosts && "10.4.200.254" in hosts)
@@ -38,7 +38,7 @@ class RobotFinderTest {
 
     @Test
     fun aSlash22IsSearchedWhole() {
-        val hosts = RobotFinder.candidates("172.16.5.3", 22, null)
+        val hosts = RobotFinder.candidates("172.16.5.3", 22, emptyList())
         assertEquals(1021, hosts.size)
         assertEquals("172.16.4.1", hosts.first())
         assertEquals("172.16.7.254", hosts.last())
@@ -46,8 +46,15 @@ class RobotFinderTest {
 
     @Test
     fun anAddressOffTheLocalNetworkIsNeverSearched() {
-        assertTrue(RobotFinder.candidates("8.8.8.8", 24, null).isEmpty())
-        assertEquals(253, RobotFinder.candidates("192.168.1.5", 24, "8.8.4.4").size)
+        assertTrue(RobotFinder.candidates("8.8.8.8", 24, emptyList()).isEmpty())
+        assertEquals(253, RobotFinder.candidates("192.168.1.5", 24, listOf("8.8.4.4")).size)
+    }
+
+    @Test
+    fun everyAddressTheRobotHadIsAskedFirstEvenOnAnotherNetwork() {
+        val hosts = RobotFinder.candidates("192.168.0.20", 24, listOf("192.168.0.40", "10.20.30.40", "192.168.1.228"))
+        assertEquals(listOf("192.168.0.40", "10.20.30.40", "192.168.1.228"), hosts.take(3))
+        assertEquals(253 + 2, hosts.size) // the phone's /24 (the most recent address is in it), plus the other two
     }
 
     @Test
@@ -71,98 +78,151 @@ class RobotFinderTest {
     fun identifyRecognisesARobotByItsAnswers() = runTest {
         val robot = RobotFinder.identify(RobotApi.demo(FakeRobot()))
         assertTrue(robot!!.version.isNotEmpty())
-        assertTrue(robot.map!!.id.isNotEmpty())
+        assertEquals(FakeRobot.HOSTNAME, robot.hostname)
         // Nothing listening there: not a robot (and no socket is opened for a public address).
         assertNull(RobotFinder.identify(RobotApi("192.0.2.5")))
     }
 
     // ---- DriveController: following the robot ----
 
-    private val ward = SavedMap("map-ward-3", "Ward 3")
+    private val mine = "wbot11u-250101-003-007"
+    private fun found(host: String, hostname: String?) = FoundRobot(host, "v5", hostname)
 
-    private fun TestScope.controller(robotMap: String?, demo: Boolean = false, search: suspend (String) -> SearchResult): DriveController {
+    private fun TestScope.controller(
+        robotName: String?,
+        demo: Boolean = false,
+        live: RobotApi = RobotApi("192.0.2.1"), // TEST-NET: not local, so no socket is ever opened
+        search: suspend (String, String?) -> SearchResult,
+    ): DriveController {
         val fake = FakeRobot({ testScheduler.currentTime * 1_000_000 }, Random(1), realistic = true)
-        // TEST-NET addresses: not local, so the live client never opens a socket.
         return DriveController(
-            backgroundScope, RobotApi("192.0.2.1"), fake, demo, now = { testScheduler.currentTime },
-            search = search, robotMap = robotMap,
+            backgroundScope, live, fake, demo, now = { testScheduler.currentTime },
+            search = search, robotName = robotName,
         )
     }
+
+    /** A live robot answering from a simulated one with [hostname]. */
+    private fun TestScope.robotNamed(hostname: String) =
+        RobotApi.demo(FakeRobot({ testScheduler.currentTime * 1_000_000 }, Random(2), realistic = false).also { it.hostname = hostname })
 
     private fun log(c: DriveController) = c.state.value.log.joinToString("\n")
 
     @Test
     fun followsItsRobotToANewAddress() = runTest {
-        val c = controller(ward.id) { SearchResult(254, listOf(FoundRobot("192.0.2.77", "v5", ward))) }
+        var asked: String? = null
+        val c = controller(mine) { _, name -> asked = name; SearchResult(254, listOf(found("192.0.2.77", mine))) }
         c.resume()
         advanceTimeBy(2000)
         val s = c.state.value
+        assertEquals(mine, asked) // asked for by name
         assertEquals(log(c), "192.0.2.77", s.host)
         assertTrue(s.foundRobots.isEmpty())
-        assertTrue(log(c), s.log.any { "Robot found at 192.0.2.77 (it was at 192.0.2.1)" in it })
+        assertTrue(log(c), s.log.any { "UV 3-07 found at a new address" in it })
     }
 
     @Test
     fun anotherRobotIsOnlyListed() = runTest {
-        val other = FoundRobot("192.0.2.80", "v5", SavedMap("map-theatre", "Theatre"))
-        val c = controller(ward.id) { SearchResult(254, listOf(other)) }
+        val other = found("192.0.2.80", "wbot11u-250101-003-008")
+        val c = controller(mine) { _, _ -> SearchResult(254, listOf(other)) }
         c.resume()
         advanceTimeBy(2000)
         val s = c.state.value
         assertEquals("192.0.2.1", s.host)
         assertEquals(listOf(other), s.foundRobots)
-        assertTrue(s.searchNote!!.contains("Pick yours"))
+        assertEquals("UV 3-07 not found. Other robots here", s.searchNote)
     }
 
     @Test
-    fun aRobotIsNeverFollowedUntilTheAppKnowsItsMap() = runTest {
-        val c = controller(robotMap = null) { SearchResult(254, listOf(FoundRobot("192.0.2.77", "v5", ward))) }
+    fun aRobotIsNeverFollowedUntilTheAppKnowsItsName() = runTest {
+        val c = controller(robotName = null) { _, _ -> SearchResult(254, listOf(found("192.0.2.77", mine))) }
         c.resume()
         advanceTimeBy(2000)
         assertEquals("192.0.2.1", c.state.value.host)
         assertEquals(1, c.state.value.foundRobots.size)
+        assertEquals("Robots on this Wi-Fi", c.state.value.searchNote)
     }
 
     @Test
-    fun twoRobotsOnTheSameMapAreListed() = runTest {
-        val c = controller(ward.id) {
-            SearchResult(254, listOf(FoundRobot("192.0.2.77", "v5", ward), FoundRobot("192.0.2.78", "v5", ward)))
-        }
+    fun pickingAFoundRobotDrivesItAndLearnsItsName() = runTest {
+        val c = controller(robotName = null) { _, _ -> SearchResult(254, listOf(found("192.0.2.77", mine))) }
+        c.resume()
+        advanceTimeBy(2000)
+        c.pickRobot(c.state.value.foundRobots.single())
+        assertEquals("192.0.2.77", c.state.value.host)
+        assertEquals(mine, c.state.value.robotName)
+        assertTrue(c.state.value.foundRobots.isEmpty())
+    }
+
+    @Test
+    fun learnsTheNameOfTheRobotItConnectsTo() = runTest {
+        val c = controller(robotName = null, live = robotNamed(mine)) { _, _ -> SearchResult(0, emptyList()) }
+        c.resume()
+        advanceTimeBy(3000)
+        assertTrue(log(c), c.state.value.connected)
+        assertEquals(mine, c.state.value.robotName)
+    }
+
+    @Test
+    fun anotherRobotAtTheAddressIsNotConnectedTo() = runTest {
+        var searches = 0
+        val c = controller(mine, live = robotNamed("wbot11u-250101-003-008")) { _, _ -> searches++; SearchResult(254, emptyList()) }
+        c.resume()
+        advanceTimeBy(3000)
+        val s = c.state.value
+        assertFalse(log(c), s.connected)
+        assertEquals(mine, s.robotName) // still the robot staff chose
+        assertTrue(log(c), s.log.any { "UV 3-08 answers at this address, not UV 3-07" in it })
+        assertEquals(1, searches) // and it looks for its own
+        advanceTimeBy(DriveController.SEARCH_EVERY_MS)
+        assertEquals(2, searches)
+    }
+
+    @Test
+    fun itsOwnRobotAtTheAddressConnects() = runTest {
+        val c = controller(mine, live = robotNamed(mine)) { _, _ -> SearchResult(0, emptyList()) }
+        c.resume()
+        advanceTimeBy(3000)
+        assertTrue(log(c), c.state.value.connected)
+        assertTrue(log(c), c.state.value.log.any { "Connected to UV 3-07" in it })
+    }
+
+    @Test
+    fun twoRobotsWithTheSameNameAreListed() = runTest {
+        val c = controller(mine) { _, _ -> SearchResult(254, listOf(found("192.0.2.77", mine), found("192.0.2.78", mine))) }
         c.resume()
         advanceTimeBy(2000)
         assertEquals("192.0.2.1", c.state.value.host)
-        assertEquals(2, c.state.value.foundRobots.size)
     }
 
     @Test
     fun searchesAgainWhileTheRobotIsMissingButNotConstantly() = runTest {
         var searches = 0
-        val c = controller(ward.id) { searches++; delay(1500); SearchResult(254, emptyList()) }
+        val c = controller(mine) { _, _ -> searches++; delay(1500); SearchResult(254, emptyList()) }
         c.resume()
         advanceTimeBy(1000)
         assertTrue("shows it is looking", c.state.value.searching)
         advanceTimeBy(2000)
         assertFalse(c.state.value.searching)
         assertEquals(1, searches)
-        assertTrue(c.state.value.searchNote!!.contains("No robot answered"))
+        assertEquals("UV 3-07 not found on this Wi-Fi", c.state.value.searchNote)
         advanceTimeBy(DriveController.SEARCH_EVERY_MS)
         assertEquals(2, searches)
         // Logged once, not on every search.
-        assertEquals(1, c.state.value.log.count { "No robot answered" in it })
+        assertEquals(1, c.state.value.log.count { "not found on this Wi-Fi" in it })
     }
 
     @Test
     fun saysWhenThePhoneIsNotOnWifi() = runTest {
-        val c = controller(ward.id) { SearchResult(0, emptyList()) }
+        val c = controller(mine) { _, _ -> SearchResult(0, emptyList()) }
         c.resume()
         advanceTimeBy(2000)
-        assertTrue(c.state.value.searchNote!!.contains("isn't on Wi-Fi"))
+        assertEquals("The phone isn't on Wi-Fi", c.state.value.searchNote)
     }
 
     @Test
     fun aWifiChangeSearchesAtOnce() = runTest {
         var searches = 0
-        val c = controller(ward.id) { searches++; SearchResult(254, emptyList()) }
+        val c = controller(mine) { _, _ -> searches++; SearchResult(254, emptyList()) }
         c.resume()
         advanceTimeBy(2000)
         c.networkChanged()
@@ -171,22 +231,61 @@ class RobotFinderTest {
     }
 
     @Test
-    fun theDemoRobotIsNeverSearchedFor() = runTest {
+    fun theDemoRobotIsNeverSearchedForNorTakenForTheRealOne() = runTest {
         var searches = 0
-        val c = controller(ward.id, demo = true) { searches++; SearchResult(254, emptyList()) }
+        val c = controller(mine, demo = true) { _, _ -> searches++; SearchResult(254, emptyList()) }
         c.resume()
         c.demoToggleWifi()
         advanceTimeBy(30_000)
         c.findRobot()
         advanceTimeBy(10)
         assertEquals(0, searches)
-        assertEquals(ward.id, c.state.value.robotMap) // the demo robot's map isn't taken for the real one's
+        assertEquals(mine, c.state.value.robotName)
     }
 
     @Test
-    fun typingAnotherAddressForgetsTheRobotsMap() = runTest {
-        val c = controller(ward.id) { SearchResult(254, emptyList()) }
+    fun typingAnotherAddressForgetsTheRobotsName() = runTest {
+        val c = controller(mine) { _, _ -> SearchResult(254, emptyList()) }
         c.testConnection("192.0.2.50")
-        assertNull(c.state.value.robotMap)
+        assertNull(c.state.value.robotName)
+    }
+
+    // ---- RobotName ----
+
+    @Test
+    fun aRobotIsCalledByItsLastTwoNumbers() {
+        assertEquals("UV 3-07", RobotName.short("wbot11u-250101-003-007"))
+        assertEquals("UV 12-145", RobotName.short("wbot11u-250101-012-145"))
+        assertEquals("UV 0-01", RobotName.short(FakeRobot.HOSTNAME))
+    }
+
+    @Test
+    fun anotherKindOfHostnameIsShownAsWellAsPossible() {
+        assertEquals("UV 42", RobotName.short("robot-42"))
+        assertEquals("robot-robot", RobotName.short("robot-robot")) // the API's own example
+    }
+
+    // ---- Mdns ----
+
+    @Test
+    fun mdnsReadsTheAddressFromTheRobotsReply() {
+        // Shaped like the test robot's reply to `dig @224.0.0.251 -p 5353 <hostname>.local` (2026-10-27).
+        val q = Mdns.query("wbot11u-250101-003-007.local", id = 0x298B)
+        val reply = q.copyOf().also {
+            it[2] = 0x84.toByte() // a reply, authoritative
+            it[7] = 1             // one answer
+        } + byteArrayOf(0xC0.toByte(), 12, 0, 1, 0, 1, 0, 0, 0, 10, 0, 4, 192.toByte(), 168.toByte(), 0, 40)
+        assertEquals("192.168.0.40", Mdns.answer(reply, "wbot11u-250101-003-007.local"))
+        assertEquals("192.168.0.40", Mdns.answer(reply, "WBOT11U-250101-003-007.local."))
+        assertNull(Mdns.answer(reply, "wbot11u-250101-003-008.local"))
+        assertNull(Mdns.answer(q, "wbot11u-250101-003-007.local")) // a question, not a reply
+        assertNull(Mdns.answer(reply.copyOf(20), "wbot11u-250101-003-007.local")) // cut short
+    }
+
+    @Test
+    fun mdnsQuestionIsAPlainDnsQuery() {
+        val q = Mdns.query("a.local", id = 1)
+        assertEquals(listOf(0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 'a'.code, 5, 'l'.code, 'o'.code, 'c'.code, 'a'.code, 'l'.code, 0, 0, 1, 0, 1),
+            q.map { it.toInt() and 0xFF })
     }
 }

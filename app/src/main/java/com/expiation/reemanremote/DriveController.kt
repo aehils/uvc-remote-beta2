@@ -215,8 +215,8 @@ data class RemoteState(
     val foundRobots: List<FoundRobot> = emptyList(),
     /** What the last search came to, while the robot isn't answering. */
     val searchNote: String? = null,
-    /** The map the robot was using when last seen: how the app recognises it at a new address. */
-    val robotMap: String? = null,
+    /** The robot's hostname (unique to it): how the app recognises it anywhere. Null until learnt. */
+    val robotName: String? = null,
     val version: String?,
     val battery: Int?,
     val vx: Double,
@@ -404,9 +404,12 @@ class DriveController(
     val demoRobot: FakeRobot,
     demo: Boolean,
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
-    /** Searches the phone's network for robots (see [RobotFinder]); null: never search. */
-    private val search: (suspend (lastHost: String) -> SearchResult)? = null,
-    robotMap: String? = null,
+    /**
+     * Searches the phone's network for robots (see [RobotFinder]), asking first for the one with
+     * this hostname when it is known; null: never search.
+     */
+    private val search: (suspend (lastHost: String, hostname: String?) -> SearchResult)? = null,
+    robotName: String? = null,
 ) {
     private val demoApi = RobotApi.demo(demoRobot)
     private var demo = demo
@@ -437,8 +440,12 @@ class DriveController(
     private var pollJob: Job? = null
     private var connectJob: Job? = null
 
-    // Finding the robot again when it stops answering at its address (see findRobot).
-    private var robotMap = robotMap
+    // Finding the robot again when it stops answering at its address (see findRobot), and making
+    // sure the robot answering is this one (see checkRobot): an address can pass to another robot.
+    private var robotName = robotName
+    private var checkedHost: String? = null // the address whose robot is known to be this one
+    private var strangerAt: String? = null  // another robot answers at this address
+    private var checkJob: Job? = null
     private var searchJob: Job? = null
     private var searchedAt = Long.MIN_VALUE / 2
     private var foundRobots: List<FoundRobot> = emptyList()
@@ -586,7 +593,7 @@ class DriveController(
             if (host != liveApi.host) {
                 if (uvBlocksSwitch()) return null
                 liveApi.host = host
-                robotMap = null // another robot, maybe: learnt again from it
+                robotName = null // another robot, maybe: learnt again from it
                 switchRobot()
             }
             saved = host
@@ -622,12 +629,31 @@ class DriveController(
     }
 
     /**
+     * Staff picked [robot] from those a search found: the app drives it from now on, and knows
+     * it by its hostname wherever it goes.
+     */
+    fun pickRobot(robot: FoundRobot) {
+        if (demo) return
+        if (robot.hostname != null && robot.hostname == robotName) {
+            follow(robot)
+            publish()
+            return
+        }
+        if (robot.host != liveApi.host && uvBlocksSwitch()) return
+        liveApi.host = robot.host
+        switchRobot()
+        robotName = robot.hostname
+        log("Picked ${robot.name}")
+        testConnection(null)
+    }
+
+    /**
      * Looks for the robot on the phone's Wi-Fi. Runs by itself while the robot isn't answering
      * (every [SEARCH_EVERY_MS]) and when the phone's Wi-Fi changes; staff can also ask for it.
      *
-     * A robot found on the map this one was using is this robot at a new address (a new router,
-     * or another access point): the app follows it without asking, which also lets a lamps-OFF
-     * still owed reach it. Any other robot is only listed, for staff to pick: a hospital can have
+     * A robot found with this one's hostname is this robot at a new address (a new router, or
+     * another access point): the app follows it without asking, which also lets a lamps-OFF still
+     * owed reach it. Any other robot is only listed, for staff to pick: a hospital can have
      * several, and driving or lighting the wrong one must take a deliberate tap.
      */
     fun findRobot() {
@@ -636,7 +662,7 @@ class DriveController(
         searchedAt = now()
         val from = liveApi.host
         searchJob = scope.launch {
-            val r = s(from)
+            val r = s(from, robotName)
             searchJob = null
             onSearched(from, r)
             publish()
@@ -650,34 +676,81 @@ class DriveController(
     }
 
     private fun onSearched(from: String, r: SearchResult) {
-        // Switched robot meanwhile, or the robot answered again where it was.
-        if (demo || liveApi.host != from || link is Link.Connected || r.robots.any { it.host == from }) return
-        val mine = robotMap?.let { id -> r.robots.filter { it.map?.id == id } }.orEmpty()
+        // Switched robot meanwhile, or the robot answered again.
+        if (demo || liveApi.host != from || link is Link.Connected) return
+        val mine = robotName?.let { name -> r.robots.filter { it.hostname == name } }.orEmpty()
         if (mine.size == 1) {
             val robot = mine.single()
-            liveApi.host = robot.host
-            foundRobots = emptyList()
-            searchNote = null
-            log("Robot found at ${robot.host} (it was at $from), on its map ${robot.map?.label}. Reconnecting.")
+            if (robot.host == from) {
+                strangerAt = null // it is back where it was: check it again
+            } else {
+                follow(robot)
+                log("${robot.name} found at a new address. Reconnecting.")
+            }
             return
         }
+        val others = r.robots.filter { robotName == null || it.hostname != robotName }
+        val ours = robotName?.let(RobotName::short)
         val note = when {
-            r.checked == 0 -> "The phone isn't on Wi-Fi. Join the robot's Wi-Fi."
-            r.robots.isEmpty() -> "No robot answered on this Wi-Fi (${r.checked} addresses checked). Is the phone on the robot's Wi-Fi?"
-            robotMap == null -> "Robots on this Wi-Fi: pick yours."
-            else -> "No robot on this Wi-Fi is using this robot's map. Pick yours if it is listed."
+            r.checked == 0 -> "The phone isn't on Wi-Fi"
+            others.isEmpty() -> if (ours != null) "$ours not found on this Wi-Fi" else "No robots on this Wi-Fi"
+            ours == null -> "Robots on this Wi-Fi"
+            else -> "$ours not found. Other robots here"
         }
-        if (note != searchNote || r.robots != foundRobots) {
-            log(note + r.robots.joinToString("") { "\n  ${it.label}" })
+        if (note != searchNote || others != foundRobots) {
+            log(note + " (${r.checked} addresses checked)" + others.joinToString("") { "\n  ${it.name} at ${it.host}, ${it.version}" })
         }
         searchNote = note
-        foundRobots = r.robots
+        foundRobots = others
+    }
+
+    /** This robot is at [robot]'s address now: carry on there, keeping what is under way. */
+    private fun follow(robot: FoundRobot) {
+        liveApi.host = robot.host
+        checkedHost = robot.host // a search has just read its hostname there
+        strangerAt = null
+        foundRobots = emptyList()
+        searchNote = null
+    }
+
+    /**
+     * Is the robot answering at the address this one? A new address from the router can pass to
+     * another robot. Until it is known, the app doesn't count it as connected: no command goes to
+     * a robot staff didn't choose. A robot that doesn't say its hostname is taken on trust.
+     */
+    private fun checkRobot() {
+        if (checkJob?.isActive == true || strangerAt == liveApi.host) return
+        val host = liveApi.host
+        checkJob = scope.launch {
+            val r = liveApi.get(HOSTNAME_PATH)
+            if (liveApi.host != host || demo) return@launch
+            val name = if (r.ok) parseHostname(r.body) else null
+            when {
+                r.httpCode < 0 -> return@launch // not reached: asked again on the next good poll
+                name == null || robotName == null || name == robotName -> {
+                    if (name != null && robotName == null) log("This robot is ${RobotName.short(name)} ($name)")
+                    if (name != null) robotName = name
+                    checkedHost = host
+                }
+                else -> {
+                    strangerAt = host
+                    val msg = "${RobotName.short(name)} answers at this address, not ${RobotName.short(robotName!!)}"
+                    link = Link.Disconnected(msg)
+                    log("$msg. Looking for ${RobotName.short(robotName!!)}.")
+                    findRobot()
+                }
+            }
+            publish()
+        }
     }
 
     /** Forget everything about the old robot. Cancelling the jobs drops any answers still in flight. */
     private fun switchRobot() {
         connectJob?.cancel()
         searchJob?.cancel()
+        checkJob?.cancel()
+        checkedHost = null
+        strangerAt = null
         foundRobots = emptyList()
         searchNote = null
         pointsJob?.cancel()
@@ -748,7 +821,12 @@ class DriveController(
 
     private fun onPoll(s: RobotApi.Result, b: RobotApi.Result?, plan: RobotApi.Result?, pose: RobotApi.Result?, report: RobotApi.Result?) {
         var speedValid = false
-        if (s.ok) {
+        // A robot answers, but not yet known to be this one (see checkRobot): not connected.
+        val unchecked = s.ok && !demo && checkedHost != liveApi.host
+        if (unchecked) {
+            checkRobot()
+            if (strangerAt == liveApi.host && now() - searchedAt >= SEARCH_EVERY_MS) findRobot()
+        } else if (s.ok) {
             runCatching {
                 val o = JSONObject(s.body)
                 vx = o.optDouble("vx", 0.0)
@@ -758,7 +836,7 @@ class DriveController(
             if (link is Link.Disconnected) {
                 link = Link.Connected(estop = null)
                 forgetNavStatus() // what it reports first may be from before
-                log("Connected")
+                log(robotName?.let { "Connected to ${RobotName.short(it)}" } ?: "Connected")
                 foundRobots = emptyList()
                 searchNote = null
             }
@@ -775,7 +853,7 @@ class DriveController(
             if (failCount >= FAILS_BEFORE_DISCONNECT && now() - searchedAt >= SEARCH_EVERY_MS) findRobot()
         }
 
-        if (b != null && b.ok) {
+        if (!unchecked && b != null && b.ok) {
             runCatching {
                 val o = JSONObject(b.body)
                 if (o.has("battery")) battery = o.getInt("battery")
@@ -802,7 +880,7 @@ class DriveController(
             }
         }
 
-        if (plan != null) {
+        if (!unchecked && plan != null) {
             // The API documents {"coordinates":[...]} during a trip; only 007 has been seen on the real robot.
             planActive = when (errorCode(plan.body)) {
                 null -> if (plan.ok) true else null
@@ -810,10 +888,10 @@ class DriveController(
                 else -> null
             }
         }
-        if (pose != null && pose.ok) {
+        if (!unchecked && pose != null && pose.ok) {
             parsePose(pose.body)?.let { navPose = it }
         }
-        if (report != null) onNavStatus(report)
+        if (!unchecked && report != null) onNavStatus(report)
 
         trackStep(speedValid)
         guardStop(speedValid)
@@ -2275,8 +2353,6 @@ class DriveController(
             }
         }
         val mapping = snapshot().mapping
-        // While scanning, the map in use is the one being replaced or extended: keep the last one.
-        if (inUse != null && !mapping && !demo) robotMap = inUse.id
         if (mapping != wasMapping) {
             log(if (mapping) "The robot is in mapping mode" else "The robot is navigating on its map")
             refreshImage()
@@ -2653,7 +2729,7 @@ class DriveController(
         searching = searchJob?.isActive == true,
         foundRobots = foundRobots,
         searchNote = searchNote,
-        robotMap = robotMap,
+        robotName = robotName,
         version = version,
         battery = battery,
         vx = vx,
@@ -2838,7 +2914,9 @@ class DriveController(
         // /robot/map and /robot/history_map answered 404 on this robot (probe 2026-09-23,
         // v5.1.12); the same reads answered under /reeman/. Not yet re-checked on v5.1.20. ----
         private const val MODE_PATH = "/reeman/get_mode"         // {"mode":1|2|3}
-        const val CURRENT_MAP_PATH = "/reeman/current_map" // {"name":id,"alias":"..."}
+        private const val CURRENT_MAP_PATH = "/reeman/current_map" // {"name":id,"alias":"..."}
+        // {"hostname":"wbot11u-250101-003-007"}, unique per robot (the API PDF misprints it /reemant/).
+        const val HOSTNAME_PATH = "/reeman/hostname"
         private const val MAP_PATH = "/reeman/map"               // size, resolution, origin, PNG data URL
         private const val MAPS_PATH = "/reeman/history_map"      // {"maps":[{name,alias,map{...}}]}
         private const val SET_MODE_PATH = "/cmd/set_mode"
@@ -2896,8 +2974,12 @@ class DriveController(
         private fun parseMode(body: String): RobotMode? =
             runCatching { RobotMode.of(JSONObject(body).getInt("mode")) }.getOrNull()
 
+        /** {"hostname":"..."}; null for an error reply. */
+        fun parseHostname(body: String): String? =
+            runCatching { JSONObject(body).getString("hostname").trim() }.getOrNull()?.takeIf { it.isNotEmpty() }
+
         /** {"name":id,"alias":"..."}; null for an error reply. */
-        fun parseCurrentMap(body: String): SavedMap? = runCatching {
+        private fun parseCurrentMap(body: String): SavedMap? = runCatching {
             val o = JSONObject(body)
             SavedMap(o.getString("name"), o.optString("alias"))
         }.getOrNull()?.takeIf { it.id.isNotEmpty() }

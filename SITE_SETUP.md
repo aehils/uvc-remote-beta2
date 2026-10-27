@@ -85,9 +85,11 @@ connection that drops mid-drive makes the robot carry on for about 1.2 s before 
 - With the current app, mobile data can stay on: the app talks to the robot over Wi-Fi even when
   Android prefers mobile data because the robot's Wi-Fi has no internet. Older builds needed
   mobile data off.
-- Connect each phone once while standing next to the robot. The app learns which robot it's
-  driving (by the robot's map in use) and can then find that robot again by itself if its
-  address changes.
+- Connect each phone once: in the robot pill's menu, tap the robot's name (`UV 3-07` style; its
+  full ID shows under ROBOT ID in the same menu). The app then knows that robot by its hostname
+  and finds it again by itself if its address changes.
+- **The robot's network can't be 192.168.10.x** (Reeman's API notes: it clashes with the robot's
+  own internal network). Any other private range is fine.
 
 ## The robot
 
