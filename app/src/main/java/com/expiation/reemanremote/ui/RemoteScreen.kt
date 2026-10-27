@@ -2,11 +2,13 @@ package com.expiation.reemanremote.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -55,8 +57,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -186,7 +186,11 @@ data class RemoteActions(
 @Composable
 fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
     // Kept here, not in MainPage, so coming back from another page returns to the same tab.
-    var tab by rememberSaveable { mutableStateOf(Tab.REMOTE) }
+    // Tasks first: it is the one-stop page for the staff running the robot.
+    var tab by rememberSaveable { mutableStateOf(Tab.TASKS) }
+    // The Map page (the map and the drive pad) is a mode over the tabs, not a tab: leaving it
+    // goes back to the tab it was opened from.
+    var mapOpen by rememberSaveable { mutableStateOf(false) }
     var page by rememberSaveable { mutableStateOf(Page.MAIN) }
     // The task the editor is open on: its id, or "" for a new one.
     var editingTask by rememberSaveable { mutableStateOf("") }
@@ -217,12 +221,13 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
                     onBack = { page = Page.MAIN },
                     onShowMap = {
                         page = Page.MAIN
-                        tab = Tab.MAP
+                        mapOpen = true
                     },
                 )
                 else -> MainPage(
-                    state, actions, tab, drive,
+                    state, actions, tab, mapOpen, drive,
                     onTabChange = { tab = it },
+                    onMapOpenChange = { mapOpen = it },
                     onOpenDemoControls = { page = Page.DEMO_CONTROLS },
                     onOpenPoints = { page = Page.POINTS },
                     onOpenMaps = { page = Page.MAPS },
@@ -243,41 +248,62 @@ private enum class Page { MAIN, DEMO_CONTROLS, POINTS, MAPS, TASK_EDIT }
 internal class DriveSheetState(val open: Boolean, val onOpenChange: (Boolean) -> Unit)
 
 private enum class Tab(val label: String, val icon: Int) {
-    REMOTE("Remote", R.drawable.ic_tab_remote),
     TASKS("Tasks", R.drawable.ic_tab_tasks),
-    MAP("Map", R.drawable.ic_tab_map),
     ACTIVITY("Activity", R.drawable.ic_tab_activity),
 }
 
 /**
  * Layout, top to bottom: DEMO strip (from [RemoteScreen]), title bar, the robot's readings (pinned, on every tab),
- * the current tab, and the nav bar with STOP in its centre so STOP is on every tab too.
+ * the current tab or the Map page, and the dock with STOP in its centre so STOP is on every tab too.
+ *
+ * The dock's left tile opens the Map page. There the tile becomes the way out, and the rest of
+ * the dock carries the map's own buttons (drive, add, set position, save), so the map itself
+ * gets the whole page.
  */
 @Composable
 private fun MainPage(
     state: RemoteState,
     actions: RemoteActions,
     tab: Tab,
+    mapOpen: Boolean,
     drive: DriveSheetState,
     onTabChange: (Tab) -> Unit,
+    onMapOpenChange: (Boolean) -> Unit,
     onOpenDemoControls: () -> Unit,
     onOpenPoints: () -> Unit,
     onOpenMaps: () -> Unit,
     onEditTask: (String) -> Unit,
 ) {
+    // The Map page's tools and dialogs live here, so the dock can carry its buttons.
+    val map = rememberMapUi()
+    val closeMap = {
+        map.reset()
+        onMapOpenChange(false)
+    }
+    BackHandler(enabled = mapOpen, onBack = closeMap)
+    val dock = if (mapOpen) mapDock(state, actions, map, drive) else null
+    fun tabItem(t: Tab) = DockItem(t.icon, t.label, selected = tab == t, isTab = true) { onTabChange(t) }
+
     Scaffold(
         topBar = {
             Column {
                 TopBar(state, actions, onOpenDemoControls)
-                // On the Map tab the readings show the robot's mode and the map, not its speed.
-                StatusHeader(state, actions.onDismissAlert, onOpenMaps = onOpenMaps.takeIf { tab == Tab.MAP })
+                // On the Map page the readings show the robot's mode and the map, not its speed.
+                StatusHeader(state, actions.onDismissAlert, onOpenMaps = onOpenMaps.takeIf { mapOpen })
             }
         },
         bottomBar = {
             Column {
-                // On the Remote tab the pad is the page itself; the Tasks tab has none.
-                if (tab != Tab.REMOTE && tab != Tab.TASKS) DriveSheet(state, actions, drive)
-                NavBar(tab, onTabChange, moving = state.busy || !state.still, actions.onStop)
+                // The Map page has the pad behind its Drive button; the Tasks tab has none.
+                if (!mapOpen && tab == Tab.ACTIVITY) DriveSheet(state, actions, drive)
+                NavDock(
+                    module = if (mapOpen) DockModule(R.drawable.ic_back, "Exit", "Leave the map", active = true, onClick = closeMap)
+                    else DockModule(R.drawable.ic_tab_map, "Map", "Open the map and drive the robot", active = false) { onMapOpenChange(true) },
+                    start = dock?.start ?: listOf(tabItem(Tab.TASKS)),
+                    end = dock?.end ?: listOf(tabItem(Tab.ACTIVITY)),
+                    moving = state.busy || !state.still,
+                    onStop = actions.onStop,
+                )
             }
         },
         containerColor = MaterialTheme.colorScheme.background,
@@ -285,71 +311,12 @@ private fun MainPage(
         val content = Modifier
             .padding(padding)
             .fillMaxSize()
-        when (tab) {
-            // The pad sits at the bottom, by the thumb and next to STOP. Portrait only, so it always fits.
-            Tab.REMOTE -> Column(
-                content.padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.Bottom),
-            ) {
-                DriveCard(state, actions)
-            }
-            Tab.TASKS -> TasksTab(state, actions, onOpenPoints, onEditTask, content)
-            Tab.MAP -> MapTab(state, actions, onOpenMaps, content)
-            Tab.ACTIVITY -> ActivityLog(state.log, content)
-        }
-    }
-}
-
-/** Four tabs with STOP in the centre: always on screen, always under the thumb, and never a tab. */
-@Composable
-private fun NavBar(current: Tab, onSelect: (Tab) -> Unit, moving: Boolean, onStop: () -> Unit) {
-    NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
-        @Composable
-        fun RowScope.item(t: Tab) = NavigationBarItem(
-            selected = current == t,
-            onClick = { onSelect(t) },
-            icon = { Icon(painterResource(t.icon), contentDescription = null, modifier = Modifier.size(24.dp)) },
-            label = { Text(t.label) },
-        )
-        item(Tab.REMOTE)
-        item(Tab.TASKS)
-        StopNavButton(moving, onStop)
-        item(Tab.MAP)
-        item(Tab.ACTIVITY)
-    }
-}
-
-/** STOP as the nav bar's centre. While the robot is moving it gets a pulsing ring, so it is found fastest then. */
-@Composable
-private fun RowScope.StopNavButton(moving: Boolean, onStop: () -> Unit) {
-    val stop = RemoteTheme.status.stop
-    val pulse by rememberInfiniteTransition(label = "stop").animateFloat(
-        initialValue = 0.15f,
-        targetValue = 0.6f,
-        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
-        label = "ring",
-    )
-    Box(
-        Modifier
-            .weight(1.2f)
-            .height(80.dp), // the bar's height; fillMaxHeight would grow the bar to the whole screen
-        contentAlignment = Alignment.Center,
-    ) {
-        Box(
-            Modifier
-                .size(68.dp)
-                .border(3.dp, if (moving) stop.copy(alpha = pulse) else Color.Transparent, CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Button(
-                onClick = onStop,
-                modifier = Modifier.size(60.dp),
-                shape = CircleShape,
-                contentPadding = PaddingValues(0.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = stop, contentColor = Color.White),
-                elevation = ButtonDefaults.buttonElevation(defaultElevation = 3.dp),
-            ) {
-                Text("STOP", fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+        // null is the Map page.
+        Crossfade(targetState = tab.takeUnless { mapOpen }, animationSpec = tween(220), label = "page") { shown ->
+            when (shown) {
+                null -> MapTab(state, actions, map, drive, content)
+                Tab.TASKS -> TasksTab(state, actions, onOpenPoints, onEditTask, content)
+                Tab.ACTIVITY -> ActivityLog(state.log, content)
             }
         }
     }
@@ -678,7 +645,6 @@ private fun ConnectionSection(state: RemoteState, onPing: (String) -> Unit) {
         focus.clearFocus()
     }
 
-    // Sits on the page background (no card): the Remote tab's header, not one panel among many.
     // The Ping icon doubles as the connection light: green when connected, orange when not.
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         AddressField(
@@ -762,7 +728,7 @@ private fun AddressField(
 }
 
 /**
- * E-stop and motion badges, then velocity (the main read), on the right. With [onOpenMaps] (the Map tab): the robot's
+ * E-stop and motion badges, then velocity (the main read), on the right. With [onOpenMaps] (the Map page): the robot's
  * mode and the map in use instead, the map's name opening the Maps page. Readings fade when not
  * connected, since they are stale. The battery is in the title bar.
  */
@@ -941,15 +907,10 @@ private fun Reading(label: String, value: String, unit: String, valueColor: Colo
     }
 }
 
-@Composable
-private fun DriveCard(state: RemoteState, actions: RemoteActions) {
-    Panel { DrivePad(state, actions) }
-}
-
 /**
- * The d-pad, pulled up from the bottom of every page but the Remote tab (where the pad is the
- * page). Only the handle takes the open and close gesture (a tap, or a flick up or down), so
- * the arrows keep their presses to themselves. Closing it mid-press lets go of the arrow, as
+ * The d-pad, pulled up from the bottom of the Activity tab and the pages over the main one (the
+ * Map page has its own Drive button, the Tasks tab none). Only the handle takes the open and
+ * close gesture (a tap, or a flick up or down), so the arrows keep their presses to themselves. Closing it mid-press lets go of the arrow, as
  * lifting the finger does. Closed, the handle still says why the pad is locked.
  */
 @Composable
@@ -994,13 +955,7 @@ internal fun DriveSheet(state: RemoteState, actions: RemoteActions, sheet: Drive
                 )
                 Spacer(Modifier.width(12.dp))
                 Text(
-                    when {
-                        !state.connected -> "Not connected"
-                        state.docked -> "Docked"
-                        state.estop == EStop.PRESSED -> "E-stop pressed"
-                        state.uv != null || state.lampsOffOwed -> "Locked while the UV lamps may be on"
-                        else -> ""
-                    },
+                    driveLock(state) ?: "",
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1013,6 +968,38 @@ internal fun DriveSheet(state: RemoteState, actions: RemoteActions, sheet: Drive
                     DrivePad(state, actions, buttonHeight = 64.dp)
                 }
             }
+        }
+    }
+}
+
+/** Why the pad is locked, in a few words, or null. */
+private fun driveLock(state: RemoteState): String? = when {
+    !state.connected -> "Not connected"
+    state.docked -> "Docked"
+    state.estop == EStop.PRESSED -> "E-stop pressed"
+    state.uv != null || state.lampsOffOwed -> "Locked while the UV lamps may be on"
+    else -> null
+}
+
+/** The d-pad on the Map page, under the map: opened and closed by the dock's Drive button. */
+@Composable
+internal fun DrivePanel(state: RemoteState, actions: RemoteActions) {
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            driveLock(state)?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            DrivePad(state, actions, buttonHeight = 64.dp)
         }
     }
 }
@@ -1038,7 +1025,7 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        if (state.mapping) TasksNote("The robot is mapping. Trips and disinfection wait until the map is saved or discarded on the Map tab.")
+        if (state.mapping) TasksNote("The robot is mapping. Trips and disinfection wait until the map is saved or discarded on the Map page.")
         val run = state.taskRun
         val report = state.taskReport
         if (run != null) TaskRunCard(state, run, actions)
@@ -1578,7 +1565,7 @@ private fun ChargerButton(label: String, enabled: Boolean, onClick: () -> Unit) 
  * arrows are locked and the middle is UNDOCK instead: driving by hand starts with leaving the pile.
  */
 @Composable
-private fun DrivePad(state: RemoteState, actions: RemoteActions, buttonHeight: Dp = 92.dp) {
+private fun DrivePad(state: RemoteState, actions: RemoteActions, buttonHeight: Dp) {
     val gap = Arrangement.spacedBy(if (buttonHeight < 80.dp) 8.dp else 10.dp)
     Column(verticalArrangement = gap) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {

@@ -1001,7 +1001,7 @@ class DriveController(
                 // Sending charge type 2 then would ask for a point the map doesn't have.
                 log(
                     "Go to charger: not sent. The robot's map in use has no charging pile. " +
-                        "Mark it on the Map tab (add > Charging pile here) with the robot docked."
+                        "Mark it on the Map page (Add > Charging pile here) with the robot docked."
                 )
                 publish()
                 return@launch

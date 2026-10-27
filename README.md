@@ -11,17 +11,31 @@ with the robot switched off.
 
 ## What it does
 
-Four tabs: **Remote** (the drive pad), **Tasks** (GO TO CHARGER, the UV switch, the saved
-**disinfection tasks**, and **Disinfection Points**, which opens its own page), **Map** (the robot on its map; the map's name opens the **Maps** page)
-and **Activity** (the log). The robot's readings (e-stop badge and speed; on the Map tab, the
-mode and the map in use) are pinned at the top of every page, the battery sits in the title bar, and **STOP** is the red button in the centre of the nav bar (a
-full-width bar on the other pages).
+Two tabs, **Tasks** (GO TO CHARGER, the UV switch, the saved **disinfection tasks**, and
+**Disinfection Points**, which opens its own page; the app opens here) and **Activity** (the log),
+and the **Map** page (the robot on its map, and the drive pad). The robot's readings (e-stop badge
+and speed; on the Map page, the mode and the map in use, whose name opens the **Maps** page) are
+pinned at the top of every page, the battery sits in the title bar, and **STOP** is the red key in
+the centre of the dock at the bottom (a full-width bar on the other pages). STOP stays at the
+centre of the screen whatever the dock carries.
 
-**Driving from anywhere.** There is one drive pad. On the Remote tab it is the page; everywhere
-else (the other tabs, and the Points, Maps and DEMO pages) a **DRIVE** handle sits just above the
-nav bar or STOP: tap it, or flick it up, to pull the pad up under whatever is on screen, and tap
-or flick down to put it away. Only the handle takes that gesture, so a held arrow keeps its
-press. Closed, the handle still says what the robot is doing. Starting a map pulls it up by itself.
+**The dock.** Its left tile, set apart from the rest, opens the Map page. There the tile becomes
+**Exit** (back to the tab it was opened from; Tasks unless you were on Activity, and the phone's
+back does the same), and the rest of the dock carries the map's own buttons, so the map gets the
+whole page:
+
+| On the Map page | Left of STOP | Right of STOP |
+|---|---|---|
+| Looking | **Drive** (the pad, under the map) | **Add** (menu), **Position** (set position) |
+| Mapping | **Drive** | **Add**, **Save**; **Discard** is on the map's *Scanning* badge |
+| Setting a position, drawing or removing a wall | **Cancel** | the tick: **Set here**, **Add wall** or **Remove** |
+
+**Driving from anywhere.** There is one drive pad. On the Map page the dock's **Drive** button puts
+it under the map; elsewhere (the Activity tab, and the Points, Maps and DEMO pages) a **DRIVE**
+handle sits just above the dock or STOP: tap it, or flick it up, to pull the pad up under whatever
+is on screen, and tap or flick down to put it away. Only the handle takes that gesture, so a held
+arrow keeps its press. Closed, the handle still says what the robot is doing. The Tasks tab has no
+pad. Starting a map pulls it up by itself.
 
 **The robot pill** (top right, after the battery) shows which robot the app talks to (its address, or DEMO) and a
 connection light: green answering, orange not. Its menu holds the address and Ping, the DEMO
@@ -63,7 +77,7 @@ switch and the firmware version.
   switch's ON are locked; STOP, the d-pad (only usable while the task waits, lamps off) and
   switching the lamps off are not. Switching the lamps off, STOP and the e-stop all end the task.
 - **Mapping is its own job.** While the robot scans a map, GO, GO TO CHARGER, START
-  DISINFECTION and adding points are locked (the Map tab's readings say "Mapping", and the Tasks
+  DISINFECTION and adding points are locked (the Map page's readings say "Mapping", and the Tasks
   tab says why); the pad and STOP still work. Map commands never move the robot, but they need it connected,
   standing still, the lamps off, and one at a time. The map in use can't be deleted.
 - **The log notes motion the app didn't ask for** ("Robot is moving, but not by this app"),
@@ -180,32 +194,32 @@ lamps go off when you leave it). Keep the phone on the Tasks tab, on good Wi-Fi,
 
 ## Maps
 
-**The Map tab** shows the map the robot navigates on, its saved points, and the robot (a disc with
+**The Map page** shows the map the robot navigates on, its saved points, and the robot (a disc with
 a pointer the way it faces). Pinch to zoom, drag to look around, **Fit** to see it all. The
 robot's pose (`/reeman/pose`) is read twice a second and the image (`/reeman/map`, a PNG) when it
-changes, but only while the tab is open, and in a loop of their own, so the speed and e-stop reads
+changes, but only while the page is open, and in a loop of their own, so the speed and e-stop reads
 never wait behind a big image. The robot's mode (`/reeman/get_mode`) and map in use
 (`/reeman/current_map`) are read every ~3 s whatever is on screen.
 
 The map shows the disinfection points (dots), the **charging pile** (a green square) and the
-**virtual walls** (red lines). The buttons under it are icons, to leave the map the room. The
-**add** button (pin, left) opens a menu:
+**virtual walls** (red lines). Its buttons are in the dock (see "The dock"), so the map has the
+page. **Add** opens a menu:
 - **Disinfection point here**: saves where the robot stands, as on the Disinfection Points page.
 - **Charging pile here**: with the robot docked on its pile; saves `charging_pile` (type
   `charge`), replacing any pile already marked. GO TO CHARGER drives to it.
-- **Virtual wall**: drag from one end to the other, then the tick. A line the robot won't cross.
-- **Remove a virtual wall**: tap it, then the bin.
+- **Virtual wall**: drag from one end to the other, then **Add wall**. A line the robot won't cross.
+- **Remove a virtual wall**: tap it, then **Remove**.
 
 Walls are read from `/reeman/restrict_layer` and written with `/cmd/restrict_layer`, which
 replaces the whole set, so the app reads the walls, adds or removes one, and sends them all back.
-**Set position** (crosshair): tap where the robot really is, drag the way it faces, then the tick. While mapping they are **discard** (bin)
-and **save** (disk). What a map command did shows on the map for a few seconds (tap to hide),
+**Position**: tap where the robot really is, drag the way it faces, then **Set here**. While
+mapping, **Save** takes its place, and **Discard** sits on the map's *Scanning* badge. What a map command did shows on the map for a few seconds (tap to hide),
 and stays in the Activity tab. The map's name in the readings opens the Maps page.
   Needed after switching maps away from the pile (see below).
 
 **Mapping.** On the **Maps** page, **+ New map** starts a fresh scan and **Extend this map** adds
 to the map in use (the robot must know where it is on it first). Either way the app goes to the
-Map tab with the drive pad up: drive slowly round the whole area, come back past where you
+Map page with the drive pad up: drive slowly round the whole area, come back past where you
 started so the map closes up, and watch the scan grow (refreshed every 2 s). The add menu works
 while mapping too (the charging pile, points, walls): the robot can't store them on a map that
 isn't saved yet, so they wait in the app (drawn dashed) and are written onto the map straight
@@ -313,7 +327,7 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
 
    Expect `{"mode":2}`, the map's name, a list of maps, and a map with `resolution`, `origin_x/y`
    and `image_url`. If these answer 404 on v5.1.20, stop: the paths moved.
-2. Open the Map tab: the robot should sit on the map where it really is, pointing the right way,
+2. Open the Map page: the robot should sit on the map where it really is, pointing the right way,
    with the points where they belong. Hold Forward: it should move forward on the map.
 3. Maps → **+ New map**: the green MAPPING banner, the pad up. Drive a small loop; the scan
    should grow every 2 s. Note whether walls line up as you go.
@@ -397,7 +411,8 @@ Under `app/src/main/java/com/expiation/reemanremote/`:
 - `MainActivity.kt`: hosts the screen; leaving the app pauses polling and switches the lamps off.
 - `ui/RemoteScreen.kt`: the Compose screen. It only draws `RemoteState` and forwards taps.
   The tabs, the drive sheet, the robot pill, the Tasks and Points pages.
-- `ui/MapScreen.kt`: the Map tab (map view, set position, save/discard) and the Maps page.
+- `ui/NavDock.kt`: the dock at the bottom of the main page: the Map tile, the tab or map buttons, and STOP.
+- `ui/MapScreen.kt`: the Map page (map view, set position, save/discard, and its dock buttons) and the Maps page.
 - `ui/Theme.kt`: colours, including the status colours.
 
 Tests are in `app/src/test/java/com/expiation/reemanremote/`.
