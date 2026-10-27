@@ -13,8 +13,9 @@ with the robot switched off.
 
 Two tabs, **Tasks** (GO TO CHARGER, the UV switch, the saved **disinfection tasks**, and
 **Disinfection Points**, which opens its own page; the app opens here) and **Settings** (below),
-and the **Map** page (the robot on its map, and the drive pad). A slim pastel-blue **BETA** banner
-runs across the very top of every page (the purple DEMO one under it in DEMO). The main page has no
+and the **Map** page (the robot on its map, and the drive pad). A slim pastel-blue **status strip**
+runs across the very top of every page (the purple DEMO band under it in DEMO): **BETA** on the
+left, and on the right whether the robot is there. The main page has no
 title bar: the robot's readings (the e-stop badge and the battery ring, then the speed; on the Map
 page, the map in use, whose name opens the **Maps** page) are the top of the page, pinned there on
 every page, and **STOP** is the red key in the middle of the dock's bar at the bottom (a full-width
@@ -27,9 +28,10 @@ pulses quickly in amber, and if the robot moves with none running (pushed, or a 
 the border stays amber. The **battery** is a ring the same size: the figure in the middle, and a
 green arc from the top, clockwise, that drains with the charge; orange at 20% and below, red at 10%.
 
-**The connection** is in Settings. On screen it only shows when it's a problem: while the robot
-isn't answering (or the app is still connecting, or looking for it) an amber strip under the
-readings says so, and tapping it opens Settings.
+**The connection.** The status strip's right end is always on screen: a dot, green while the robot
+answers and orange while it doesn't, and the robot's name (or *Connecting …*, *Searching …* or
+*Not connected*). Not connected, the readings and the controls are greyed out too. Tapping the
+strip opens Settings, where the robot is found, picked or its address typed in.
 
 **The dock.** On the left, in a container of its own, **Map** opens the Map page; then the bar:
 **Tasks**, **STOP**, **Settings**. Every button is the same size and shape, and none is filled but
@@ -326,7 +328,7 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
 ## Real-robot tests
 
 **First drive test.** Robot off the pile, ~1 m clear all round, physical e-stop in reach.
-1. Open the app: no amber not-connected strip, the battery ring shows a figure, grey **E** badge.
+1. Open the app: a green dot and the robot's name in the status strip, the battery ring shows a figure, grey **E** badge.
 2. **Hold** Left for 2 s, let go: it should start turning within ~0.5 s, then ease to a stop
    within ~10°. Then Right, Back, Forward, and Turn 180° (a tap).
 3. Hold Forward and let go: note how far it runs on (~20 cm) and whether the mast rocks.
@@ -391,7 +393,7 @@ set up on the real robot:
 | Control | What the app should do |
 |---|---|
 | E-stop pressed | **E** badge solid red, driving blocked; mid-step, the robot stops |
-| Wi-Fi dropped | the amber not-connected strip after ~3 failed polls, driving blocked |
+| Wi-Fi dropped | the status strip's dot orange, *Not connected*, after ~3 failed polls; driving blocked |
 | Obstacle ahead | next step accepted but never starts: "no motion seen" |
 | Robot goes to charge by itself | "moving, but not by this app"; STOP ends the trip for good |
 | Person in the way (during a trip) | robot waits 5 s then carries on; the trip stays locked |

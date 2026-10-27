@@ -208,7 +208,7 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
 
     val drive = DriveSheetState(driveOpen) { driveOpen = it }
     val demoStatus = state.demoStatus
-    // The connection lives in Settings: the not-connected strip, on any page, goes there.
+    // The connection lives in Settings: the status strip, on any page, goes there.
     val openSettings: () -> Unit = remember {
         {
             page = Page.MAIN
@@ -218,7 +218,7 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
     }
     CompositionLocalProvider(LocalOpenSettings provides openSettings) {
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-            BetaBanner()
+            StatusStrip(state)
             AnimatedVisibility(state.demo) { DemoStrip() }
             Box(Modifier.weight(1f)) {
                 when {
@@ -265,7 +265,7 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
     }
 }
 
-/** Opens Settings, where the connection is: for the not-connected strip, which every page shows. */
+/** Opens Settings, where the connection is: for the status strip at the top of every page. */
 private val LocalOpenSettings = staticCompositionLocalOf<(() -> Unit)?> { null }
 
 /** Pages over the main (tabbed) page. Each keeps STOP, the drive sheet and the robot's readings on screen. */
@@ -365,13 +365,11 @@ private const val DEMO_HELP_URL = "https://github.com/aehils/uvc-remote-beta2#de
 
 /**
  * At the top of every page (under the title bar, where a page has one), pinned so it never
- * scrolls away: the robot's readings, and the not-connected, runaway and UV banners.
+ * scrolls away: the robot's readings, and the runaway and UV banners.
  */
 @Composable
 internal fun StatusHeader(state: RemoteState, onDismissAlert: () -> Unit, onOpenMaps: (() -> Unit)? = null) {
     Box(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) { Telemetry(state, onOpenMaps) }
-    // Only when it's a problem: connected is the normal state, and needs nothing on screen.
-    AnimatedVisibility(!state.connected) { ConnectionBanner(state) }
     AnimatedVisibility(state.runaway) { RunawayBanner() }
     AnimatedVisibility(state.uv != null || state.lampsOffOwed) { UvBanner(state) }
     // Kept while it hides, so the text doesn't vanish before the banner has slid away.
@@ -381,67 +379,58 @@ internal fun StatusHeader(state: RemoteState, onDismissAlert: () -> Unit, onOpen
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
 
-/** The slim band at the very top of the app, on every page: this is a beta. */
-@Composable
-private fun BetaBanner() {
-    Text(
-        "BETA",
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(RemoteTheme.status.betaContainer)
-            .padding(horizontal = 16.dp, vertical = 2.dp),
-        color = RemoteTheme.status.beta,
-        style = MaterialTheme.typography.labelSmall,
-        fontWeight = FontWeight.Bold,
-        letterSpacing = 2.sp,
-        textAlign = TextAlign.Center,
-        maxLines = 1,
-    )
-}
-
 /**
- * While the robot isn't answering (or not yet): what the app is doing about it. Tapping it opens
- * Settings, where the robot is found or its address typed in.
+ * The slim strip at the very top of the app, on every page, like the phone's own status bar:
+ * BETA on the left, and on the right whether the robot is there. A dot, green while the robot
+ * answers and orange while it doesn't, and its name (or what the app is doing about it). Tapping
+ * it opens Settings, where the robot is.
  */
 @Composable
-private fun ConnectionBanner(state: RemoteState) {
+private fun StatusStrip(state: RemoteState) {
     val status = RemoteTheme.status
     val open = LocalOpenSettings.current
     val link = state.link
     Row(
         Modifier
             .fillMaxWidth()
-            .background(status.warnContainer)
-            .then(if (open != null) Modifier.clickable(onClickLabel = "Open the connection settings", onClick = open) else Modifier)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .background(status.betaContainer)
+            .then(if (open != null) Modifier.clickable(onClickLabel = "Open the robot's settings", onClick = open) else Modifier)
+            .padding(horizontal = 16.dp, vertical = 3.dp)
+            .semantics(mergeDescendants = true) {},
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        Text(
+            "BETA",
+            modifier = Modifier.weight(1f),
+            color = status.beta,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 2.sp,
+            maxLines = 1,
+        )
         Box(
             Modifier
-                .size(8.dp)
-                .background(status.offline, CircleShape)
+                .size(7.dp)
+                .background(if (state.connected) status.good else status.offline, CircleShape)
         )
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(6.dp))
         Text(
             when {
-                state.searching -> "Looking for the robot on this Wi-Fi …"
-                link is Link.Disconnected && link.lastError != null -> "The robot isn't answering"
-                else -> "Connecting to the robot …"
+                state.connected -> if (state.demo) "DEMO robot" else robotLabel(state)
+                state.searching -> "Searching …"
+                link is Link.Disconnected && link.lastError != null -> "Not connected"
+                else -> "Connecting …"
             },
-            modifier = Modifier.weight(1f),
-            color = status.warn,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Bold,
+            color = status.beta,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        if (open != null) {
-            Text("Settings ›", color = status.warn, style = MaterialTheme.typography.labelLarge)
-        }
     }
 }
 
-/** A thin band at the top of every page, under the BETA one, while DEMO is on. */
+/** A thin band at the top of every page, under the status strip, while DEMO is on. */
 @Composable
 private fun DemoStrip() {
     Text(
