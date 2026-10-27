@@ -21,6 +21,9 @@ page, the map in use, whose name opens the **Maps** page) are the top of the pag
 every page, and **STOP** is the red key in the middle of the dock's bar at the bottom (a full-width
 bar on the other pages). It is the only solid fill in the dock, and never narrower than 72dp.
 
+The page is a step darker than its cards (in the dark theme the cards are a step lighter than the
+page), so where each card ends reads at a glance.
+
 **The readings.** The **E** badge is the e-stop: solid red when pressed, grey otherwise (never
 green: released isn't a "go"). It also shows motion, since a pressed e-stop and a moving robot
 can't happen together: while a command runs (a step, a held arrow, a trip, docking) its border
@@ -35,7 +38,8 @@ greyed out too. Tapping the line opens Settings, where the robot is found, picke
 
 **The dock.** On the left, in a container of its own, **Map** opens the Map page; then the bar:
 **Tasks**, **STOP**, **Settings**. Every button is the same size and shape, and none is filled but
-STOP: the open tab's icon turns from outline to filled, in the accent, with its label in bold.
+STOP: the open tab gets a frame in the accent round it, the shape of STOP, and its icon turns
+from outline to filled, its label bold, both in the accent.
 On the Map page **Map** becomes **Exit**, in orange, an arrow leaving a door to the left (back to
 the tab it was opened from; Tasks unless you were on Settings, and the phone's back does the same).
 The page is one piece: the map card (the map, and the pad when it's open) runs straight down into
@@ -45,7 +49,7 @@ map's own buttons, one each side so STOP stays in the middle:
 
 | On the Map page | Left of STOP | Right of STOP |
 |---|---|---|
-| Looking (and mapping) | **Drive** (the pad, under the map; filled while it's open) | **Edit** (menu) |
+| Looking (and mapping) | **Drive** (the pad, under the map; framed while it's open) | **Edit** (menu) |
 | Setting a position, drawing or removing a wall | **Cancel** | **Set here**, **Add wall** or **Remove** |
 
 While mapping, **Save** and **Discard** are on the map's *Scanning* badge.

@@ -58,9 +58,10 @@ import androidx.compose.ui.unit.max
 import androidx.compose.ui.unit.sp
 
 /**
- * One button of the dock: an icon over a short label. [selected] swaps the outline icon for its
- * filled twin, [selectedIcon], in the accent, with the label in bold: the way the phone's own
- * apps mark the page you're on, and it takes no room. [prominent] (a tool's tick) is tinted with
+ * One button of the dock: an icon over a short label. [selected] (the page you're on, or a
+ * toggle that's on) draws an accent frame round the button, the shape of STOP beside it, and
+ * swaps the outline icon for its filled twin, [selectedIcon], with the label in bold, all in
+ * the accent: unmistakable without a fill, and it takes no room. [prominent] (a tool's tick) is tinted with
  * the accent, never solid: STOP is the dock's only solid fill. [accent] colours the icon and the
  * label, for Exit. [menu] is drawn anchored to the button, for a DropdownMenu it opens.
  */
@@ -273,15 +274,17 @@ private fun DockButton(item: DockItem, modifier: Modifier) {
         !item.enabled -> faded
         item.accent != null -> item.accent
         item.prominent -> colors.onPrimaryContainer
-        item.selected -> colors.onSurface
+        item.selected -> colors.primary
         else -> colors.onSurfaceVariant
     }
+    val framed = item.selected && item.enabled && !item.prominent
     Box(modifier.fillMaxHeight()) {
         Column(
             Modifier
                 .fillMaxSize()
                 .clip(INNER_SHAPE)
                 .background(fill)
+                .border(2.dp, if (framed) colors.primary else Color.Transparent, INNER_SHAPE)
                 .clickable(
                     enabled = item.enabled,
                     role = if (item.isTab) Role.Tab else Role.Button,

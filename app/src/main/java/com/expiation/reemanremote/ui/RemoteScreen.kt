@@ -425,7 +425,7 @@ private fun StatusLine(state: RemoteState) {
                     link is Link.Disconnected && link.lastError != null -> "Not connected"
                     else -> "Connecting …"
                 }.uppercase(Locale.US),
-                color = if (state.connected) MaterialTheme.colorScheme.onSurface else status.offline,
+                color = if (state.connected) MaterialTheme.colorScheme.onSurface else status.offlineText,
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 1.5.sp,
