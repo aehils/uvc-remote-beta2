@@ -114,6 +114,7 @@ import com.expiation.reemanremote.DemoStatus
 import com.expiation.reemanremote.DisinfectionTask
 import com.expiation.reemanremote.DriveController
 import com.expiation.reemanremote.EStop
+import com.expiation.reemanremote.FoundRobot
 import com.expiation.reemanremote.Link
 import com.expiation.reemanremote.Move
 import com.expiation.reemanremote.Points
@@ -121,6 +122,7 @@ import com.expiation.reemanremote.Pose
 import com.expiation.reemanremote.R
 import com.expiation.reemanremote.RemoteState
 import com.expiation.reemanremote.RobotMode
+import com.expiation.reemanremote.RobotName
 import com.expiation.reemanremote.SavedMap
 import com.expiation.reemanremote.Step
 import com.expiation.reemanremote.TaskRun
@@ -138,6 +140,8 @@ import java.util.Locale
 data class RemoteActions(
     val onDemoChange: (Boolean) -> Unit = {},
     val onPing: (String) -> Unit = {},
+    val onFindRobot: () -> Unit = {},
+    val onPickRobot: (FoundRobot) -> Unit = {},
     val onMove: (Move) -> Unit = {},
     val onHold: (Move) -> Unit = {},
     val onHoldAlive: (Move) -> Unit = {},
@@ -387,8 +391,9 @@ private fun BetaPill() {
 }
 
 /**
- * The robot pill: which robot the app talks to (DEMO, or its address) and a connection light
- * (green answering, orange not). Its menu sets the address and switches DEMO on and off.
+ * The robot pill: which robot the app talks to (DEMO, or its name: see [RobotName]) and a
+ * connection light (green answering, orange not). Its menu picks a robot the app has found,
+ * takes an address typed in, and switches DEMO on and off.
  */
 @Composable
 private fun RobotMenu(state: RemoteState, actions: RemoteActions, onOpenDemoControls: () -> Unit) {
@@ -405,7 +410,7 @@ private fun RobotMenu(state: RemoteState, actions: RemoteActions, onOpenDemoCont
                 .clickable(onClickLabel = "Robot and DEMO options") { open = true }
                 .padding(horizontal = 12.dp, vertical = 6.dp)
                 .semantics {
-                    contentDescription = (if (state.demo) "DEMO robot" else "Robot ${state.host}") +
+                    contentDescription = (if (state.demo) "DEMO robot" else "Robot ${robotLabel(state)}") +
                         if (state.connected) ", connected" else ", not connected"
                 },
             verticalAlignment = Alignment.CenterVertically,
@@ -417,10 +422,9 @@ private fun RobotMenu(state: RemoteState, actions: RemoteActions, onOpenDemoCont
             )
             Spacer(Modifier.width(6.dp))
             Text(
-                if (state.demo) "DEMO" else state.host,
+                if (state.demo) "DEMO" else robotLabel(state),
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = if (state.demo) FontWeight.Bold else FontWeight.Medium,
-                fontFamily = if (state.demo) null else FontFamily.Monospace,
                 color = if (state.demo) status.demo else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -442,17 +446,26 @@ private fun RobotMenu(state: RemoteState, actions: RemoteActions, onOpenDemoCont
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     SectionLabel("Robot")
-                    ConnectionSection(state, actions.onPing)
+                    Text(
+                        if (state.demo) "DEMO robot" else robotLabel(state),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                     val link = state.link
                     Text(
                         when {
                             state.connected -> "Connected"
+                            state.searching -> "Looking for it on this Wi-Fi …"
                             link is Link.Disconnected && link.lastError != null -> "Not answering: ${link.lastError}"
                             else -> "Not connected yet"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = if (state.connected) status.good else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (!state.demo) {
+                        if (!state.connected) RobotSearch(state, actions)
+                        AddressEntry(state, actions.onPing)
+                    }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -517,21 +530,27 @@ private fun RobotMenu(state: RemoteState, actions: RemoteActions, onOpenDemoCont
                     )
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Column {
-                    Text(
-                        "FIRMWARE",
-                        style = MaterialTheme.typography.labelSmall,
-                        letterSpacing = 1.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        state.version ?: "—",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                }
+                if (!state.demo) Detail("ROBOT ID", state.robotName ?: "—")
+                Detail("FIRMWARE", state.version ?: "—")
             }
         }
+    }
+}
+
+/** What the pill calls the live robot: its short name once known (see [RobotName]). */
+private fun robotLabel(state: RemoteState): String =
+    state.robotName?.let(RobotName::short) ?: if (state.connected) "Robot" else "No robot"
+
+@Composable
+private fun Detail(label: String, value: String) {
+    Column {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            letterSpacing = 1.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(value, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
     }
 }
 
@@ -668,23 +687,34 @@ internal fun Panel(
     }
 }
 
+/**
+ * The robot's address, typed in: for a network the app can't search (the robot on another,
+ * routed network). Folded away until asked for: staff pick robots by name.
+ */
 @Composable
-private fun ConnectionSection(state: RemoteState, onPing: (String) -> Unit) {
+private fun AddressEntry(state: RemoteState, onPing: (String) -> Unit) {
+    var open by rememberSaveable { mutableStateOf(false) }
+    if (!open) {
+        TextButton(onClick = { open = true }, contentPadding = PaddingValues(horizontal = 0.dp)) {
+            Text("Enter address")
+        }
+        return
+    }
     val status = RemoteTheme.status
     val focus = LocalFocusManager.current
-    var hostText by rememberSaveable { mutableStateOf(state.host) }
+    // Keyed on the address: the app may find the robot at a new one by itself.
+    var hostText by rememberSaveable(state.host) { mutableStateOf(state.host) }
     val ping = {
         onPing(hostText)
         focus.clearFocus()
     }
 
-    // Sits on the page background (no card): the Remote tab's header, not one panel among many.
     // The Ping icon doubles as the connection light: green when connected, orange when not.
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         AddressField(
-            value = if (state.demo) "DEMO" else hostText,
+            value = hostText,
             onValueChange = { hostText = it },
-            enabled = !state.demo,
+            enabled = true,
             onDone = ping,
             modifier = Modifier.weight(1f),
         )
@@ -701,6 +731,29 @@ private fun ConnectionSection(state: RemoteState, onPing: (String) -> Unit) {
                 modifier = Modifier.size(22.dp),
                 tint = if (state.connected) status.good else status.offline,
             )
+        }
+    }
+}
+
+/** While the robot isn't answering: what the last search found, the robots to pick, and searching again. */
+@Composable
+private fun RobotSearch(state: RemoteState, actions: RemoteActions) {
+    if (!state.searching && state.searchNote != null) {
+        Text(state.searchNote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    state.foundRobots.forEach { robot ->
+        OutlinedButton(
+            onClick = { actions.onPickRobot(robot) },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        ) {
+            Text(robot.name, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+    if (!state.searching) {
+        TextButton(onClick = actions.onFindRobot, contentPadding = PaddingValues(horizontal = 0.dp)) {
+            Text("Find robots")
         }
     }
 }

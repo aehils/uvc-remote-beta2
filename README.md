@@ -23,9 +23,11 @@ nav bar or STOP: tap it, or flick it up, to pull the pad up under whatever is on
 or flick down to put it away. Only the handle takes that gesture, so a held arrow keeps its
 press. Closed, the handle still says what the robot is doing. Starting a map pulls it up by itself.
 
-**The robot pill** (top right, after the battery) shows which robot the app talks to (its address, or DEMO) and a
-connection light: green answering, orange not. Its menu holds the address and Ping, the DEMO
-switch and the firmware version.
+**The robot pill** (top right, after the battery) shows which robot the app talks to (its name,
+like `UV 3-07`, or DEMO) and a connection light: green answering, orange not. Its menu lists the
+robots the app found to pick from, an address entry (folded away), the DEMO switch, and the robot's
+full ID and firmware. While the robot isn't answering, the app looks for it and follows it to a new
+address by itself (see Network). Addresses aren't shown: staff pick robots by name.
 
 | Button | Command sent | Speed |
 |---|---|---|
@@ -375,12 +377,57 @@ drive rules end to end: interlocks, the step lock, STOP, e-stop, Wi-Fi loss, hol
 
 ## Network
 
-- The phone must be on the robot's Wi-Fi (192.168.1.x). Turn mobile data off while testing.
-- Quick check: open `http://192.168.1.228` in the phone's browser; if the robot console loads,
-  the app can reach it.
-- Plain http is allowed **only** for `192.168.1.228`
-  (`app/src/main/res/xml/network_security_config.xml`). If the address changes, edit that file
-  and rebuild, or better, reserve the address on the router.
+Setting up a new site (fixed addresses, the robot's Wi-Fi, what to ask IT for): see
+[`SITE_SETUP.md`](SITE_SETUP.md).
+
+**Finding the robot.** Staff shouldn't need to know the robot's address. Each robot's navigation
+computer has a hostname unique to it (`/reeman/hostname`, like `wbot11u-250101-003-007`), which
+the app learns on connecting and keeps. It shows it short (see `RobotName`): the last two numbers,
+`UV 3-07`. When the robot stops answering where it was, the app looks for it by itself (every 20 s
+while it's missing, and at once when the phone changes Wi-Fi), in this order:
+
+1. **By name.** The robot answers to `<hostname>.local` (multicast DNS) on its network: one
+   question, an answer in milliseconds. Only on the phone's own network, and only where the
+   network passes multicast (some enterprise Wi-Fi doesn't).
+2. **Every address it has had** (the last six), even on another network IT routes to.
+3. **The phone's whole network** (up to a /22; on bigger networks the /24 around the phone and
+   around the last address), each address asked for `/reeman/current_version` and
+   `/reeman/hostname`, ~1–5 s in all.
+
+| Found | The app |
+|---|---|
+| **This robot** (its hostname) | follows it to its new address without asking, and logs it |
+| Other robots | lists them by name in the robot pill's menu; staff tap theirs |
+| Nothing | says so in the menu |
+
+A hospital can have several robots, so the app never moves to a robot it can't recognise without
+a tap: driving or lighting the wrong one has to be deliberate. For the same reason, a robot
+answering at the saved address is checked by its hostname before the app counts it as connected:
+the router may have given that address to another robot. **Find robots** in the menu searches on
+demand. **Enter address** still takes an address (for a robot on a routed network the app can't
+search).
+
+**Mobile data can stay on.** The app sends everything over Wi-Fi, even when Android prefers mobile
+data because the robot's Wi-Fi has no internet.
+
+**What the app can't fix.** The phone can only reach the robot if they're on the same network.
+If the robot joins a network the phone isn't on (another hospital Wi-Fi it has saved), no app can
+reach it until the phone joins that network too (the app then finds it within seconds) or IT
+routes between the two. So, for the robot's Wi-Fi:
+- **Save one Wi-Fi network on the robot** (from its own screen) and forget all the others, so it
+  can't switch networks on its own.
+- That network should be **one network across every access point**: the same name everywhere,
+  handing out addresses from one place (an enterprise Wi-Fi does this). Walking between access
+  points then keeps the robot's address. If each access point is its own router, the robot gets
+  a new address on a separate network at each one, and only a phone on that same access point
+  can reach it.
+- Not a guest network, and with client/AP isolation off (it blocks phone-to-robot traffic).
+  2.4 GHz and 5 GHz under different names are fine if both are that same network.
+- Ask IT to **reserve the robot's address**: the search is the fallback, not the plan.
+
+**Plain http** goes to **local network addresses only** (10.x, 172.16–31.x, 192.168.x,
+169.254.x; `RobotApi.isLocalAddress`), never across the internet. Quick check from the phone's
+browser: `http://<robot address>` should load the robot's console.
 
 ## Files
 
@@ -391,8 +438,10 @@ Under `app/src/main/java/com/expiation/reemanremote/`:
   as explicit types: `Link`, `StepPhase` (Idle / Holding / Stepping / Stopping) and `Uv`
   (Countdown / Starting / On).
 - `RobotApi.kt`: HTTP to the robot, or to the simulator in demo mode.
+- `RobotFinder.kt`: searches the phone's Wi-Fi network for robots (see Network).
 - `FakeRobot.kt`: the simulated robot (DEMO mode).
-- `RemoteViewModel.kt`: keeps the controller across screen recreation; saves the address, demo
+- `RemoteViewModel.kt`: keeps the controller across screen recreation; follows the phone's Wi-Fi
+  (sends over it, and searches it); saves the address, the robot's map, demo
   choice and UV settings.
 - `MainActivity.kt`: hosts the screen; leaving the app pauses polling and switches the lamps off.
 - `ui/RemoteScreen.kt`: the Compose screen. It only draws `RemoteState` and forwards taps.

@@ -45,6 +45,9 @@ class FakeRobot(
 
     class Reply(val code: Int, val body: String, val latencyMs: Long)
 
+    /** What /reeman/hostname answers (see [RobotName]); tests give fakes different ones. */
+    var hostname = HOSTNAME
+
     /** One planned step: ramp up, cruise, ramp down, like the firmware's own planner. */
     private class Motion(
         val turn: Boolean,
@@ -152,6 +155,7 @@ class FakeRobot(
 
     private fun get(path: String, now: Long): String? = when (path) {
         "/reeman/current_version" -> """{"version":"$VERSION"}"""
+        "/reeman/hostname" -> """{"hostname":"$hostname"}"""
         "/reeman/base_encode" -> fmt(
             """{"battery":%d,"chargeFlag":%d,"emergencyButton":%d}""",
             batteryPercent(), chargeFlag, if (estopPressed) 0 else 1,
@@ -656,6 +660,7 @@ class FakeRobot(
 
     companion object {
         const val VERSION = "DEMO-SIM (mimics RSNF1-v5.1.20_01)"
+        const val HOSTNAME = "demo-000000-000-001"
 
         // ---- Motion model ----
         private const val CMD_LATENCY_NS = 200_000_000L  // measured ~200 ms command-to-wheel
