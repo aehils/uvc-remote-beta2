@@ -27,6 +27,7 @@ class MainActivity : ComponentActivity() {
         val actions = RemoteActions(
             onDemoChange = vm::setDemo,
             onPing = vm::testConnection,
+            onFindRobot = c::findRobot,
             onMove = c::drive,
             onHold = c::hold,
             onHoldAlive = c::holdAlive,

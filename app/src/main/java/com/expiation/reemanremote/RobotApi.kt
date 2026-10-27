@@ -38,8 +38,12 @@ class RobotApi private constructor(host: String, private val fake: FakeRobot?) {
      */
     suspend fun postQuick(path: String, json: String): Result = request("POST", path, json, 400, 600)
 
+    /** For finding the robot on the network (see [RobotFinder]): most addresses asked are empty. */
+    suspend fun probe(path: String): Result = request("GET", path, null, 300, 800)
+
     private suspend fun request(method: String, path: String, json: String?, connectMs: Int, readMs: Int): Result {
         fake?.let { return simulate(it, method, path, json, connectMs) }
+        if (!isLocalAddress(host)) return Result(false, -1, "", NOT_LOCAL)
         return withContext(Dispatchers.IO) { blockingRequest(method, path, json, connectMs, readMs) }
     }
 
@@ -52,7 +56,6 @@ class RobotApi private constructor(host: String, private val fake: FakeRobot?) {
     }
 
     private fun blockingRequest(method: String, path: String, json: String?, connectMs: Int, readMs: Int): Result {
-        if (!isLocalAddress(host)) return Result(false, -1, "", NOT_LOCAL)
         var c: HttpURLConnection? = null
         return try {
             c = URL("http://$host$path").openConnection() as HttpURLConnection

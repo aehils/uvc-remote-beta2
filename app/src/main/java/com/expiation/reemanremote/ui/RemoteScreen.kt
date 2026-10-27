@@ -138,6 +138,7 @@ import java.util.Locale
 data class RemoteActions(
     val onDemoChange: (Boolean) -> Unit = {},
     val onPing: (String) -> Unit = {},
+    val onFindRobot: () -> Unit = {},
     val onMove: (Move) -> Unit = {},
     val onHold: (Move) -> Unit = {},
     val onHoldAlive: (Move) -> Unit = {},
@@ -453,6 +454,7 @@ private fun RobotMenu(state: RemoteState, actions: RemoteActions, onOpenDemoCont
                         style = MaterialTheme.typography.bodySmall,
                         color = if (state.connected) status.good else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (!state.demo && !state.connected) RobotSearch(state, actions)
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -672,7 +674,8 @@ internal fun Panel(
 private fun ConnectionSection(state: RemoteState, onPing: (String) -> Unit) {
     val status = RemoteTheme.status
     val focus = LocalFocusManager.current
-    var hostText by rememberSaveable { mutableStateOf(state.host) }
+    // Keyed on the address: the app may find the robot at a new one by itself.
+    var hostText by rememberSaveable(state.host) { mutableStateOf(state.host) }
     val ping = {
         onPing(hostText)
         focus.clearFocus()
@@ -701,6 +704,31 @@ private fun ConnectionSection(state: RemoteState, onPing: (String) -> Unit) {
                 modifier = Modifier.size(22.dp),
                 tint = if (state.connected) status.good else status.offline,
             )
+        }
+    }
+}
+
+/** While the robot isn't answering: the search for it on the phone's Wi-Fi, and the robots it found. */
+@Composable
+private fun RobotSearch(state: RemoteState, actions: RemoteActions) {
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    when {
+        state.searching -> Text("Looking for the robot on this Wi-Fi …", style = MaterialTheme.typography.bodySmall, color = muted)
+        state.searchNote != null -> Text(state.searchNote, style = MaterialTheme.typography.bodySmall, color = muted)
+    }
+    state.foundRobots.forEach { robot ->
+        OutlinedButton(
+            onClick = { actions.onPing(robot.host) },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        ) {
+            Text(robot.label, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+    }
+    if (!state.searching) {
+        TextButton(onClick = actions.onFindRobot, contentPadding = PaddingValues(horizontal = 0.dp)) {
+            Text("Find robot on this Wi-Fi")
         }
     }
 }
