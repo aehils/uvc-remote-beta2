@@ -312,8 +312,8 @@ private fun EditMenu(state: RemoteState, ui: MapUi, drawable: Boolean) {
 
 /**
  * The Map page: the robot on its map (or, while mapping, the scan as it grows) with the saved
- * points, the charging pile and the virtual walls, and, under it, the drive pad when the dock's
- * Drive button is on. The page's buttons are in the dock ([mapDock]): Edit sets the robot's
+ * points, the charging pile and the virtual walls, and, under it, the drive pad when the
+ * Drive button is on. Both sit in the page's one card, which runs down into the bar. The page's buttons are in the dock ([mapDock]): Edit sets the robot's
  * position, marks a disinfection point or the charging pile where the robot stands, or draws or
  * removes a virtual wall; while mapping these wait in the app and are saved with the map. Mapping
  * pulls the pad up by itself.
@@ -358,17 +358,15 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, ui: MapUi, drive
     val image = state.mapImage
     val layers = mapLayers(state)
     val drawable = image?.placeable == true
-    val shape = RoundedCornerShape(14.dp)
-    Column(
-        modifier.padding(start = 12.dp, end = 12.dp, top = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
+    // Inside the page's card (see JoinedDock): the map is a window in it, at the buttons' corner.
+    val shape = RoundedCornerShape(8.dp)
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
                 .clip(shape)
-                .background(MaterialTheme.colorScheme.surface)
+                .background(MaterialTheme.colorScheme.surfaceContainerLow)
                 .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape),
             contentAlignment = Alignment.Center,
         ) {

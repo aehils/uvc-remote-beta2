@@ -15,10 +15,17 @@ Two tabs, **Tasks** (GO TO CHARGER, the UV switch, the saved **disinfection task
 **Disinfection Points**, which opens its own page; the app opens here) and **Settings** (below),
 and the **Map** page (the robot on its map, and the drive pad). A slim pastel-blue **BETA** banner
 runs across the very top of every page (the purple DEMO one under it in DEMO). The main page has no
-title bar: the robot's readings (the e-stop, motion and battery badges, then the speed; on the Map
+title bar: the robot's readings (the e-stop badge and the battery ring, then the speed; on the Map
 page, the map in use, whose name opens the **Maps** page) are the top of the page, pinned there on
 every page, and **STOP** is the red key in the middle of the dock's bar at the bottom (a full-width
 bar on the other pages). It is the only solid fill in the dock, and never narrower than 72dp.
+
+**The readings.** The **E** badge is the e-stop: solid red when pressed, grey otherwise (never
+green: released isn't a "go"). It also shows motion, since a pressed e-stop and a moving robot
+can't happen together: while a command runs (a step, a held arrow, a trip, docking) its border
+pulses quickly in amber, and if the robot moves with none running (pushed, or a task of its own)
+the border stays amber. The **battery** is a ring the same size: the figure in the middle, and a
+green arc from the top, clockwise, that drains with the charge; orange at 20% and below, red at 10%.
 
 **The connection** is in Settings. On screen it only shows when it's a problem: while the robot
 isn't answering (or the app is still connecting, or looking for it) an amber strip under the
@@ -27,9 +34,12 @@ readings says so, and tapping it opens Settings.
 **The dock.** On the left, in a container of its own, **Map** opens the Map page; then the bar:
 **Tasks**, **STOP**, **Settings**. Every button is the same size and shape, and none is filled but
 STOP: the open tab's icon turns from outline to filled, in the accent, with its label in bold.
-On the Map page **Map** becomes **Exit**, in orange with a door icon (back to the tab it was
-opened from; Tasks unless you were on Settings, and the phone's back does the same), and either side of STOP the bar carries the map's own buttons, one each side so STOP stays
-in the middle:
+On the Map page **Map** becomes **Exit**, in orange, an arrow leaving a door to the left (back to
+the tab it was opened from; Tasks unless you were on Settings, and the phone's back does the same).
+The page is one piece: the map card (the map, and the pad when it's open) runs straight down into
+the bar, with the bottom left cut out for Exit, so the card looks laid over the bar that was there.
+The bar and Exit stay exactly where the dock is on the tabs. Either side of STOP the bar carries the
+map's own buttons, one each side so STOP stays in the middle:
 
 | On the Map page | Left of STOP | Right of STOP |
 |---|---|---|
@@ -316,7 +326,7 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
 ## Real-robot tests
 
 **First drive test.** Robot off the pile, ~1 m clear all round, physical e-stop in reach.
-1. Open the app: no amber not-connected strip, the battery badge shows a figure, grey **E** badge.
+1. Open the app: no amber not-connected strip, the battery ring shows a figure, grey **E** badge.
 2. **Hold** Left for 2 s, let go: it should start turning within ~0.5 s, then ease to a stop
    within ~10°. Then Right, Back, Forward, and Turn 180° (a tap).
 3. Hold Forward and let go: note how far it runs on (~20 cm) and whether the mast rocks.
@@ -385,7 +395,7 @@ set up on the real robot:
 | Obstacle ahead | next step accepted but never starts: "no motion seen" |
 | Robot goes to charge by itself | "moving, but not by this app"; STOP ends the trip for good |
 | Person in the way (during a trip) | robot waits 5 s then carries on; the trip stays locked |
-| Battery −10% | battery figure amber at 20%, red at 10% |
+| Battery −10% | the battery ring orange at 20%, red at 10% |
 | Reset robot | back to the room centre, faults cleared, added points and maps removed |
 
 ## Build and install

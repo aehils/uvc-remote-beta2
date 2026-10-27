@@ -7,7 +7,6 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -87,6 +86,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
@@ -310,8 +310,8 @@ private fun MainPage(
         onMapOpenChange(false)
     }
     BackHandler(enabled = mapOpen, onBack = closeMap)
-    val dock = if (mapOpen) mapDock(state, actions, map, drive) else null
     fun tabItem(t: Tab) = DockItem(t.icon, t.label, selectedIcon = t.selectedIcon, selected = tab == t, isTab = true) { onTabChange(t) }
+    val stop = DockStop(moving = state.busy || !state.still, onStop = actions.onStop)
 
     Scaffold(
         topBar = {
@@ -320,15 +320,13 @@ private fun MainPage(
             Column { StatusHeader(state, actions.onDismissAlert, onOpenMaps = onOpenMaps.takeIf { mapOpen }) }
         },
         bottomBar = {
-            Column {
-                // The pad is the Map page's (behind its Drive button); Tasks and Settings have none.
+            // The Map page draws its own: the bar is part of its card (below).
+            if (!mapOpen) {
                 NavDock(
-                    // Plain as the way in; orange, with a door, as the way out.
-                    module = if (mapOpen) DockItem(R.drawable.ic_exit, "Exit", "Leave the map", accent = RemoteTheme.status.exit, onClick = closeMap)
-                    else DockItem(R.drawable.ic_tab_map, "Map", "Open the map and drive the robot") { onMapOpenChange(true) },
-                    start = dock?.start ?: listOf(tabItem(Tab.TASKS)),
-                    end = dock?.end ?: listOf(tabItem(Tab.SETTINGS)),
-                    stop = DockStop(moving = state.busy || !state.still, onStop = actions.onStop),
+                    module = DockItem(R.drawable.ic_tab_map, "Map", "Open the map and drive the robot") { onMapOpenChange(true) },
+                    start = listOf(tabItem(Tab.TASKS)),
+                    end = listOf(tabItem(Tab.SETTINGS)),
+                    stop = stop,
                 )
             }
         },
@@ -338,7 +336,19 @@ private fun MainPage(
             .padding(padding)
             .fillMaxSize()
         when {
-            mapOpen -> MapTab(state, actions, map, drive, content)
+            mapOpen -> {
+                val dock = mapDock(state, actions, map, drive)
+                // One piece: the map card running down into the bar; Exit, orange, in the cut-out.
+                JoinedDock(
+                    module = DockItem(R.drawable.ic_exit, "Exit", "Leave the map", accent = RemoteTheme.status.exit, onClick = closeMap),
+                    start = dock.start,
+                    end = dock.end,
+                    stop = stop,
+                    modifier = content,
+                ) {
+                    MapTab(state, actions, map, drive, Modifier.fillMaxSize())
+                }
+            }
             tab == Tab.TASKS -> TasksTab(state, actions, onOpenPoints, onEditTask, content)
             else -> SettingsTab(state, actions, onOpenActivity, onOpenRobotInfo, onOpenDemoControls, onOpenMaps, content)
         }
@@ -675,7 +685,7 @@ private fun AddressField(
 }
 
 /**
- * E-stop, motion and battery badges, then velocity (the main read), on the right. With
+ * The e-stop badge (which also shows motion) and the battery ring, then velocity (the main read), on the right. With
  * [onOpenMaps] (the Map page): the map in use instead, its name opening the Maps page. Readings
  * fade when not connected, since they are stale.
  */
@@ -688,12 +698,10 @@ private fun Telemetry(state: RemoteState, onOpenMaps: (() -> Unit)?) {
             .alpha(if (live) 1f else 0.45f),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        EStopBadge(state.estop)
+        EStopBadge(state)
         Spacer(Modifier.width(8.dp))
-        MotionBadge(state)
-        Spacer(Modifier.width(8.dp))
-        BatteryBadge(state.battery)
-        Spacer(Modifier.width(12.dp))
+        BatteryRing(state.battery)
+        Spacer(Modifier.width(16.dp))
 
         if (onOpenMaps != null) {
             // Mapping shows on the map itself (its Scanning badge), so the map's name has the room.
@@ -703,65 +711,54 @@ private fun Telemetry(state: RemoteState, onOpenMaps: (() -> Unit)?) {
         } else {
             // Velocity is the main read, in fixed-width slots so the figures never shift as they change.
             val ink = MaterialTheme.colorScheme.onSurface
-            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
-                Reading("Linear", if (live) reading(state.vx, 1) else "—", "m/s", ink, Modifier.width(84.dp))
-                Reading("Angular", if (live) reading(Math.toDegrees(state.vth), 0) else "—", "°/s", ink, Modifier.width(68.dp))
+            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.End)) {
+                Reading("Linear", if (live) reading(state.vx, 1) else "—", "m/s", ink, Modifier.width(96.dp))
+                Reading("Angular", if (live) reading(Math.toDegrees(state.vth), 0) else "—", "°/s", ink, Modifier.width(88.dp))
             }
         }
     }
 }
 
 /**
- * The battery, beside the e-stop and motion badges and bounded like them: the outline, and the
- * figure under it. Quiet unless it needs attention: amber at 20%, red at 10%.
+ * The battery as a ring beside the e-stop badge, its size: the figure in the middle, and an arc
+ * from the top, clockwise, that drains to nothing with the charge. Green; orange at 20% and
+ * below, red at 10%. Unknown, just the empty track and a dash.
  */
 @Composable
-private fun BatteryBadge(battery: Int?) {
+private fun BatteryRing(battery: Int?) {
     val status = RemoteTheme.status
-    val shape = RoundedCornerShape(8.dp)
     val color = when {
         battery == null -> MaterialTheme.colorScheme.onSurfaceVariant
         battery <= 10 -> status.danger
-        battery <= 20 -> status.warn
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
+        battery <= 20 -> status.offline
+        else -> status.good
     }
-    Column(
+    val track = MaterialTheme.colorScheme.outlineVariant
+    Box(
         Modifier
-            .size(width = 52.dp, height = 44.dp)
-            .border(2.dp, if (battery != null && battery <= 20) color else MaterialTheme.colorScheme.outline, shape)
-            .semantics(mergeDescendants = true) {},
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+            .size(44.dp)
+            .semantics { contentDescription = battery?.let { "Battery $it percent" } ?: "Battery unknown" },
+        contentAlignment = Alignment.Center,
     ) {
-        BatteryIcon(battery, color)
-        Spacer(Modifier.height(3.dp))
+        Canvas(Modifier.fillMaxSize()) {
+            val stroke = 4.dp.toPx()
+            val inset = stroke / 2
+            val arc = Size(size.width - stroke, size.height - stroke)
+            drawArc(track, 0f, 360f, useCenter = false, topLeft = Offset(inset, inset), size = arc, style = Stroke(stroke))
+            if (battery != null && battery > 0) {
+                drawArc(
+                    color, -90f, 360f * battery.coerceIn(0, 100) / 100f, useCenter = false,
+                    topLeft = Offset(inset, inset), size = arc, style = Stroke(stroke, cap = StrokeCap.Round),
+                )
+            }
+        }
         Text(
-            battery?.let { "$it%" } ?: "—",
-            style = MaterialTheme.typography.labelMedium,
-            fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.SemiBold,
-            color = color,
+            battery?.toString() ?: "—",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = if (battery != null && battery <= 20) color else MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
         )
-    }
-}
-
-/** A small battery outline whose fill tracks the charge level. */
-@Composable
-private fun BatteryIcon(percent: Int?, color: Color) {
-    Canvas(
-        Modifier
-            .size(width = 22.dp, height = 11.dp)
-            .semantics { contentDescription = percent?.let { "Battery $it percent" } ?: "Battery unknown" }
-    ) {
-        val stroke = 1.3.dp.toPx()
-        val tip = 2.dp.toPx()
-        val body = Size(size.width - tip, size.height)
-        val r = CornerRadius(2.dp.toPx())
-        drawRoundRect(color, topLeft = Offset(stroke / 2, stroke / 2), size = Size(body.width - stroke, body.height - stroke), cornerRadius = r, style = Stroke(stroke))
-        drawRoundRect(color, topLeft = Offset(body.width, size.height * 0.3f), size = Size(tip, size.height * 0.4f), cornerRadius = CornerRadius(1.dp.toPx()))
-        val inset = stroke + 1.dp.toPx()
-        val level = (percent ?: 0).coerceIn(0, 100) / 100f
-        drawRoundRect(color, topLeft = Offset(inset, inset), size = Size((body.width - inset * 2) * level, body.height - inset * 2), cornerRadius = CornerRadius(1.dp.toPx()))
     }
 }
 
@@ -772,22 +769,50 @@ private fun reading(value: Double, decimals: Int): String {
     return String.format(Locale.US, "%.${decimals}f", rounded)
 }
 
-/** A bounded "E": solid red when the e-stop is pressed, grey otherwise. Never green: released is not a "go" signal. */
+/**
+ * A bounded "E": solid red when the e-stop is pressed, grey otherwise. Never green: released is
+ * not a "go" signal. It also shows motion, since a pressed e-stop and a moving robot can't
+ * happen together: while a command runs (a step, a held arrow, a trip, docking) its border
+ * pulses quickly in amber; if the robot moves with none running (pushed, or a task of its own),
+ * the border stays amber. The letter never flashes.
+ */
 @Composable
-private fun EStopBadge(estop: EStop?) {
+private fun EStopBadge(state: RemoteState) {
     val shape = RoundedCornerShape(8.dp)
+    val estop = state.estop
     val pressed = estop == EStop.PRESSED
+    val warn = RemoteTheme.status.warn
     val grey = MaterialTheme.colorScheme.outline
+    // Only animates while a command runs, so an idle robot costs no frames.
+    val edge = when {
+        pressed -> RemoteTheme.status.stop
+        state.busy -> {
+            val t by rememberInfiniteTransition(label = "motion").animateFloat(
+                initialValue = 0f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(tween(350), RepeatMode.Reverse),
+                label = "pulse",
+            )
+            lerp(warn, grey, t)
+        }
+        !state.still -> warn
+        else -> grey
+    }
     Box(
         Modifier
             .size(44.dp)
             .background(if (pressed) RemoteTheme.status.stop else Color.Transparent, shape)
-            .border(2.dp, if (pressed) RemoteTheme.status.stop else grey, shape)
+            .border(if (!pressed && (state.busy || !state.still)) 3.dp else 2.dp, edge, shape)
             .semantics {
                 contentDescription = when (estop) {
                     EStop.PRESSED -> "E-stop pressed"
                     EStop.RELEASED -> "E-stop released"
                     null -> "E-stop unknown"
+                } + when {
+                    pressed -> ""
+                    state.busy -> ". Running: ${state.busyLabel ?: "a command"}"
+                    !state.still -> ". Robot moving"
+                    else -> ". Robot still"
                 }
             },
         contentAlignment = Alignment.Center,
@@ -799,37 +824,6 @@ private fun EStopBadge(estop: EStop?) {
             fontWeight = FontWeight.Black,
         )
     }
-}
-
-/**
- * Beside the e-stop, a bare icon: flashes between amber and grey while a command runs (a step, a
- * held arrow, a trip, docking), and stays amber if the robot moves with none running (pushed, or
- * a task of its own). Grey when still.
- */
-@Composable
-private fun MotionBadge(state: RemoteState) {
-    val warn = RemoteTheme.status.warn
-    val grey = MaterialTheme.colorScheme.outline
-    // Only animates while a command runs, so an idle robot costs no frames.
-    val tint = if (state.busy) {
-        val t by rememberInfiniteTransition(label = "motion").animateFloat(
-            initialValue = 0f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(450), RepeatMode.Reverse),
-            label = "flash",
-        )
-        lerp(warn, grey, t)
-    } else if (!state.still) warn else grey
-    Icon(
-        painterResource(R.drawable.ic_motion),
-        contentDescription = when {
-            state.busy -> "Running: ${state.busyLabel ?: "a command"}"
-            !state.still -> "Robot moving"
-            else -> "Robot still"
-        },
-        modifier = Modifier.size(34.dp),
-        tint = tint,
-    )
 }
 
 @Composable
@@ -923,28 +917,24 @@ private fun driveLock(state: RemoteState): String? = when {
     else -> null
 }
 
-/** The d-pad on the Map page, under the map: opened and closed by the dock's Drive button. */
+/**
+ * The d-pad on the Map page, in the card under the map: opened and closed by the Drive button.
+ * Spaced like the bar below it, so its buttons line up with the bar's.
+ */
 @Composable
 internal fun DrivePanel(state: RemoteState, actions: RemoteActions) {
-    Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Column(Modifier.padding(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            driveLock(state)?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 8.dp, top = 4.dp),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            // Spaced like the dock below it: the panel's inset, between the buttons too.
-            DrivePad(state, actions, buttonHeight = 60.dp, spacing = 6.dp)
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        driveLock(state)?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 8.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
+        DrivePad(state, actions, buttonHeight = 60.dp, spacing = 6.dp)
     }
 }
 

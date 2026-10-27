@@ -35,7 +35,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
@@ -45,6 +50,9 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.max
 import androidx.compose.ui.unit.sp
@@ -88,29 +96,145 @@ internal fun NavDock(module: DockItem, start: List<DockItem>, end: List<DockItem
                 .windowInsetsPadding(WindowInsets.navigationBars)
                 .padding(start = DOCK_GUTTER, end = DOCK_GUTTER, top = 8.dp, bottom = 12.dp)
         ) {
-            // One width for every button, the module's included: what's left once the gap and
-            // the containers' insets come off, shared by the bar's buttons and the module's.
-            val buttons = start.size + 1 + end.size
-            val free = maxWidth - MODULE_GAP - DOCK_INSET * (buttons + 3)
-            val even = free / (buttons + 1)
-            val stopWidth = max(even, STOP_MIN_WIDTH)
-            val slot = if (stopWidth > even) (free - stopWidth) / buttons else even
+            val widths = dockWidths(maxWidth, start.size + 1 + end.size)
             Row(
                 Modifier
                     .fillMaxWidth()
                     .height(DOCK_HEIGHT),
                 horizontalArrangement = Arrangement.spacedBy(MODULE_GAP),
             ) {
-                DockContainer(Modifier.width(slot + DOCK_INSET * 2)) {
+                DockContainer(Modifier.width(widths.module)) {
                     DockButton(module, Modifier.weight(1f))
                 }
                 DockContainer(Modifier.weight(1f)) {
-                    start.forEach { DockButton(it, Modifier.weight(1f)) }
-                    StopKey(stop, Modifier.width(stopWidth))
-                    end.forEach { DockButton(it, Modifier.weight(1f)) }
+                    BarButtons(start, stop, end, widths)
                 }
             }
         }
+    }
+}
+
+/**
+ * The Map page: one piece, the map card on top running straight down into the bar, with the
+ * bottom left cut out for the module (Exit), which keeps a container of its own. The bar and
+ * Exit sit exactly where the dock sits on the tabs, so opening the map reads as the card coming
+ * down over the bar. [content] (the map, and the pad) fills the card, inset like the buttons.
+ */
+@Composable
+internal fun JoinedDock(
+    module: DockItem,
+    start: List<DockItem>,
+    end: List<DockItem>,
+    stop: DockStop,
+    modifier: Modifier,
+    content: @Composable () -> Unit,
+) {
+    BoxWithConstraints(
+        modifier
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .padding(start = DOCK_GUTTER, end = DOCK_GUTTER, top = 10.dp, bottom = 12.dp)
+    ) {
+        val widths = dockWidths(maxWidth, start.size + 1 + end.size)
+        // The cut-out: the module and the gap beside and above it.
+        val piece = NotchedShape(notchWidth = widths.module + MODULE_GAP, notchHeight = DOCK_HEIGHT + MODULE_GAP)
+        Column(
+            Modifier
+                .fillMaxSize()
+                .clip(piece)
+                .background(MaterialTheme.colorScheme.surface)
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, piece)
+        ) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(DOCK_INSET)
+            ) { content() }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(DOCK_HEIGHT + MODULE_GAP)
+            ) {
+                Spacer(Modifier.width(widths.module + MODULE_GAP))
+                // Inset from the bar's own edges, as in the dock's container: the same buttons, in the same place.
+                Row(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .padding(start = DOCK_INSET, end = DOCK_INSET, top = MODULE_GAP + DOCK_INSET, bottom = DOCK_INSET),
+                    horizontalArrangement = Arrangement.spacedBy(DOCK_INSET),
+                ) {
+                    BarButtons(start, stop, end, widths)
+                }
+            }
+        }
+        DockContainer(
+            Modifier
+                .align(Alignment.BottomStart)
+                .width(widths.module)
+                .height(DOCK_HEIGHT)
+        ) {
+            DockButton(module, Modifier.weight(1f))
+        }
+    }
+}
+
+/** The bar's buttons, STOP in the middle. */
+@Composable
+private fun RowScope.BarButtons(start: List<DockItem>, stop: DockStop, end: List<DockItem>, widths: DockWidths) {
+    start.forEach { DockButton(it, Modifier.weight(1f)) }
+    StopKey(stop, Modifier.width(widths.stop))
+    end.forEach { DockButton(it, Modifier.weight(1f)) }
+}
+
+/** The widths of the dock's buttons: each one's ([slot]), STOP's, and the module's container. */
+private class DockWidths(val slot: Dp, val stop: Dp) {
+    val module: Dp get() = slot + DOCK_INSET * 2
+}
+
+/**
+ * One width for every button, the module's included: what's left once the gap and the
+ * containers' insets come off, shared by the bar's [buttons] and the module's. STOP never goes
+ * under [STOP_MIN_WIDTH]; on a phone too narrow for that, the others give it the difference.
+ */
+private fun dockWidths(maxWidth: Dp, buttons: Int): DockWidths {
+    val free = maxWidth - MODULE_GAP - DOCK_INSET * (buttons + 3)
+    val even = free / (buttons + 1)
+    val stop = max(even, STOP_MIN_WIDTH)
+    return DockWidths(slot = if (stop > even) (free - stop) / buttons else even, stop = stop)
+}
+
+/**
+ * A rounded rectangle with its bottom-left corner cut out, [notchWidth] by [notchHeight]: the
+ * card corner on every outer corner, and a smaller fillet where the cut-out meets the bar, so
+ * the bar flows out of the card rather than being stuck to it.
+ */
+private class NotchedShape(private val notchWidth: Dp, private val notchHeight: Dp) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val r = with(density) { DOCK_RADIUS.toPx() }
+        val f = with(density) { NOTCH_FILLET.toPx() }
+        val nw = with(density) { notchWidth.toPx() }
+        val ny = size.height - with(density) { notchHeight.toPx() } // the card's bottom, left of the bar
+        val w = size.width
+        val h = size.height
+        val path = Path().apply {
+            moveTo(r, 0f)
+            lineTo(w - r, 0f)
+            arcTo(Rect(w - 2 * r, 0f, w, 2 * r), -90f, 90f, false)
+            lineTo(w, h - r)
+            arcTo(Rect(w - 2 * r, h - 2 * r, w, h), 0f, 90f, false)
+            lineTo(nw + r, h)
+            arcTo(Rect(nw, h - 2 * r, nw + 2 * r, h), 90f, 90f, false)
+            lineTo(nw, ny + f)
+            // The inside corner, turning back along the card's bottom.
+            arcTo(Rect(nw - 2 * f, ny, nw, ny + 2 * f), 0f, -90f, false)
+            lineTo(r, ny)
+            arcTo(Rect(0f, ny - 2 * r, 2 * r, ny), 90f, 90f, false)
+            lineTo(0f, r)
+            arcTo(Rect(0f, 0f, 2 * r, 2 * r), 180f, 90f, false)
+            close()
+        }
+        return Outline.Generic(path)
     }
 }
 
@@ -231,5 +355,7 @@ private val MODULE_GAP = 8.dp
 private val DOCK_INSET = 6.dp
 private val STOP_MIN_WIDTH = 72.dp
 // The app's card radius outside; inside, the outer radius less the inset, so the corners nest.
-private val DOCK_SHAPE = RoundedCornerShape(14.dp)
+private val DOCK_RADIUS = 14.dp
+private val DOCK_SHAPE = RoundedCornerShape(DOCK_RADIUS)
+private val NOTCH_FILLET = 8.dp
 private val INNER_SHAPE = RoundedCornerShape(8.dp)
