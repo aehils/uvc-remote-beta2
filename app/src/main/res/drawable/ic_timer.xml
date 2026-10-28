@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Timing: a stopwatch. Tinted by the caller. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="1.8"
+        android:pathData="M12,13.5m-7.5,0a7.5,7.5 0,1 1,15 0a7.5,7.5 0,1 1,-15 0" />
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:pathData="M9.5,2.75h5M12,2.75v3.25M12,13.5V9.5" />
+</vector>

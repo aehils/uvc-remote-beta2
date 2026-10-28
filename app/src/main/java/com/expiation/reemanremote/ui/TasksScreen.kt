@@ -330,7 +330,6 @@ internal fun TaskEditorPage(
     state: RemoteState,
     actions: RemoteActions,
     original: DisinfectionTask?,
-    drive: DriveSheetState,
     onBack: () -> Unit,
 ) {
     BackHandler(onBack = onBack)
@@ -387,12 +386,7 @@ internal fun TaskEditorPage(
                 StatusHeader(state, actions.onDismissAlert)
             }
         },
-        bottomBar = {
-            Column {
-                DriveSheet(state, actions, drive)
-                StopBar(actions.onStop)
-            }
-        },
+        bottomBar = { StopBar(actions.onStop) },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
         Column(

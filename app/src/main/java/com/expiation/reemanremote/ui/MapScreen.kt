@@ -209,7 +209,7 @@ internal class MapDock(val start: List<DockItem>, val end: List<DockItem>)
  * With a tool in hand: Cancel and the tool's tick. Save and Discard for a scan are on the map's
  * Scanning badge.
  */
-internal fun mapDock(state: RemoteState, actions: RemoteActions, ui: MapUi, drive: DriveSheetState): MapDock {
+internal fun mapDock(state: RemoteState, actions: RemoteActions, ui: MapUi, drive: DrivePadState): MapDock {
     if (ui.tool != MapTool.LOOK) {
         val confirm = when (ui.tool) {
             MapTool.PLACE -> DockItem(
@@ -337,7 +337,7 @@ private fun MenuOption(icon: Int, text: String, enabled: Boolean, onClick: () ->
  * pulls the pad up by itself.
  */
 @Composable
-internal fun MapTab(state: RemoteState, actions: RemoteActions, ui: MapUi, drive: DriveSheetState, modifier: Modifier) {
+internal fun MapTab(state: RemoteState, actions: RemoteActions, ui: MapUi, drive: DrivePadState, modifier: Modifier) {
     // The robot's pose and the map image are only read while a map is on screen.
     val onVisible by rememberUpdatedState(actions.onMapVisible)
     DisposableEffect(Unit) {
@@ -897,14 +897,13 @@ private const val ROBOT_RADIUS_M = 0.3 // GUESS, as in the simulator: only for d
 /**
  * Maps: the maps saved on the robot. Start a new map or extend the one in use (both continue on
  * the Map page, driving with its drive pad), switch maps, rename and delete them.
- * Like the other pages, it keeps STOP, the drive sheet and the robot's readings on screen.
+ * Like the other pages, it keeps STOP and the robot's readings on screen.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun MapsPage(
     state: RemoteState,
     actions: RemoteActions,
-    drive: DriveSheetState,
     onBack: () -> Unit,
     onShowMap: () -> Unit,
 ) {
@@ -938,12 +937,7 @@ internal fun MapsPage(
                 StatusHeader(state, actions.onDismissAlert)
             }
         },
-        bottomBar = {
-            Column {
-                DriveSheet(state, actions, drive)
-                StopBar(actions.onStop)
-            }
-        },
+        bottomBar = { StopBar(actions.onStop) },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
         Column(
