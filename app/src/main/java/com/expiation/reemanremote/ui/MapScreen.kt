@@ -3,6 +3,12 @@ package com.expiation.reemanremote.ui
 import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -14,6 +20,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,7 +29,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -49,16 +58,19 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -76,6 +88,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -99,6 +112,7 @@ import com.expiation.reemanremote.RobotMode
 import com.expiation.reemanremote.SavedMap
 import com.expiation.reemanremote.Wall
 import com.expiation.reemanremote.Waypoint
+import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -107,10 +121,10 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-// ---------------------------------------------------------------------- Map tab
+// ---------------------------------------------------------------------- Map page
 
-/** What a touch on the map does: look around, or one of the tools under the map. */
-private enum class MapTool { LOOK, PLACE, WALL, ERASE }
+/** What a touch on the map does: look around, or one of the tools in the dock. */
+internal enum class MapTool { LOOK, PLACE, WALL, ERASE }
 
 /** Everything drawn over the map image. The pending ones were marked while mapping and aren't saved yet. */
 private class MapLayers(
@@ -121,15 +135,209 @@ private class MapLayers(
     val pendingWalls: List<Wall>,
 )
 
+private fun mapLayers(state: RemoteState): MapLayers {
+    val newMap = state.mode == RobotMode.MAPPING // a new map has nothing of the old one's
+    val loaded = state.points as? Points.Loaded
+    return MapLayers(
+        points = if (newMap) emptyList() else loaded?.list.orEmpty(),
+        pile = if (newMap) null else loaded?.pile,
+        walls = if (newMap) emptyList() else state.walls.orEmpty(),
+        pendingPoints = state.pendingPoints,
+        pendingWalls = state.pendingWalls,
+    )
+}
+
 /**
- * The Map tab: the robot on its map (or, while mapping, the scan as it grows) with the saved
- * points, the charging pile and the virtual walls, and the map's own actions. The add button
- * (left) marks a disinfection point or the charging pile where the robot stands, or draws or
- * removes a virtual wall; while mapping these wait in the app and are saved with the map.
- * Driving is the drive sheet's job, below the map: mapping pulls it up by itself.
+ * The Map page's own state: the tool in hand and what it has drawn, and which dialog is open.
+ * Kept above the page (see [rememberMapUi]) because the dock carries the page's buttons.
+ */
+@Stable
+internal class MapUi(tool: MapTool = MapTool.LOOK) {
+    var tool by mutableStateOf(tool)
+        private set
+    var placed by mutableStateOf<Pose?>(null)
+    var draft by mutableStateOf<Wall?>(null)
+    var picked by mutableStateOf<Wall?>(null)
+    var menu by mutableStateOf(false)
+    var adding by mutableStateOf(false)
+    var addingPile by mutableStateOf(false)
+    var saving by mutableStateOf(false)
+    var discarding by mutableStateOf(false)
+    var fit by mutableIntStateOf(0) // bumped to fit the whole map in view again
+
+    fun use(t: MapTool) {
+        tool = t
+        placed = null
+        draft = null
+        picked = null
+    }
+
+    /** Back to looking, with nothing open: for leaving the page. */
+    fun reset() {
+        use(MapTool.LOOK)
+        menu = false
+        adding = false
+        addingPile = false
+        saving = false
+        discarding = false
+    }
+
+    companion object {
+        val Saver = listSaver<MapUi, Any>(
+            save = { listOf(it.tool.name, it.adding, it.addingPile, it.saving, it.discarding) },
+            restore = {
+                MapUi(MapTool.valueOf(it[0] as String)).apply {
+                    adding = it[1] as Boolean
+                    addingPile = it[2] as Boolean
+                    saving = it[3] as Boolean
+                    discarding = it[4] as Boolean
+                }
+            },
+        )
+    }
+}
+
+@Composable
+internal fun rememberMapUi(): MapUi = rememberSaveable(saver = MapUi.Saver) { MapUi() }
+
+/** The Map page's buttons either side of STOP in the dock. */
+internal class MapDock(val start: List<DockItem>, val end: List<DockItem>)
+
+/**
+ * The dock on the Map page: one button either side of STOP, so STOP stays in the middle of the
+ * bar. Looking: Drive (the pad) and Edit (a menu: set position, mark points, the pile, walls).
+ * With a tool in hand: Cancel and the tool's tick. Save and Discard for a scan are on the map's
+ * Scanning badge.
+ */
+internal fun mapDock(state: RemoteState, actions: RemoteActions, ui: MapUi, drive: DriveSheetState): MapDock {
+    if (ui.tool != MapTool.LOOK) {
+        val confirm = when (ui.tool) {
+            MapTool.PLACE -> DockItem(
+                R.drawable.ic_check, "Set here", "Set the robot's position here",
+                enabled = ui.placed != null && state.canStartMapping, prominent = true,
+            ) {
+                ui.placed?.let(actions.onSetPosition)
+                ui.use(MapTool.LOOK)
+            }
+            MapTool.WALL -> DockItem(
+                R.drawable.ic_check, "Add wall", "Add this virtual wall",
+                enabled = (ui.draft?.length ?: 0.0) >= DriveController.MIN_WALL_M && (state.mapping || state.canChangeMap),
+                prominent = true,
+            ) {
+                ui.draft?.let(actions.onAddWall)
+                ui.use(MapTool.LOOK)
+            }
+            else -> DockItem(
+                R.drawable.ic_delete, "Remove", "Remove this virtual wall",
+                enabled = ui.picked.let { it != null && (it in state.pendingWalls || state.canStartMapping) },
+                prominent = true,
+            ) {
+                ui.picked?.let(actions.onRemoveWall)
+                ui.use(MapTool.LOOK)
+            }
+        }
+        return MapDock(
+            start = listOf(DockItem(R.drawable.ic_close, "Cancel") { ui.use(MapTool.LOOK) }),
+            end = listOf(confirm),
+        )
+    }
+    val drawable = state.mapImage?.placeable == true
+    val driveItem = DockItem(
+        R.drawable.ic_tab_remote, "Drive",
+        if (drive.open) "Hide the drive controls" else "Show the drive controls",
+        selectedIcon = R.drawable.ic_tab_remote_filled,
+        selected = drive.open,
+    ) { drive.onOpenChange(!drive.open) }
+    val edit = DockItem(
+        R.drawable.ic_add_point, "Edit", "Edit the map",
+        menu = { EditMenu(state, ui, drawable) },
+    ) { ui.menu = true }
+    return MapDock(start = listOf(driveItem), end = listOf(edit))
+}
+
+/**
+ * The Edit button's menu. Small grey headings (never tappable) group the options, each of which
+ * has an icon, so a heading is never taken for an option: where the robot is, what to add where
+ * it stands, and the virtual walls. Setting the position is for a saved map, so not while mapping.
  */
 @Composable
-internal fun MapTab(state: RemoteState, actions: RemoteActions, @Suppress("UNUSED_PARAMETER") onOpenMaps: () -> Unit, modifier: Modifier) {
+private fun EditMenu(state: RemoteState, ui: MapUi, drawable: Boolean) {
+    val layers = mapLayers(state)
+    fun pick(action: () -> Unit) {
+        ui.menu = false
+        action()
+    }
+    DropdownMenu(
+        expanded = ui.menu,
+        onDismissRequest = { ui.menu = false },
+        modifier = Modifier.widthIn(min = 264.dp),
+        shape = RoundedCornerShape(14.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        if (!state.mapping) {
+            MenuHeading("Robot", first = true)
+            MenuOption(R.drawable.ic_set_position, "Set the robot's position", enabled = state.canStartMapping && drawable) {
+                pick { ui.use(MapTool.PLACE) }
+            }
+        }
+        MenuHeading("Add where the robot stands", first = state.mapping)
+        MenuOption(R.drawable.ic_add_point, "Disinfection point", enabled = state.canMark) { pick { ui.adding = true } }
+        MenuOption(R.drawable.ic_dock, "Charging pile", enabled = state.canMark) { pick { ui.addingPile = true } }
+        MenuHeading("Virtual walls")
+        MenuOption(R.drawable.ic_wall, "Draw a wall", enabled = drawable && (state.mapping || state.canStartMapping)) {
+            pick { ui.use(MapTool.WALL) }
+        }
+        MenuOption(
+            R.drawable.ic_delete, "Remove a wall",
+            enabled = drawable && (layers.walls.isNotEmpty() || layers.pendingWalls.isNotEmpty()),
+        ) { pick { ui.use(MapTool.ERASE) } }
+    }
+}
+
+/** A heading in a menu: small grey capitals, not tappable. A hairline above it, but for the first. */
+@Composable
+private fun MenuHeading(text: String, first: Boolean = false) {
+    if (!first) HorizontalDivider(Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant)
+    Text(
+        text.uppercase(Locale.US),
+        modifier = Modifier
+            .padding(start = 16.dp, end = 16.dp, top = if (first) 8.dp else 4.dp, bottom = 2.dp)
+            .semantics { heading() },
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 1.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/** An option in a menu: its icon, in the accent, and what it does. */
+@Composable
+private fun MenuOption(icon: Int, text: String, enabled: Boolean, onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = { Text(text, style = MaterialTheme.typography.bodyLarge) },
+        onClick = onClick,
+        enabled = enabled,
+        leadingIcon = {
+            Icon(
+                painterResource(icon),
+                contentDescription = null,
+                modifier = Modifier.size(22.dp),
+                tint = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+            )
+        },
+    )
+}
+
+/**
+ * The Map page: the robot on its map (or, while mapping, the scan as it grows) with the saved
+ * points, the charging pile and the virtual walls, and, under it, the drive pad when the
+ * Drive button is on. Both sit in the page's one card, which runs down into the bar. The page's buttons are in the dock ([mapDock]): Edit sets the robot's
+ * position, marks a disinfection point or the charging pile where the robot stands, or draws or
+ * removes a virtual wall; while mapping these wait in the app and are saved with the map. Mapping
+ * pulls the pad up by itself.
+ */
+@Composable
+internal fun MapTab(state: RemoteState, actions: RemoteActions, ui: MapUi, drive: DriveSheetState, modifier: Modifier) {
     // The robot's pose and the map image are only read while a map is on screen.
     val onVisible by rememberUpdatedState(actions.onMapVisible)
     DisposableEffect(Unit) {
@@ -140,28 +348,11 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, @Suppress("UNUSE
     LaunchedEffect(state.connected, points is Points.NotLoaded, state.mapping) {
         if (state.connected && points is Points.NotLoaded && !state.mapping) actions.onLoadPoints()
     }
-
-    var tool by rememberSaveable { mutableStateOf(MapTool.LOOK) }
-    var placed by remember { mutableStateOf<Pose?>(null) }
-    var draft by remember { mutableStateOf<Wall?>(null) }
-    var picked by remember { mutableStateOf<Wall?>(null) }
-    var menu by remember { mutableStateOf(false) }
-    var adding by rememberSaveable { mutableStateOf(false) }
-    var addingPile by rememberSaveable { mutableStateOf(false) }
-    var saving by rememberSaveable { mutableStateOf(false) }
-    var discarding by rememberSaveable { mutableStateOf(false) }
-    var fit by remember { mutableIntStateOf(0) } // bumped to fit the whole map in view again
-    fun useTool(t: MapTool) {
-        tool = t
-        placed = null
-        draft = null
-        picked = null
-    }
     // Setting the position is for a saved map only.
-    LaunchedEffect(state.mapping) { if (state.mapping && tool == MapTool.PLACE) useTool(MapTool.LOOK) }
+    LaunchedEffect(state.mapping) { if (state.mapping && ui.tool == MapTool.PLACE) ui.use(MapTool.LOOK) }
 
     // The outcome of the last map or point command, shown on the map for a while (tap to hide
-    // it sooner; the Activity tab keeps it). Not the ones from before the tab was opened.
+    // it sooner; the activity log keeps it). Not the ones from before the page was opened.
     var note by remember { mutableStateOf<String?>(null) }
     val seenMap = remember { state.mapMessage }
     val seenPoint = remember { state.pointMessage }
@@ -183,27 +374,18 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, @Suppress("UNUSE
     }
 
     val image = state.mapImage
-    val newMap = state.mode == RobotMode.MAPPING // a new map has nothing of the old one's
-    val loaded = points as? Points.Loaded
-    val layers = MapLayers(
-        points = if (newMap) emptyList() else loaded?.list.orEmpty(),
-        pile = if (newMap) null else loaded?.pile,
-        walls = if (newMap) emptyList() else state.walls.orEmpty(),
-        pendingPoints = state.pendingPoints,
-        pendingWalls = state.pendingWalls,
-    )
+    val layers = mapLayers(state)
     val drawable = image?.placeable == true
-    Column(
-        modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
+    // Inside the page's card (see JoinedDock): the map is a window in it, at the buttons' corner.
+    val shape = RoundedCornerShape(8.dp)
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(14.dp))
-                .background(MaterialTheme.colorScheme.surface)
-                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(14.dp)),
+                .clip(shape)
+                .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape),
             contentAlignment = Alignment.Center,
         ) {
             if (image != null && drawable) {
@@ -211,14 +393,14 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, @Suppress("UNUSE
                     image = image,
                     robot = state.robotPose,
                     layers = layers,
-                    tool = tool,
-                    ghost = placed,
-                    draft = draft,
-                    picked = picked,
-                    onPlace = { placed = it },
-                    onDraft = { draft = it },
-                    onPick = { picked = it },
-                    fitKey = fit,
+                    tool = ui.tool,
+                    ghost = ui.placed,
+                    draft = ui.draft,
+                    picked = ui.picked,
+                    onPlace = { ui.placed = it },
+                    onDraft = { ui.draft = it },
+                    onPick = { ui.picked = it },
+                    fitKey = ui.fit,
                 )
             } else {
                 Text(
@@ -235,13 +417,25 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, @Suppress("UNUSE
                     textAlign = TextAlign.Center,
                 )
             }
+            if (state.mapping) {
+                MappingBadge(
+                    extending = state.mode == RobotMode.EXTENDING,
+                    canFinish = state.canChangeMap,
+                    onDiscard = { ui.discarding = true },
+                    onSave = { ui.saving = true },
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(8.dp),
+                )
+            }
             if (image != null) {
-                TextButton(
-                    onClick = { fit++ },
+                MapChipButton(
+                    "Fit",
+                    onClickLabel = "Fit the whole map in view",
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .padding(4.dp),
-                ) { Text("Fit") }
+                        .padding(8.dp),
+                ) { ui.fit++ }
             }
             if (state.mapStep != null) {
                 LinearProgressIndicator(
@@ -250,7 +444,7 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, @Suppress("UNUSE
                         .align(Alignment.TopCenter)
                 )
             }
-            val hint = when (tool) {
+            val hint = when (ui.tool) {
                 MapTool.PLACE -> "Tap where the robot really is, then drag the way it faces."
                 MapTool.WALL -> "Drag from one end of the wall to the other. The robot won't cross it."
                 MapTool.ERASE -> "Tap the wall to remove."
@@ -261,112 +455,35 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, @Suppress("UNUSE
                     it,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(8.dp)
+                        .padding(10.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
                         .clickable(onClickLabel = "Hide") { note = null }
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
                 )
             }
         }
-
-        // Icons, not words, so the map keeps the room. Each one names itself to TalkBack.
-        val cell = Modifier.height(48.dp)
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (tool != MapTool.LOOK) {
-                MapAction(R.drawable.ic_close, "Cancel", cell.weight(1f), outlined = true) { useTool(MapTool.LOOK) }
-                when (tool) {
-                    MapTool.PLACE -> MapAction(
-                        R.drawable.ic_check, "Set the robot's position here", cell.weight(1f),
-                        enabled = placed != null && state.canStartMapping,
-                    ) {
-                        placed?.let(actions.onSetPosition)
-                        useTool(MapTool.LOOK)
-                    }
-                    MapTool.WALL -> MapAction(
-                        R.drawable.ic_check, "Add this virtual wall", cell.weight(1f),
-                        enabled = (draft?.length ?: 0.0) >= DriveController.MIN_WALL_M && (state.mapping || state.canChangeMap),
-                    ) {
-                        draft?.let(actions.onAddWall)
-                        useTool(MapTool.LOOK)
-                    }
-                    else -> MapAction(
-                        R.drawable.ic_delete, "Remove this virtual wall", cell.weight(1f),
-                        enabled = picked != null && (picked in state.pendingWalls || state.canStartMapping),
-                    ) {
-                        picked?.let(actions.onRemoveWall)
-                        useTool(MapTool.LOOK)
-                    }
-                }
-            } else {
-                // The add menu: what to mark on the map.
-                Box(cell.weight(1f)) {
-                    MapAction(R.drawable.ic_add_point, "Add to the map", Modifier.fillMaxSize(), outlined = true) { menu = true }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(
-                            text = { Text("Disinfection point here") },
-                            enabled = state.canMark,
-                            onClick = {
-                                menu = false
-                                adding = true
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Charging pile here") },
-                            enabled = state.canMark,
-                            onClick = {
-                                menu = false
-                                addingPile = true
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Virtual wall") },
-                            enabled = drawable && (state.mapping || state.canStartMapping),
-                            onClick = {
-                                menu = false
-                                useTool(MapTool.WALL)
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Remove a virtual wall") },
-                            enabled = drawable && (layers.walls.isNotEmpty() || layers.pendingWalls.isNotEmpty()),
-                            onClick = {
-                                menu = false
-                                useTool(MapTool.ERASE)
-                            },
-                        )
-                    }
-                }
-                if (state.mapping) {
-                    MapAction(R.drawable.ic_delete, "Discard the scan", cell.weight(1f), outlined = true, enabled = state.canChangeMap) { discarding = true }
-                    MapAction(R.drawable.ic_save, "Save the map", cell.weight(1f), enabled = state.canChangeMap) { saving = true }
-                } else {
-                    MapAction(
-                        R.drawable.ic_set_position, "Set the robot's position", cell.weight(1f), outlined = true,
-                        enabled = state.canStartMapping && drawable,
-                    ) { useTool(MapTool.PLACE) }
-                }
-            }
-        }
+        AnimatedVisibility(drive.open) { DrivePanel(state, actions) }
     }
 
-    if (adding) {
+    if (ui.adding) {
         val taken = (layers.points + layers.pendingPoints).map { it.name }.toSet() + "charging_pile" + DriveController.APPROACH_POINT
         AddPointDialog(
             taken = taken,
-            onDismiss = { adding = false },
+            onDismiss = { ui.adding = false },
             onAdd = {
-                adding = false
+                ui.adding = false
                 actions.onAddPoint(it)
             },
         )
     }
-    if (addingPile) {
+    if (ui.addingPile) {
         val replaces = layers.pile != null || layers.pendingPoints.any { it.type == "charge" }
         AlertDialog(
-            onDismissRequest = { addingPile = false },
+            onDismissRequest = { ui.addingPile = false },
             title = { Text("Mark the charging pile here?") },
             text = {
                 Text(
@@ -379,14 +496,14 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, @Suppress("UNUSE
             },
             confirmButton = {
                 TextButton(onClick = {
-                    addingPile = false
+                    ui.addingPile = false
                     actions.onAddChargingPile()
                 }) { Text("Mark pile", fontWeight = FontWeight.Bold) }
             },
-            dismissButton = { TextButton(onClick = { addingPile = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { ui.addingPile = false }) { Text("Cancel") } },
         )
     }
-    if (saving) {
+    if (ui.saving) {
         val extending = state.mode == RobotMode.EXTENDING
         val marks = state.pendingPoints.size + state.pendingWalls.size
         MapNameDialog(
@@ -397,17 +514,17 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, @Suppress("UNUSE
             initial = if (extending) state.currentMap?.alias.orEmpty() else "",
             required = !extending,
             confirm = "Save",
-            onDismiss = { saving = false },
+            onDismiss = { ui.saving = false },
             onConfirm = {
-                saving = false
+                ui.saving = false
                 actions.onSaveMap(it)
             },
         )
     }
-    if (discarding) {
+    if (ui.discarding) {
         val marks = state.pendingPoints.size + state.pendingWalls.size
         AlertDialog(
-            onDismissRequest = { discarding = false },
+            onDismissRequest = { ui.discarding = false },
             title = { Text("Discard the scan?") },
             text = {
                 Text(
@@ -418,60 +535,157 @@ internal fun MapTab(state: RemoteState, actions: RemoteActions, @Suppress("UNUSE
             },
             confirmButton = {
                 TextButton(onClick = {
-                    discarding = false
+                    ui.discarding = false
                     actions.onDiscardMapping()
                 }) { Text("Discard", fontWeight = FontWeight.Bold) }
             },
-            dismissButton = { TextButton(onClick = { discarding = false }) { Text("Keep mapping") } },
+            dismissButton = { TextButton(onClick = { ui.discarding = false }) { Text("Keep mapping") } },
         )
     }
 }
 
-/** One of the Map tab's actions, as an icon button. */
+/**
+ * Over the map's top left while mapping: a live dot, what the robot is doing, and the two ways
+ * to finish, Discard (quiet) and Save.
+ */
 @Composable
-private fun MapAction(icon: Int, label: String, modifier: Modifier, outlined: Boolean = false, enabled: Boolean = true, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(12.dp)
-    val content: @Composable () -> Unit = {
-        Icon(painterResource(icon), contentDescription = label, modifier = Modifier.size(24.dp))
+private fun MappingBadge(extending: Boolean, canFinish: Boolean, onDiscard: () -> Unit, onSave: () -> Unit, modifier: Modifier) {
+    val good = RemoteTheme.status.good
+    val pulse by rememberInfiniteTransition(label = "mapping").animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+        label = "dot",
+    )
+    val shape = RoundedCornerShape(8.dp)
+    Row(
+        modifier
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
+            .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(8.dp)
+                .alpha(pulse)
+                .background(good, CircleShape)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            if (extending) "Extending" else "Scanning",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = good,
+        )
+        Spacer(Modifier.width(4.dp))
+        TextButton(onClick = onDiscard, enabled = canFinish) { Text("Discard") }
+        Button(
+            onClick = onSave,
+            enabled = canFinish,
+            modifier = Modifier.height(36.dp),
+            shape = RoundedCornerShape(8.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp),
+        ) { Text("Save", fontWeight = FontWeight.Bold) }
     }
-    if (outlined) OutlinedButton(onClick, modifier, enabled, shape) { content() }
-    else Button(onClick, modifier, enabled, shape) { content() }
+}
+
+/** A small floating button over the map. */
+@Composable
+private fun MapChipButton(label: String, onClickLabel: String, modifier: Modifier, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(8.dp)
+    Text(
+        label,
+        modifier = modifier
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
+            .clickable(onClickLabel = onClickLabel, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.primary,
+    )
 }
 
 private const val NOTE_MS = 8_000L
 
-/** The map's name, in the Map tab's readings; tapping it opens the Maps page. */
+/**
+ * The map's name, in the Map page's readings, and the map's own menu: start a new map or extend
+ * this one, right where the map and the pad are (the same confirm as the Maps page), or open the
+ * saved maps. While mapping only the last: Save and Discard are on the Scanning badge.
+ */
 @Composable
-internal fun MapChip(state: RemoteState, onOpenMaps: () -> Unit, modifier: Modifier = Modifier) {
+internal fun MapChip(state: RemoteState, onOpenMaps: () -> Unit, onStartMapping: (Boolean) -> Unit, modifier: Modifier = Modifier) {
     val shape = RoundedCornerShape(10.dp)
-    Row(
-        modifier
-            .clip(shape)
-            .border(1.dp, MaterialTheme.colorScheme.outline, shape)
-            .clickable(onClickLabel = "Open your saved maps", onClick = onOpenMaps)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            painterResource(R.drawable.ic_tab_map),
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-            tint = MaterialTheme.colorScheme.primary,
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            when {
-                state.mode == RobotMode.MAPPING -> "New map"
-                else -> state.currentMap?.label ?: "Map"
+    var menu by remember { mutableStateOf(false) }
+    // null: no dialog; false: a new map; true: extend the map in use.
+    var starting by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    Box(modifier) {
+        Row(
+            Modifier
+                .clip(shape)
+                .border(1.dp, MaterialTheme.colorScheme.outline, shape)
+                .clickable(onClickLabel = "Map options") { menu = true }
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                painterResource(R.drawable.ic_tab_map),
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                when {
+                    state.mode == RobotMode.MAPPING -> "New map"
+                    else -> state.currentMap?.label ?: "Map"
+                },
+                modifier = Modifier.weight(1f, fill = false),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.width(6.dp))
+            Text("▾", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        DropdownMenu(
+            expanded = menu,
+            onDismissRequest = { menu = false },
+            modifier = Modifier.widthIn(min = 240.dp),
+            shape = RoundedCornerShape(14.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            MenuHeading("Maps", first = true)
+            if (!state.mapping) {
+                MenuOption(R.drawable.ic_map_new, "Start a new map", enabled = state.canStartMapping) {
+                    menu = false
+                    starting = false
+                }
+                MenuOption(R.drawable.ic_map_extend, "Extend this map", enabled = state.canStartMapping && state.currentMap != null) {
+                    menu = false
+                    starting = true
+                }
+            }
+            MenuOption(R.drawable.ic_tab_map, "Saved maps", enabled = true) {
+                menu = false
+                onOpenMaps()
+            }
+        }
+    }
+    starting?.let { extend ->
+        StartMappingDialog(
+            extend = extend,
+            inUse = state.currentMap,
+            onDismiss = { starting = null },
+            onConfirm = {
+                starting = null
+                onStartMapping(extend)
             },
-            modifier = Modifier.weight(1f, fill = false),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
         )
-        Spacer(Modifier.width(6.dp))
-        Text("▾", color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -682,7 +896,7 @@ private const val ROBOT_RADIUS_M = 0.3 // GUESS, as in the simulator: only for d
 
 /**
  * Maps: the maps saved on the robot. Start a new map or extend the one in use (both continue on
- * the Map tab, driving with the drive sheet), switch maps, rename and delete them.
+ * the Map page, driving with its drive pad), switch maps, rename and delete them.
  * Like the other pages, it keeps STOP, the drive sheet and the robot's readings on screen.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -717,7 +931,6 @@ internal fun MapsPage(
                     },
                     title = { Text("Maps", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
                     actions = {
-                        BatteryReading(state)
                         TextButton(onClick = actions.onLoadMaps, enabled = state.connected && maps != Maps.Loading) { Text("Refresh") }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
@@ -813,28 +1026,15 @@ internal fun MapsPage(
     }
 
     starting?.let { extend ->
-        AlertDialog(
-            onDismissRequest = { starting = null },
-            title = { Text(if (extend) "Extend ${inUse?.label ?: "this map"}?" else "Start a new map?") },
-            text = {
-                Text(
-                    if (extend) "The robot adds to the map as you drive it into new areas. Check first that it's in " +
-                        "the right place on the map (Map tab), or the new part won't line up. Trips and " +
-                        "disinfection wait until you save or discard."
-                    else "The robot starts a fresh scan; your saved maps stay as they are. Drive it slowly round " +
-                        "the whole area with DRIVE, coming back past where you started, then save it on the Map " +
-                        "tab. Trips and disinfection wait until you save or discard.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+        StartMappingDialog(
+            extend = extend,
+            inUse = inUse,
+            onDismiss = { starting = null },
+            onConfirm = {
+                starting = null
+                actions.onStartMapping(extend)
+                onShowMap()
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    starting = null
-                    actions.onStartMapping(extend)
-                    onShowMap()
-                }) { Text(if (extend) "Extend" else "Start mapping", fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = { TextButton(onClick = { starting = null }) { Text("Cancel") } },
         )
     }
     using?.let { m ->
@@ -844,7 +1044,7 @@ internal fun MapsPage(
             text = {
                 Text(
                     "The robot switches to this map and its points, and assumes it's standing on the map's " +
-                        "charging pile. If it isn't, set its position on the Map tab afterwards.",
+                        "charging pile. If it isn't, set its position on the Map page afterwards.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             },
@@ -891,6 +1091,30 @@ internal fun MapsPage(
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
         )
     }
+}
+
+/** Asks before a new map ([extend] false) or extending the one in use: what happens, and what waits. */
+@Composable
+internal fun StartMappingDialog(extend: Boolean, inUse: SavedMap?, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (extend) "Extend ${inUse?.label ?: "this map"}?" else "Start a new map?") },
+        text = {
+            Text(
+                if (extend) "The robot adds to the map as you drive it into new areas. Check first that it's in " +
+                    "the right place on the map, or the new part won't line up. Trips and disinfection wait " +
+                    "until you save or discard."
+                else "The robot starts a fresh scan; your saved maps stay as they are. Drive it slowly round " +
+                    "the whole area with Drive, coming back past where you started, then save it with the " +
+                    "Scanning badge's Save. Trips and disinfection wait until you save or discard.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text(if (extend) "Extend" else "Start mapping", fontWeight = FontWeight.Bold) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 /** One saved map: its picture, its name, and a menu to use, rename or delete it. */

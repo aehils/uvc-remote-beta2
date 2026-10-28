@@ -55,8 +55,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -69,6 +67,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -76,6 +75,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -85,9 +85,15 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.drawscope.Fill
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -190,7 +196,11 @@ data class RemoteActions(
 @Composable
 fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
     // Kept here, not in MainPage, so coming back from another page returns to the same tab.
-    var tab by rememberSaveable { mutableStateOf(Tab.REMOTE) }
+    // Tasks first: it is the one-stop page for the staff running the robot.
+    var tab by rememberSaveable { mutableStateOf(Tab.TASKS) }
+    // The Map page (the map and the drive pad) is a mode over the tabs, not a tab: leaving it
+    // goes back to the tab it was opened from.
+    var mapOpen by rememberSaveable { mutableStateOf(false) }
     var page by rememberSaveable { mutableStateOf(Page.MAIN) }
     // The task the editor is open on: its id, or "" for a new one.
     var editingTask by rememberSaveable { mutableStateOf("") }
@@ -203,85 +213,132 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
 
     val drive = DriveSheetState(driveOpen) { driveOpen = it }
     val demoStatus = state.demoStatus
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        AnimatedVisibility(state.demo) { DemoStrip() }
-        Box(Modifier.weight(1f)) {
-            when {
-                page == Page.DEMO_CONTROLS && demoStatus != null ->
-                    DemoControlsPage(state, demoStatus, actions, drive, onBack = { page = Page.MAIN })
-                page == Page.POINTS -> PointsPage(state, actions, drive, onBack = { page = Page.MAIN })
-                page == Page.TASK_EDIT -> TaskEditorPage(
-                    state, actions,
-                    original = state.tasks.firstOrNull { it.id == editingTask },
-                    drive = drive,
-                    onBack = { page = Page.MAIN },
-                )
-                page == Page.MAPS -> MapsPage(
-                    state, actions, drive,
-                    onBack = { page = Page.MAIN },
-                    onShowMap = {
-                        page = Page.MAIN
-                        tab = Tab.MAP
-                    },
-                )
-                else -> MainPage(
-                    state, actions, tab, drive,
-                    onTabChange = { tab = it },
-                    onOpenDemoControls = { page = Page.DEMO_CONTROLS },
-                    onOpenPoints = { page = Page.POINTS },
-                    onOpenMaps = { page = Page.MAPS },
-                    onEditTask = {
-                        editingTask = it
-                        page = Page.TASK_EDIT
-                    },
-                )
+    // The connection lives in Settings: the connection line under the readings, on any page, goes there.
+    val openSettings: () -> Unit = remember {
+        {
+            page = Page.MAIN
+            mapOpen = false
+            tab = Tab.SETTINGS
+        }
+    }
+    CompositionLocalProvider(LocalOpenSettings provides openSettings) {
+        Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+            BetaMark()
+            AnimatedVisibility(state.demo) { DemoStrip() }
+            Box(Modifier.weight(1f)) {
+                when {
+                    page == Page.DEMO_CONTROLS && demoStatus != null ->
+                        DemoControlsPage(state, demoStatus, actions, drive, onBack = { page = Page.MAIN })
+                    page == Page.POINTS -> PointsPage(state, actions, drive, onBack = { page = Page.MAIN })
+                    page == Page.ACTIVITY -> SubPage("Activity log", state, actions, drive, onBack = { page = Page.MAIN }) {
+                        ActivityLog(state.log, it)
+                    }
+                    page == Page.ROBOT_INFO -> SubPage("Robot information", state, actions, drive, onBack = { page = Page.MAIN }) {
+                        RobotInfo(state, it)
+                    }
+                    page == Page.TASK_EDIT -> TaskEditorPage(
+                        state, actions,
+                        original = state.tasks.firstOrNull { it.id == editingTask },
+                        drive = drive,
+                        onBack = { page = Page.MAIN },
+                    )
+                    page == Page.MAPS -> MapsPage(
+                        state, actions, drive,
+                        onBack = { page = Page.MAIN },
+                        onShowMap = {
+                            page = Page.MAIN
+                            mapOpen = true
+                        },
+                    )
+                    else -> MainPage(
+                        state, actions, tab, mapOpen, drive,
+                        onTabChange = { tab = it },
+                        onMapOpenChange = { mapOpen = it },
+                        onOpenDemoControls = { page = Page.DEMO_CONTROLS },
+                        onOpenPoints = { page = Page.POINTS },
+                        onOpenMaps = { page = Page.MAPS },
+                        onOpenActivity = { page = Page.ACTIVITY },
+                        onOpenRobotInfo = { page = Page.ROBOT_INFO },
+                        onEditTask = {
+                            editingTask = it
+                            page = Page.TASK_EDIT
+                        },
+                    )
+                }
             }
         }
     }
 }
 
+/** Opens Settings, where the connection is: for the connection line under every page's readings. */
+private val LocalOpenSettings = staticCompositionLocalOf<(() -> Unit)?> { null }
+
 /** Pages over the main (tabbed) page. Each keeps STOP, the drive sheet and the robot's readings on screen. */
-private enum class Page { MAIN, DEMO_CONTROLS, POINTS, MAPS, TASK_EDIT }
+private enum class Page { MAIN, DEMO_CONTROLS, POINTS, MAPS, TASK_EDIT, ACTIVITY, ROBOT_INFO }
 
 /** Whether the drive sheet is pulled up, and how to change that. */
 internal class DriveSheetState(val open: Boolean, val onOpenChange: (Boolean) -> Unit)
 
-private enum class Tab(val label: String, val icon: Int) {
-    REMOTE("Remote", R.drawable.ic_tab_remote),
-    TASKS("Tasks", R.drawable.ic_tab_tasks),
-    MAP("Map", R.drawable.ic_tab_map),
-    ACTIVITY("Activity", R.drawable.ic_tab_activity),
+/** The tabs, each with its outline icon and the filled one it takes while it is open. */
+private enum class Tab(val label: String, val icon: Int, val selectedIcon: Int) {
+    TASKS("Tasks", R.drawable.ic_tab_tasks, R.drawable.ic_tab_tasks_filled),
+    SETTINGS("Settings", R.drawable.ic_tab_settings, R.drawable.ic_tab_settings_filled),
 }
 
 /**
  * Layout, top to bottom: DEMO strip (from [RemoteScreen]), title bar, the robot's readings (pinned, on every tab),
- * the current tab, and the nav bar with STOP in its centre so STOP is on every tab too.
+ * the current tab or the Map page, and the dock with STOP in its centre so STOP is on every tab too.
+ *
+ * The dock's left button opens the Map page. There it becomes the way out, and either side of
+ * STOP the bar carries the map's own buttons (Drive, Edit), so the map itself gets the page.
  */
 @Composable
 private fun MainPage(
     state: RemoteState,
     actions: RemoteActions,
     tab: Tab,
+    mapOpen: Boolean,
     drive: DriveSheetState,
     onTabChange: (Tab) -> Unit,
+    onMapOpenChange: (Boolean) -> Unit,
     onOpenDemoControls: () -> Unit,
     onOpenPoints: () -> Unit,
     onOpenMaps: () -> Unit,
+    onOpenActivity: () -> Unit,
+    onOpenRobotInfo: () -> Unit,
     onEditTask: (String) -> Unit,
 ) {
+    // The Map page's tools and dialogs live here, so the dock can carry its buttons.
+    val map = rememberMapUi()
+    val closeMap = {
+        map.reset()
+        onMapOpenChange(false)
+    }
+    BackHandler(enabled = mapOpen, onBack = closeMap)
+    fun tabItem(t: Tab) = DockItem(t.icon, t.label, selectedIcon = t.selectedIcon, selected = tab == t, isTab = true) { onTabChange(t) }
+    val stop = DockStop(moving = state.busy || !state.still, onStop = actions.onStop)
+
     Scaffold(
         topBar = {
+            // No title bar: the readings are the top of the page. On the Map page they show the
+            // map in use, not the speed.
             Column {
-                TopBar(state, actions, onOpenDemoControls)
-                // On the Map tab the readings show the robot's mode and the map, not its speed.
-                StatusHeader(state, actions.onDismissAlert, onOpenMaps = onOpenMaps.takeIf { tab == Tab.MAP })
+                StatusHeader(
+                    state, actions.onDismissAlert,
+                    onOpenMaps = onOpenMaps.takeIf { mapOpen },
+                    onStartMapping = actions.onStartMapping,
+                )
             }
         },
         bottomBar = {
-            Column {
-                // On the Remote tab the pad is the page itself; the Tasks tab has none.
-                if (tab != Tab.REMOTE && tab != Tab.TASKS) DriveSheet(state, actions, drive)
-                NavBar(tab, onTabChange, moving = state.busy || !state.still, actions.onStop)
+            // The Map page draws its own: the bar is part of its card (below).
+            if (!mapOpen) {
+                NavDock(
+                    module = DockItem(R.drawable.ic_tab_map, "Map", "Open the map and drive the robot") { onMapOpenChange(true) },
+                    start = listOf(tabItem(Tab.TASKS)),
+                    end = listOf(tabItem(Tab.SETTINGS)),
+                    stop = stop,
+                )
             }
         },
         containerColor = MaterialTheme.colorScheme.background,
@@ -289,290 +346,116 @@ private fun MainPage(
         val content = Modifier
             .padding(padding)
             .fillMaxSize()
-        when (tab) {
-            // The pad sits at the bottom, by the thumb and next to STOP. Portrait only, so it always fits.
-            Tab.REMOTE -> Column(
-                content.padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.Bottom),
-            ) {
-                DriveCard(state, actions)
+        when {
+            mapOpen -> {
+                val dock = mapDock(state, actions, map, drive)
+                // One piece: the map card running down into the bar; Exit, orange, in the cut-out.
+                JoinedDock(
+                    module = DockItem(R.drawable.ic_exit, "Exit", "Leave the map", accent = RemoteTheme.status.exit, onClick = closeMap),
+                    start = dock.start,
+                    end = dock.end,
+                    stop = stop,
+                    modifier = content,
+                ) {
+                    MapTab(state, actions, map, drive, Modifier.fillMaxSize())
+                }
             }
-            Tab.TASKS -> TasksTab(state, actions, onOpenPoints, onEditTask, content)
-            Tab.MAP -> MapTab(state, actions, onOpenMaps, content)
-            Tab.ACTIVITY -> ActivityLog(state.log, content)
-        }
-    }
-}
-
-/** Four tabs with STOP in the centre: always on screen, always under the thumb, and never a tab. */
-@Composable
-private fun NavBar(current: Tab, onSelect: (Tab) -> Unit, moving: Boolean, onStop: () -> Unit) {
-    NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
-        @Composable
-        fun RowScope.item(t: Tab) = NavigationBarItem(
-            selected = current == t,
-            onClick = { onSelect(t) },
-            icon = { Icon(painterResource(t.icon), contentDescription = null, modifier = Modifier.size(24.dp)) },
-            label = { Text(t.label) },
-        )
-        item(Tab.REMOTE)
-        item(Tab.TASKS)
-        StopNavButton(moving, onStop)
-        item(Tab.MAP)
-        item(Tab.ACTIVITY)
-    }
-}
-
-/** STOP as the nav bar's centre. While the robot is moving it gets a pulsing ring, so it is found fastest then. */
-@Composable
-private fun RowScope.StopNavButton(moving: Boolean, onStop: () -> Unit) {
-    val stop = RemoteTheme.status.stop
-    val pulse by rememberInfiniteTransition(label = "stop").animateFloat(
-        initialValue = 0.15f,
-        targetValue = 0.6f,
-        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
-        label = "ring",
-    )
-    Box(
-        Modifier
-            .weight(1.2f)
-            .height(80.dp), // the bar's height; fillMaxHeight would grow the bar to the whole screen
-        contentAlignment = Alignment.Center,
-    ) {
-        Box(
-            Modifier
-                .size(68.dp)
-                .border(3.dp, if (moving) stop.copy(alpha = pulse) else Color.Transparent, CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Button(
-                onClick = onStop,
-                modifier = Modifier.size(60.dp),
-                shape = CircleShape,
-                contentPadding = PaddingValues(0.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = stop, contentColor = Color.White),
-                elevation = ButtonDefaults.buttonElevation(defaultElevation = 3.dp),
-            ) {
-                Text("STOP", fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
-            }
+            tab == Tab.TASKS -> TasksTab(state, actions, onOpenPoints, onEditTask, content)
+            else -> SettingsTab(state, actions, onOpenActivity, onOpenRobotInfo, onOpenDemoControls, onOpenMaps, content)
         }
     }
 }
 
 // ---------------------------------------------------------------------- chrome
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun TopBar(state: RemoteState, actions: RemoteActions, onOpenDemoControls: () -> Unit) {
-    TopAppBar(
-        title = { BetaPill() },
-        actions = {
-            BatteryReading(state)
-            Spacer(Modifier.width(12.dp))
-            RobotMenu(state, actions, onOpenDemoControls)
-            Spacer(Modifier.width(8.dp))
-        },
-        colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
-    )
-}
-
-@Composable
-private fun BetaPill() {
-    Text(
-        "BETA",
-        modifier = Modifier
-            .background(BetaOrange, RoundedCornerShape(6.dp))
-            .padding(horizontal = 8.dp, vertical = 2.dp),
-        color = Color.White,
-        style = MaterialTheme.typography.labelSmall,
-        fontWeight = FontWeight.Bold,
-        letterSpacing = 1.sp,
-    )
-}
-
-/**
- * The robot pill: which robot the app talks to (DEMO, or its name: see [RobotName]) and a
- * connection light (green answering, orange not). Its menu picks a robot the app has found,
- * takes an address typed in, and switches DEMO on and off.
- */
-@Composable
-private fun RobotMenu(state: RemoteState, actions: RemoteActions, onOpenDemoControls: () -> Unit) {
-    val status = RemoteTheme.status
-    val onDemoChange = actions.onDemoChange
-    var open by rememberSaveable { mutableStateOf(false) }
-
-    Box {
-        Row(
-            Modifier
-                .clip(RoundedCornerShape(6.dp))
-                .background(if (state.demo) status.demoContainer else Color.Transparent)
-                .border(1.dp, if (state.demo) status.demo else MaterialTheme.colorScheme.outline, RoundedCornerShape(6.dp))
-                .clickable(onClickLabel = "Robot and DEMO options") { open = true }
-                .padding(horizontal = 12.dp, vertical = 6.dp)
-                .semantics {
-                    contentDescription = (if (state.demo) "DEMO robot" else "Robot ${robotLabel(state)}") +
-                        if (state.connected) ", connected" else ", not connected"
-                },
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier
-                    .size(8.dp)
-                    .background(if (state.connected) status.good else status.offline, CircleShape)
-            )
-            Spacer(Modifier.width(6.dp))
-            Text(
-                if (state.demo) "DEMO" else robotLabel(state),
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = if (state.demo) FontWeight.Bold else FontWeight.Medium,
-                color = if (state.demo) status.demo else MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.widthIn(max = 132.dp),
-            )
-        }
-
-        DropdownMenu(
-            expanded = open,
-            onDismissRequest = { open = false },
-            shape = RoundedCornerShape(16.dp),
-            containerColor = MaterialTheme.colorScheme.surface,
-        ) {
-            Column(
-                Modifier
-                    .width(272.dp)
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SectionLabel("Robot")
-                    Text(
-                        if (state.demo) "DEMO robot" else robotLabel(state),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    val link = state.link
-                    Text(
-                        when {
-                            state.connected -> "Connected"
-                            state.searching -> "Looking for it on this Wi-Fi …"
-                            link is Link.Disconnected && link.lastError != null -> "Not answering: ${link.lastError}"
-                            else -> "Not connected yet"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (state.connected) status.good else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    if (!state.demo) {
-                        if (!state.connected) RobotSearch(state, actions)
-                        AddressEntry(state, actions.onPing)
-                    }
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        if (state.demo) "DEMO is active" else "DEMO is deactivated",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    // Controls simulate robot events, so they only exist while DEMO is active.
-                    if (state.demo) {
-                        FilledIconButton(
-                            onClick = {
-                                open = false
-                                onOpenDemoControls()
-                            },
-                            modifier = Modifier.size(40.dp),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = status.demoBold,
-                                contentColor = Color.White,
-                            ),
-                        ) {
-                            Icon(painterResource(R.drawable.ic_tune), contentDescription = "DEMO controls", modifier = Modifier.size(22.dp))
-                        }
-                    }
-                }
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        if (state.demo) "Now operating a simulated robot. No data is sent."
-                        else "Robot operation is live. Obey safety precautions.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        buildAnnotatedString {
-                            withLink(
-                                LinkAnnotation.Url(
-                                    DEMO_HELP_URL,
-                                    TextLinkStyles(SpanStyle(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)),
-                                )
-                            ) { append("Learn More") }
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                Button(
-                    onClick = { onDemoChange(!state.demo) },
-                    enabled = !state.busy, // never switch robots mid-step
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = if (state.demo) ButtonDefaults.buttonColors()
-                    else ButtonDefaults.buttonColors(containerColor = status.demoBold, contentColor = Color.White),
-                ) {
-                    Text(if (state.demo) "Turn off DEMO" else "Turn on DEMO")
-                }
-                if (state.busy) {
-                    Text(
-                        "Wait for the current step to finish to switch.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                if (!state.demo) Detail("ROBOT ID", state.robotName ?: "—")
-                Detail("FIRMWARE", state.version ?: "—")
-            }
-        }
-    }
-}
-
-/** What the pill calls the live robot: its short name once known (see [RobotName]). */
+/** What the app calls the live robot: its short name once known (see [RobotName]). */
 private fun robotLabel(state: RemoteState): String =
     state.robotName?.let(RobotName::short) ?: if (state.connected) "Robot" else "No robot"
-
-@Composable
-private fun Detail(label: String, value: String) {
-    Column {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            letterSpacing = 1.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(value, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
-    }
-}
 
 private const val DEMO_HELP_URL = "https://github.com/aehils/uvc-remote-beta2#demo-mode"
 
 /**
- * Under every page's title bar, pinned so it never scrolls away: the robot's readings, and the
- * runaway and UV banners.
+ * At the top of every page (under the title bar, where a page has one), pinned so it never
+ * scrolls away: the robot's readings, the line under them that says whether the robot is
+ * connected, and the runaway and UV banners.
  */
 @Composable
-internal fun StatusHeader(state: RemoteState, onDismissAlert: () -> Unit, onOpenMaps: (() -> Unit)? = null) {
-    Box(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) { Telemetry(state, onOpenMaps) }
+internal fun StatusHeader(
+    state: RemoteState,
+    onDismissAlert: () -> Unit,
+    onOpenMaps: (() -> Unit)? = null,
+    onStartMapping: (Boolean) -> Unit = {},
+) {
+    Box(Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 8.dp)) { Telemetry(state, onOpenMaps, onStartMapping) }
+    ConnectionDivider(state)
     AnimatedVisibility(state.runaway) { RunawayBanner() }
     AnimatedVisibility(state.uv != null || state.lampsOffOwed) { UvBanner(state) }
     // Kept while it hides, so the text doesn't vanish before the banner has slid away.
     var alert by remember { mutableStateOf("") }
     state.robotAlert?.let { alert = it }
     AnimatedVisibility(state.robotAlert != null) { RobotAlertBanner(alert, onDismissAlert) }
-    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
 
-/** A thin band above every page's title bar while DEMO is on. */
+/** BETA, small and centred at the very top of every page: all that's left of the top line. */
+@Composable
+private fun BetaMark() {
+    Text(
+        "BETA",
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp),
+        color = RemoteTheme.status.beta,
+        fontSize = 9.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 2.sp,
+        textAlign = TextAlign.Center,
+        maxLines = 1,
+    )
+}
+
+/**
+ * The line under the readings, with whether the robot is connected set into its middle: the
+ * rule runs from the left edge to the word and on from it to the right. In small capitals,
+ * CONNECTED in green, or what the app is doing about it in orange: the colour says it, so there
+ * is no dot (that, and the robot's name, are in Settings). Tapping it opens Settings.
+ */
+@Composable
+private fun ConnectionDivider(state: RemoteState) {
+    val status = RemoteTheme.status
+    val open = LocalOpenSettings.current
+    val link = state.link
+    // On the darker page the hairline colour would vanish: the line takes the badge borders' grey.
+    val rule = MaterialTheme.colorScheme.outline
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .then(if (open != null) Modifier.clickable(onClickLabel = "Open the robot's settings", onClick = open) else Modifier)
+            .padding(vertical = 4.dp)
+            .semantics(mergeDescendants = true) {},
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        HorizontalDivider(Modifier.weight(1f), color = rule)
+        Spacer(Modifier.width(10.dp))
+        Text(
+            when {
+                state.connected -> "Connected"
+                state.searching -> "Searching …"
+                link is Link.Disconnected && link.lastError != null -> "Not connected"
+                else -> "Connecting …"
+            }.uppercase(Locale.US),
+            color = if (state.connected) status.goodText else status.offlineText,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.5.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.width(10.dp))
+        HorizontalDivider(Modifier.weight(1f), color = rule)
+    }
+}
+
+/** A thin band at the top of every page, under BETA, while DEMO is on. */
 @Composable
 private fun DemoStrip() {
     Text(
@@ -659,11 +542,12 @@ internal fun StopBar(onStop: () -> Unit) {
             onClick = onStop,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp)
-                .height(76.dp),
-            shape = RoundedCornerShape(22.dp),
+                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 12.dp)
+                .height(72.dp),
+            // Flat, with the card corner: the dock's STOP, the width of the screen.
+            shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(containerColor = RemoteTheme.status.stop, contentColor = Color.White),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
+            elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp, pressedElevation = 0.dp),
         ) {
             Text("STOP", fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 6.sp)
         }
@@ -815,13 +699,12 @@ private fun AddressField(
 }
 
 /**
- * E-stop and motion badges, then velocity (the main read), on the right. With [onOpenMaps] (the Map tab): the robot's
- * mode and the map in use instead, the map's name opening the Maps page. Readings fade when not
- * connected, since they are stale. The battery is in the title bar.
+ * The e-stop badge (which also shows motion) and the battery ring, then velocity (the main read), on the right. With
+ * [onOpenMaps] (the Map page): the map in use instead, its name the map's menu (see [MapChip]). Readings
+ * fade when not connected, since they are stale.
  */
 @Composable
-private fun Telemetry(state: RemoteState, onOpenMaps: (() -> Unit)?) {
-    val status = RemoteTheme.status
+private fun Telemetry(state: RemoteState, onOpenMaps: (() -> Unit)?, onStartMapping: (Boolean) -> Unit) {
     val live = state.connected
     Row(
         Modifier
@@ -829,29 +712,16 @@ private fun Telemetry(state: RemoteState, onOpenMaps: (() -> Unit)?) {
             .alpha(if (live) 1f else 0.45f),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        EStopBadge(state.estop)
+        EStopBadge(state)
         Spacer(Modifier.width(8.dp))
-        MotionBadge(state)
+        BatteryRing(state.battery)
         Spacer(Modifier.width(16.dp))
 
         if (onOpenMaps != null) {
-            Text(
-                when (state.mode) {
-                    RobotMode.MAPPING -> "MAPPING"
-                    RobotMode.EXTENDING -> "EXTENDING"
-                    RobotMode.NAVIGATION -> "NAVIGATING"
-                    null -> "—"
-                },
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp,
-                color = if (state.mapping) status.good else MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.width(8.dp))
-            MapChip(state, onOpenMaps, Modifier.widthIn(max = 200.dp))
+            // Mapping shows on the map itself (its Scanning badge), so the map's name has the room.
+            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End) {
+                MapChip(state, onOpenMaps, onStartMapping)
+            }
         } else {
             // Velocity is the main read, in fixed-width slots so the figures never shift as they change.
             val ink = MaterialTheme.colorScheme.onSurface
@@ -863,50 +733,46 @@ private fun Telemetry(state: RemoteState, onOpenMaps: (() -> Unit)?) {
     }
 }
 
-/** The battery, for the title bar of every page. Quiet unless it needs attention; faded when stale. */
+/**
+ * The battery as a ring beside the e-stop badge, its size: the figure in the middle, and an arc
+ * from the top, clockwise, that drains to nothing with the charge. Green; orange at 20% and
+ * below, red at 10%. Unknown, just the empty track and a dash.
+ */
 @Composable
-internal fun BatteryReading(state: RemoteState) {
+private fun BatteryRing(battery: Int?) {
     val status = RemoteTheme.status
-    val battery = state.battery
     val color = when {
         battery == null -> MaterialTheme.colorScheme.onSurfaceVariant
         battery <= 10 -> status.danger
-        battery <= 20 -> status.warn
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
+        battery <= 20 -> status.offline
+        else -> status.good
     }
-    Row(
-        Modifier.alpha(if (state.connected) 1f else 0.45f),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            battery?.let { "$it%" } ?: "—",
-            style = MaterialTheme.typography.labelMedium,
-            fontFamily = FontFamily.Monospace,
-            color = color,
-        )
-        Spacer(Modifier.width(5.dp))
-        // Mirrored: the positive terminal on the left.
-        Box(Modifier.scale(scaleX = -1f, scaleY = 1f)) { BatteryIcon(battery, color) }
-    }
-}
-
-/** A small battery outline whose fill tracks the charge level. */
-@Composable
-private fun BatteryIcon(percent: Int?, color: Color) {
-    Canvas(
+    val track = MaterialTheme.colorScheme.outlineVariant
+    Box(
         Modifier
-            .size(width = 22.dp, height = 11.dp)
-            .semantics { contentDescription = percent?.let { "Battery $it percent" } ?: "Battery unknown" }
+            .size(44.dp)
+            .semantics { contentDescription = battery?.let { "Battery $it percent" } ?: "Battery unknown" },
+        contentAlignment = Alignment.Center,
     ) {
-        val stroke = 1.3.dp.toPx()
-        val tip = 2.dp.toPx()
-        val body = Size(size.width - tip, size.height)
-        val r = CornerRadius(2.dp.toPx())
-        drawRoundRect(color, topLeft = Offset(stroke / 2, stroke / 2), size = Size(body.width - stroke, body.height - stroke), cornerRadius = r, style = Stroke(stroke))
-        drawRoundRect(color, topLeft = Offset(body.width, size.height * 0.3f), size = Size(tip, size.height * 0.4f), cornerRadius = CornerRadius(1.dp.toPx()))
-        val inset = stroke + 1.dp.toPx()
-        val level = (percent ?: 0).coerceIn(0, 100) / 100f
-        drawRoundRect(color, topLeft = Offset(inset, inset), size = Size((body.width - inset * 2) * level, body.height - inset * 2), cornerRadius = CornerRadius(1.dp.toPx()))
+        Canvas(Modifier.fillMaxSize()) {
+            val stroke = 4.dp.toPx()
+            val inset = stroke / 2
+            val arc = Size(size.width - stroke, size.height - stroke)
+            drawArc(track, 0f, 360f, useCenter = false, topLeft = Offset(inset, inset), size = arc, style = Stroke(stroke))
+            if (battery != null && battery > 0) {
+                drawArc(
+                    color, -90f, 360f * battery.coerceIn(0, 100) / 100f, useCenter = false,
+                    topLeft = Offset(inset, inset), size = arc, style = Stroke(stroke, cap = StrokeCap.Round),
+                )
+            }
+        }
+        Text(
+            battery?.toString() ?: "—",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = if (battery != null && battery <= 20) color else MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+        )
     }
 }
 
@@ -917,22 +783,50 @@ private fun reading(value: Double, decimals: Int): String {
     return String.format(Locale.US, "%.${decimals}f", rounded)
 }
 
-/** A bounded "E": solid red when the e-stop is pressed, grey otherwise. Never green: released is not a "go" signal. */
+/**
+ * A bounded "E": solid red when the e-stop is pressed, grey otherwise. Never green: released is
+ * not a "go" signal. It also shows motion, since a pressed e-stop and a moving robot can't
+ * happen together: while a command runs (a step, a held arrow, a trip, docking) its border
+ * pulses quickly in amber; if the robot moves with none running (pushed, or a task of its own),
+ * the border stays amber. The letter never flashes.
+ */
 @Composable
-private fun EStopBadge(estop: EStop?) {
+private fun EStopBadge(state: RemoteState) {
     val shape = RoundedCornerShape(8.dp)
+    val estop = state.estop
     val pressed = estop == EStop.PRESSED
+    val warn = RemoteTheme.status.warn
     val grey = MaterialTheme.colorScheme.outline
+    // Only animates while a command runs, so an idle robot costs no frames.
+    val edge = when {
+        pressed -> RemoteTheme.status.stop
+        state.busy -> {
+            val t by rememberInfiniteTransition(label = "motion").animateFloat(
+                initialValue = 0f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(tween(350), RepeatMode.Reverse),
+                label = "pulse",
+            )
+            lerp(warn, grey, t)
+        }
+        !state.still -> warn
+        else -> grey
+    }
     Box(
         Modifier
             .size(44.dp)
             .background(if (pressed) RemoteTheme.status.stop else Color.Transparent, shape)
-            .border(2.dp, if (pressed) RemoteTheme.status.stop else grey, shape)
+            .border(if (!pressed && (state.busy || !state.still)) 3.dp else 2.dp, edge, shape)
             .semantics {
                 contentDescription = when (estop) {
                     EStop.PRESSED -> "E-stop pressed"
                     EStop.RELEASED -> "E-stop released"
                     null -> "E-stop unknown"
+                } + when {
+                    pressed -> ""
+                    state.busy -> ". Running: ${state.busyLabel ?: "a command"}"
+                    !state.still -> ". Robot moving"
+                    else -> ". Robot still"
                 }
             },
         contentAlignment = Alignment.Center,
@@ -944,37 +838,6 @@ private fun EStopBadge(estop: EStop?) {
             fontWeight = FontWeight.Black,
         )
     }
-}
-
-/**
- * Beside the e-stop, a bare icon: flashes between amber and grey while a command runs (a step, a
- * held arrow, a trip, docking), and stays amber if the robot moves with none running (pushed, or
- * a task of its own). Grey when still.
- */
-@Composable
-private fun MotionBadge(state: RemoteState) {
-    val warn = RemoteTheme.status.warn
-    val grey = MaterialTheme.colorScheme.outline
-    // Only animates while a command runs, so an idle robot costs no frames.
-    val tint = if (state.busy) {
-        val t by rememberInfiniteTransition(label = "motion").animateFloat(
-            initialValue = 0f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(450), RepeatMode.Reverse),
-            label = "flash",
-        )
-        lerp(warn, grey, t)
-    } else if (!state.still) warn else grey
-    Icon(
-        painterResource(R.drawable.ic_motion),
-        contentDescription = when {
-            state.busy -> "Running: ${state.busyLabel ?: "a command"}"
-            !state.still -> "Robot moving"
-            else -> "Robot still"
-        },
-        modifier = Modifier.size(34.dp),
-        tint = tint,
-    )
 }
 
 @Composable
@@ -994,16 +857,11 @@ private fun Reading(label: String, value: String, unit: String, valueColor: Colo
     }
 }
 
-@Composable
-private fun DriveCard(state: RemoteState, actions: RemoteActions) {
-    Panel { DrivePad(state, actions) }
-}
-
 /**
- * The d-pad, pulled up from the bottom of every page but the Remote tab (where the pad is the
- * page). Only the handle takes the open and close gesture (a tap, or a flick up or down), so
- * the arrows keep their presses to themselves. Closing it mid-press lets go of the arrow, as
- * lifting the finger does. Closed, the handle still says why the pad is locked.
+ * The d-pad, pulled up from the bottom of the pages over the main one (the Map page has its own
+ * Drive button, the Tasks and Settings tabs none). Only the handle takes the open and close
+ * gesture (a tap, or a flick up or down), so the arrows keep their presses to themselves.
+ * Closing it mid-press lets go of the arrow, as lifting the finger does. Closed, the handle still says why the pad is locked.
  */
 @Composable
 internal fun DriveSheet(state: RemoteState, actions: RemoteActions, sheet: DriveSheetState) {
@@ -1047,13 +905,7 @@ internal fun DriveSheet(state: RemoteState, actions: RemoteActions, sheet: Drive
                 )
                 Spacer(Modifier.width(12.dp))
                 Text(
-                    when {
-                        !state.connected -> "Not connected"
-                        state.docked -> "Docked"
-                        state.estop == EStop.PRESSED -> "E-stop pressed"
-                        state.uv != null || state.lampsOffOwed -> "Locked while the UV lamps may be on"
-                        else -> ""
-                    },
+                    driveLock(state) ?: "",
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1066,6 +918,60 @@ internal fun DriveSheet(state: RemoteState, actions: RemoteActions, sheet: Drive
                     DrivePad(state, actions, buttonHeight = 64.dp)
                 }
             }
+        }
+    }
+}
+
+/** Why the pad is locked, in a few words, or null. */
+private fun driveLock(state: RemoteState): String? = when {
+    !state.connected -> null // the line under the readings says so, on every page
+    state.docked -> "Docked"
+    state.estop == EStop.PRESSED -> "E-stop pressed"
+    state.uv != null || state.lampsOffOwed -> "Locked while the UV lamps may be on"
+    else -> null
+}
+
+/**
+ * The d-pad on the Map page, in the card under the map: opened and closed by the Drive button.
+ * Spaced like the bar below it, so its buttons line up with the bar's. Why it's locked, if it
+ * is, sits in the pad's own empty corner (see [PadNote]), not on a line of its own.
+ */
+@Composable
+internal fun DrivePanel(state: RemoteState, actions: RemoteActions) {
+    DrivePad(state, actions, buttonHeight = 64.dp, spacing = 6.dp, notes = true)
+}
+
+/** What the pad's corner says: why the arrows are locked, in a few words, or null. */
+private fun padNote(state: RemoteState): String? = when {
+    !state.connected -> null // the line under the readings says so
+    state.estop == EStop.PRESSED -> "E-stop pressed"
+    state.undocking -> "Undocking …"
+    state.docked -> "On the charger. Undock to drive"
+    state.uv != null || state.lampsOffOwed -> "Locked while the UV lamps may be on"
+    else -> null
+}
+
+/** The note in the pad's top-left corner, left of FORWARD and above LEFT, in the colour of its cause. */
+@Composable
+private fun RowScope.PadNote(state: RemoteState, height: Dp) {
+    val status = RemoteTheme.status
+    Box(
+        Modifier
+            .weight(1f)
+            .height(height)
+            .padding(horizontal = 4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        padNote(state)?.let {
+            Text(
+                it,
+                color = if (state.estop == EStop.PRESSED) status.danger else status.warn,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
@@ -1091,7 +997,7 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        if (state.mapping) TasksNote("The robot is mapping. Trips and disinfection wait until the map is saved or discarded on the Map tab.")
+        if (state.mapping) TasksNote("The robot is mapping. Trips and disinfection wait until the map is saved or discarded on the Map page.")
         val run = state.taskRun
         val report = state.taskReport
         if (run != null) TaskRunCard(state, run, actions)
@@ -1240,7 +1146,6 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, drive: DriveS
                     },
                     title = { Text("Disinfection Points", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
                     actions = {
-                        BatteryReading(state)
                         TextButton(
                             onClick = actions.onLoadPoints,
                             enabled = state.connected && points != Points.Loading,
@@ -1631,28 +1536,31 @@ private fun ChargerButton(label: String, enabled: Boolean, onClick: () -> Unit) 
  * arrows are locked and the middle is UNDOCK instead: driving by hand starts with leaving the pile.
  */
 @Composable
-private fun DrivePad(state: RemoteState, actions: RemoteActions, buttonHeight: Dp = 92.dp) {
-    val gap = Arrangement.spacedBy(if (buttonHeight < 80.dp) 8.dp else 10.dp)
+private fun DrivePad(state: RemoteState, actions: RemoteActions, buttonHeight: Dp, spacing: Dp = 8.dp, notes: Boolean = false) {
+    val gap = Arrangement.spacedBy(spacing)
     Column(verticalArrangement = gap) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
-            Spacer(Modifier.weight(1f))
-            HoldButton(Move.FORWARD, "▲", state, actions, buttonHeight)
+            if (notes) PadNote(state, buttonHeight) else Spacer(Modifier.weight(1f))
+            HoldButton(Move.FORWARD, state, actions, buttonHeight)
             Spacer(Modifier.weight(1f))
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
-            HoldButton(Move.LEFT, "\u25C0\uFE0E", state, actions, buttonHeight)
-            // ↺: the 180° turn goes left (counter-clockwise), the same /cmd/turn direction as LEFT.
+            HoldButton(Move.LEFT, state, actions, buttonHeight)
+            // The 180° turn goes left (counter-clockwise), the same /cmd/turn direction as LEFT.
             if (state.docked || state.undocking) UndockPadButton(state, actions.onUndock, buttonHeight)
-            else PadButton(Move.AROUND, "↺", "180°", state.canDriveByHand, actions.onMove, buttonHeight, tonal = true)
-            HoldButton(Move.RIGHT, "\u25B6\uFE0E", state, actions, buttonHeight)
+            else PadButton(Move.AROUND, R.drawable.ic_turn_around, "180°", state.canDriveByHand, actions.onMove, buttonHeight, tonal = true)
+            HoldButton(Move.RIGHT, state, actions, buttonHeight)
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = gap) {
             Spacer(Modifier.weight(1f))
-            HoldButton(Move.BACK, "▼", state, actions, buttonHeight)
+            HoldButton(Move.BACK, state, actions, buttonHeight)
             Spacer(Modifier.weight(1f))
         }
     }
 }
+
+/** The pad's buttons: squared off, to sit with the cards and the dock. */
+private val PAD_SHAPE = RoundedCornerShape(8.dp)
 
 /**
  * An arrow that drives while held (see [DriveController.hold]). It reports the press, then a sign
@@ -1666,14 +1574,14 @@ private fun DrivePad(state: RemoteState, actions: RemoteActions, buttonHeight: D
  * screen stops reporting at all, the controller lets go by itself.
  */
 @Composable
-private fun RowScope.HoldButton(move: Move, glyph: String, state: RemoteState, actions: RemoteActions, height: Dp) {
+private fun RowScope.HoldButton(move: Move, state: RemoteState, actions: RemoteActions, height: Dp) {
     val enabled = state.canHold(move)
     val held = state.holding == move
     // Read inside the gesture, which must not restart (and so let go) when these change mid-press.
     val canStart by rememberUpdatedState(enabled)
     val act by rememberUpdatedState(actions)
     val colors = MaterialTheme.colorScheme
-    val shape = RoundedCornerShape(24.dp)
+    val shape = PAD_SHAPE
     val content = when {
         held -> colors.onPrimaryContainer
         enabled -> colors.onPrimary
@@ -1715,7 +1623,50 @@ private fun RowScope.HoldButton(move: Move, glyph: String, state: RemoteState, a
             },
         contentAlignment = Alignment.Center,
     ) {
-        Text(glyph, fontSize = 30.sp, color = content)
+        PadArrow(move, content)
+    }
+}
+
+/**
+ * A d-pad arrow: a solid triangle pointing [move]'s way, drawn rather than typed, so it sits in
+ * the middle of its button. A triangle's weight is towards its base, so centring its box looks
+ * off; it is centred halfway between its box and its centroid, nudged toward the point.
+ */
+@Composable
+private fun PadArrow(move: Move, color: Color) {
+    // Drawn opaque and faded as a whole: the softening stroke over a see-through fill would
+    // double up into a dark outline on the greyed-out (locked) arrows.
+    val ink = color.copy(alpha = 1f)
+    Canvas(
+        Modifier
+            .size(26.dp)
+            .graphicsLayer { alpha = color.alpha }
+    ) {
+        val w = size.width
+        val long = w * 0.78f // tip to base
+        val wide = w * 0.86f // across the base
+        // Optical centre: the centroid is a third of the way from the base; meet it halfway.
+        val nudge = long / 12f
+        // Built pointing up, then turned: up, right, down, left.
+        val turns = when (move) {
+            Move.FORWARD -> 0f
+            Move.RIGHT -> 90f
+            Move.BACK -> 180f
+            else -> 270f
+        }
+        rotate(turns) {
+            val cx = w / 2
+            val top = (w - long) / 2 - nudge
+            val path = Path().apply {
+                moveTo(cx, top)
+                lineTo(cx + wide / 2, top + long)
+                lineTo(cx - wide / 2, top + long)
+                close()
+            }
+            drawPath(path, ink, style = Fill)
+            // Softened corners, like the icons around it.
+            drawPath(path, ink, style = Stroke(width = 2.dp.toPx(), join = StrokeJoin.Round))
+        }
     }
 }
 
@@ -1728,7 +1679,7 @@ private fun RowScope.UndockPadButton(state: RemoteState, onUndock: () -> Unit, h
         modifier = Modifier
             .weight(1f)
             .height(height),
-        shape = RoundedCornerShape(24.dp),
+        shape = PAD_SHAPE,
         contentPadding = PaddingValues(4.dp),
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1744,20 +1695,21 @@ private fun RowScope.UndockPadButton(state: RemoteState, onUndock: () -> Unit, h
 }
 
 @Composable
-private fun RowScope.PadButton(move: Move, glyph: String, label: String, enabled: Boolean, onMove: (Move) -> Unit, height: Dp, tonal: Boolean = false) {
+private fun RowScope.PadButton(move: Move, icon: Int, label: String, enabled: Boolean, onMove: (Move) -> Unit, height: Dp, tonal: Boolean = false) {
     Button(
         onClick = { onMove(move) },
         enabled = enabled,
         modifier = Modifier
             .weight(1f)
             .height(height),
-        shape = RoundedCornerShape(24.dp),
+        shape = PAD_SHAPE,
         colors = if (tonal) ButtonDefaults.filledTonalButtonColors() else ButtonDefaults.buttonColors(),
         contentPadding = PaddingValues(4.dp),
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(glyph, fontSize = 26.sp)
-            Text(label, style = MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center)
+            Icon(painterResource(icon), contentDescription = null, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.height(4.dp))
+            Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
         }
     }
 }
@@ -1780,10 +1732,6 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
                         }
                     },
                     title = { Text("DEMO controls", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
-                    actions = {
-                        BatteryReading(state)
-                        Spacer(Modifier.width(16.dp))
-                    },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 )
                 StatusHeader(state, actions.onDismissAlert)
@@ -1850,7 +1798,7 @@ internal fun SectionLabel(text: String) {
 }
 
 @Composable
-private fun DemoToggle(title: String, detail: String, on: Boolean, onToggle: () -> Unit) {
+private fun DemoToggle(title: String, detail: String, on: Boolean, onToggle: () -> Unit, enabled: Boolean = true) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -1860,8 +1808,262 @@ private fun DemoToggle(title: String, detail: String, on: Boolean, onToggle: () 
         Switch(
             checked = on,
             onCheckedChange = { onToggle() },
+            enabled = enabled,
             colors = SwitchDefaults.colors(checkedTrackColor = RemoteTheme.status.demoBold),
         )
+    }
+}
+
+/**
+ * Settings: what isn't running the robot, grouped by subject, each row opening a page or a
+ * dialog. The robot comes first (its name, with the connection light), then the activity log.
+ */
+@Composable
+private fun SettingsTab(
+    state: RemoteState,
+    actions: RemoteActions,
+    onOpenActivity: () -> Unit,
+    onOpenRobotInfo: () -> Unit,
+    onOpenDemoControls: () -> Unit,
+    onOpenMaps: () -> Unit,
+    modifier: Modifier,
+) {
+    var editingUv by rememberSaveable { mutableStateOf(false) }
+    val uv = state.uvSettings
+    Column(
+        modifier
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        // The robot first: which one the app talks to, and whether it's there.
+        SectionLabel("Robot")
+        RobotConnection(state, actions)
+        SettingsItem(
+            R.drawable.ic_ping, "Robot information",
+            "ID, firmware, power and navigation",
+            onOpenRobotInfo,
+        )
+        SectionLabel("Maps")
+        SettingsItem(R.drawable.ic_tab_map, "Saved maps", state.currentMap?.let { "In use: ${it.label}" } ?: "The maps saved on the robot", onOpenMaps)
+        SectionLabel("Records")
+        // The newest line, without its time: what happened last.
+        SettingsItem(
+            R.drawable.ic_tab_activity, "Activity log",
+            state.log.firstOrNull()?.substringAfter("  ")?.trim() ?: "Nothing yet",
+            onOpenActivity,
+        )
+        SectionLabel("Disinfection")
+        SettingsItem(R.drawable.ic_tune, "Disinfection timing", "${uv.minutes} min UV · ${uv.delaySeconds} s exit delay") { editingUv = true }
+        SectionLabel("DEMO")
+        Panel {
+            // Never switch robots mid-step: the controller refuses, so the switch is held too.
+            DemoToggle(
+                "DEMO mode",
+                if (state.demo) "Operating a simulated robot. No data is sent."
+                else "Robot operation is live. Obey safety precautions.",
+                state.demo,
+                onToggle = { actions.onDemoChange(!state.demo) },
+                enabled = !state.busy,
+            )
+            if (state.busy) TasksNote("Wait for the current step to finish to switch.")
+            Text(
+                buildAnnotatedString {
+                    withLink(
+                        LinkAnnotation.Url(
+                            DEMO_HELP_URL,
+                            TextLinkStyles(SpanStyle(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)),
+                        )
+                    ) { append("Learn more about DEMO") }
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        // Controls simulate robot events, so they only exist while DEMO is on.
+        if (state.demo) SettingsItem(R.drawable.ic_tune, "DEMO controls", "Simulate faults: e-stop, Wi-Fi, obstacles", onOpenDemoControls)
+    }
+    if (editingUv) {
+        UvSettingsDialog(
+            current = uv,
+            onDismiss = { editingUv = false },
+            onSave = {
+                editingUv = false
+                actions.onUvSettings(it)
+            },
+        )
+    }
+}
+
+/**
+ * The robot the app talks to, first in Settings: its name and a connection light (green
+ * answering, orange not). While it isn't answering: what the last search found, the
+ * robots to pick, Find robots, and the address entry (folded away: staff pick robots by name).
+ */
+@Composable
+private fun RobotConnection(state: RemoteState, actions: RemoteActions) {
+    val status = RemoteTheme.status
+    val link = state.link
+    Panel {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(10.dp)
+                    .background(if (state.connected) status.good else status.offline, CircleShape)
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    if (state.demo) "DEMO robot" else robotLabel(state),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    when {
+                        state.connected -> "Connected"
+                        state.searching -> "Looking for it on this Wi-Fi …"
+                        link is Link.Disconnected && link.lastError != null -> "Not answering: ${link.lastError}"
+                        else -> "Not connected yet"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (state.connected) status.good else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (!state.demo) {
+            if (!state.connected) RobotSearch(state, actions)
+            AddressEntry(state, actions.onPing)
+        }
+    }
+}
+
+/** A Settings row: what it is, and its current value. The whole card opens it. */
+@Composable
+private fun SettingsItem(icon: Int, title: String, value: String, onClick: () -> Unit) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(painterResource(icon), contentDescription = null, modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(value, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Spacer(Modifier.width(8.dp))
+            Text("›", fontSize = 28.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/** A page opened from Settings. Like the other pages, it keeps STOP, the drive sheet and the robot's readings on screen. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SubPage(
+    title: String,
+    state: RemoteState,
+    actions: RemoteActions,
+    drive: DriveSheetState,
+    onBack: () -> Unit,
+    content: @Composable (Modifier) -> Unit,
+) {
+    BackHandler(onBack = onBack)
+    Scaffold(
+        topBar = {
+            Column {
+                TopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
+                        }
+                    },
+                    title = { Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+                )
+                StatusHeader(state, actions.onDismissAlert)
+            }
+        },
+        bottomBar = {
+            Column {
+                DriveSheet(state, actions, drive)
+                StopBar(actions.onStop)
+            }
+        },
+        containerColor = MaterialTheme.colorScheme.background,
+    ) { padding ->
+        content(
+            Modifier
+                .padding(padding)
+                .fillMaxSize()
+        )
+    }
+}
+
+/** What the app knows about the robot: who it is, its software, power and navigation. Read only. */
+@Composable
+private fun RobotInfo(state: RemoteState, modifier: Modifier) {
+    Column(
+        modifier
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        SectionLabel("Robot")
+        Panel {
+            InfoRow("Robot", if (state.demo) "DEMO robot" else robotLabel(state))
+            if (!state.demo) {
+                InfoRow("Robot ID", state.robotName ?: "—", mono = true)
+                InfoRow("Address", state.host, mono = true)
+            }
+            InfoRow("Navigation firmware", state.version ?: "—", mono = true)
+        }
+        SectionLabel("Power")
+        Panel {
+            InfoRow("Battery", state.battery?.let { "$it%" } ?: "—", mono = true)
+            InfoRow("On the charger", if (state.docked) "Yes" else "No")
+            InfoRow(
+                "E-stop",
+                when (state.estop) {
+                    EStop.PRESSED -> "Pressed"
+                    EStop.RELEASED -> "Released"
+                    null -> "—"
+                },
+            )
+        }
+        SectionLabel("Navigation")
+        Panel {
+            InfoRow(
+                "Mode",
+                when (state.mode) {
+                    RobotMode.MAPPING -> "Mapping"
+                    RobotMode.EXTENDING -> "Extending the map"
+                    RobotMode.NAVIGATION -> "Navigating"
+                    null -> "—"
+                },
+            )
+            InfoRow("Map in use", state.currentMap?.label ?: "—")
+            InfoRow("Saved points", (state.points as? Points.Loaded)?.list?.size?.toString() ?: "—", mono = true)
+        }
+    }
+}
+
+/** A label and its value on one line. The value is selectable, for copying into a report. */
+@Composable
+private fun InfoRow(label: String, value: String, mono: Boolean = false) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.width(12.dp))
+        SelectionContainer {
+            Text(
+                value,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                fontFamily = if (mono) FontFamily.Monospace else null,
+                textAlign = TextAlign.End,
+            )
+        }
     }
 }
 
@@ -1874,7 +2076,7 @@ private fun ActivityLog(lines: List<String>, modifier: Modifier) {
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        SectionLabel("Activity · newest first")
+        SectionLabel("Newest first")
         SelectionContainer {
             Text(
                 lines.joinToString("\n").ifEmpty { "—" },

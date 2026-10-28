@@ -109,6 +109,9 @@ class FakeRobot(
     private var mode = MODE_NAVIGATION
     private var mapCount = 0
     private var chargeFlag = CHARGE_NONE
+    /** How many docking cancels (/cmd/charge type 1) have come in: for the tests of what STOP sends. */
+    var chargeCancels = 0
+        private set
 
     /** What /reeman/nav_status answers, set by tests; null answers as the idle robot does. */
     var navStatus: String? = null
@@ -341,7 +344,9 @@ class FakeRobot(
      * type 0: dock with the pile if it is within [DOCK_RANGE]: turn to face away from it, then
      * reverse onto it. GUESS: the real routine and its range were never watched; this is the
      * shape the manual describes. Out of range the command is still accepted but the robot
-     * never moves and chargeFlag reads 9, as the firmware documents. type 1 cancels docking.
+     * never moves and chargeFlag reads 9, as the firmware documents. type 1 cancels docking, and on
+     * the pile ends charging (UNDOCK relies on that): chargeFlag reads 0 then, though the robot
+     * hasn't moved. STOP sends it too.
      */
     private fun charge(json: String, now: Long): String {
         return when (num(json, "type")) {
@@ -365,7 +370,9 @@ class FakeRobot(
                 OK
             }
             1.0 -> {
+                chargeCancels++
                 halt()
+                if (chargeFlag == CHARGE_DOCKED) chargeFlag = CHARGE_NONE // still on the pile, not charging
                 OK
             }
             2.0 -> {

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Exit (leaving the Map page): an arrow walking out of a door frame to the left, back the way you came. Tinted by the caller. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M14,3h4a2,2 0,0 1,2 2v14a2,2 0,0 1,-2 2h-4M14,12H4M7.5,8L4,12l3.5,4" />
+</vector>

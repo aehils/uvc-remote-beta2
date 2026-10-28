@@ -85,8 +85,8 @@ connection that drops mid-drive makes the robot carry on for about 1.2 s before 
 - With the current app, mobile data can stay on: the app talks to the robot over Wi-Fi even when
   Android prefers mobile data because the robot's Wi-Fi has no internet. Older builds needed
   mobile data off.
-- Connect each phone once: in the robot pill's menu, tap the robot's name (`UV 3-07` style; its
-  full ID shows under ROBOT ID in the same menu). The app then knows that robot by its hostname
+- Connect each phone once: in **Settings › Robot**, tap the robot's name (`UV 3-07` style; its
+  full ID shows under Robot ID in **Robot information**). The app then knows that robot by its hostname
   and finds it again by itself if its address changes.
 - **The robot's network can't be 192.168.10.x** (Reeman's API notes: it clashes with the robot's
   own internal network). Any other private range is fine.
@@ -106,7 +106,7 @@ connection that drops mid-drive makes the robot carry on for about 1.2 s before 
 - [ ] Both robot computers have fixed addresses (DHCP reservations); ROS and Android addresses recorded privately
 - [ ] Only the robot's network is saved on the robot
 - [ ] `http://<ROS address>` loads the robot's console in a staff phone's browser
-- [ ] The app connects (green light in the robot pill) from each staff phone
+- [ ] The app connects (a green CONNECTED in the line under the readings, and the robot's name with a green dot first in Settings) from each staff phone
 - [ ] The robot stays connected while it drives its routes, past every access point
 - [ ] The charging pile is saved on the map, and GO TO CHARGER works (with Confirm on the robot)
 - [ ] Staff know where the physical e-stop is

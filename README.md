@@ -11,23 +11,74 @@ with the robot switched off.
 
 ## What it does
 
-Four tabs: **Remote** (the drive pad), **Tasks** (GO TO CHARGER, the UV switch, the saved
-**disinfection tasks**, and **Disinfection Points**, which opens its own page), **Map** (the robot on its map; the map's name opens the **Maps** page)
-and **Activity** (the log). The robot's readings (e-stop badge and speed; on the Map tab, the
-mode and the map in use) are pinned at the top of every page, the battery sits in the title bar, and **STOP** is the red button in the centre of the nav bar (a
-full-width bar on the other pages).
+Two tabs, **Tasks** (GO TO CHARGER, the UV switch, the saved **disinfection tasks**, and
+**Disinfection Points**, which opens its own page; the app opens here) and **Settings** (below),
+and the **Map** page (the robot on its map, and the drive pad). A small pastel-blue **BETA**
+sits centred at the very top of every page (the purple DEMO band under it in DEMO). The main page has no
+title bar: the robot's readings (the e-stop badge and the battery ring, then the speed; on the Map
+page, the map in use, whose name is the map's menu) are the top of the page, pinned there on
+every page, and **STOP** is the red key in the middle of the dock's bar at the bottom (a full-width
+bar on the other pages). It is the only solid fill in the dock, and never narrower than 72dp.
 
-**Driving from anywhere.** There is one drive pad. On the Remote tab it is the page; everywhere
-else (the other tabs, and the Points, Maps and DEMO pages) a **DRIVE** handle sits just above the
-nav bar or STOP: tap it, or flick it up, to pull the pad up under whatever is on screen, and tap
-or flick down to put it away. Only the handle takes that gesture, so a held arrow keeps its
-press. Closed, the handle still says what the robot is doing. Starting a map pulls it up by itself.
+The page is a step darker than its cards (in the dark theme the cards are a step lighter than the
+page), so where each card ends reads at a glance.
 
-**The robot pill** (top right, after the battery) shows which robot the app talks to (its name,
-like `UV 3-07`, or DEMO) and a connection light: green answering, orange not. Its menu lists the
-robots the app found to pick from, an address entry (folded away), the DEMO switch, and the robot's
-full ID and firmware. While the robot isn't answering, the app looks for it and follows it to a new
-address by itself (see Network). Addresses aren't shown: staff pick robots by name.
+**The readings.** The **E** badge is the e-stop: solid red when pressed, grey otherwise (never
+green: released isn't a "go"). It also shows motion, since a pressed e-stop and a moving robot
+can't happen together: while a command runs (a step, a held arrow, a trip, docking) its border
+pulses quickly in amber, and if the robot moves with none running (pushed, or a task of its own)
+the border stays amber. The **battery** is a ring the same size: the figure in the middle, and a
+green arc from the top, clockwise, that drains with the charge; orange at 20% and below, red at 10%.
+
+**The connection** is set into the line under the readings, on every page: the rule runs from the
+left edge to it and on to the right. In small capitals, CONNECTED in green, or CONNECTING …,
+SEARCHING … or NOT CONNECTED in orange: the colour says it. The robot's name, with a green or
+orange dot, is first in Settings. Not connected, the readings and the controls
+are greyed out too. Tapping the line opens Settings, where the robot is found, picked or its
+address typed in.
+
+**The dock.** On the left, in a container of its own, **Map** opens the Map page; then the bar:
+**Tasks**, **STOP**, **Settings**. Every button is the same size and shape, and none is filled but
+STOP. The open tab has an accent bar on the dock's top edge above it, the edge toward the page
+(nearly the button's width, its lower corners rounded like a tab's), and its icon turns from
+outline to filled, its label bold, both in the accent. The Map page has no tabs and no edge (the
+bar is part of the card): there Drive shows it's on by its filled icon and accent label, and by
+the pad itself, rising above it.
+On the Map page **Map** becomes **Exit**, in orange, an arrow leaving a door to the left (back to
+the tab it was opened from; Tasks unless you were on Settings, and the phone's back does the same).
+The page is one piece: the map card (the map, and the pad when it's open) runs straight down into
+the bar, with the bottom left cut out for Exit, so the card looks laid over the bar that was there.
+The bar and Exit stay exactly where the dock is on the tabs. Either side of STOP the bar carries the
+map's own buttons, one each side so STOP stays in the middle:
+
+| On the Map page | Left of STOP | Right of STOP |
+|---|---|---|
+| Looking (and mapping) | **Drive** (the pad, under the map; its icon filled while it's open) | **Edit** (menu) |
+| Setting a position, drawing or removing a wall | **Cancel** | **Set here**, **Add wall** or **Remove** |
+
+While mapping, **Save** and **Discard** are on the map's *Scanning* badge.
+
+**Driving from anywhere.** There is one drive pad. On the Map page the dock's **Drive** button puts
+it under the map; elsewhere (the Points, Maps, DEMO and Settings pages) a **DRIVE**
+handle sits just above the dock or STOP: tap it, or flick it up, to pull the pad up under whatever
+is on screen, and tap or flick down to put it away. Only the handle takes that gesture, so a held
+arrow keeps its press. Closed, the handle still says what the robot is doing. The Tasks and
+Settings tabs have no pad. Starting a map pulls it up by itself.
+
+**Settings** is grouped by subject, each row opening a page or a dialog:
+- **Robot**, first: the robot the app talks to (its name, like `UV 3-07`, or DEMO) with a connection
+  light, green answering, orange not. While it isn't answering: the robots the app found, to
+  pick from, **Find robots**, and an address entry (folded away). Then **Robot information**: its
+  full ID, address and firmware; battery, charger and e-stop; mode, map and points.
+- **Maps: Saved maps**, the Maps page.
+- **Records: Activity log** (its row shows the latest line). The log as a page of its own,
+  newest first, selectable for copying.
+- **Disinfection: Disinfection timing**, the UV time and the exit delay (as the tune button on the
+  Disinfection Points page).
+- **DEMO**: the **DEMO mode** switch, and, in DEMO, **DEMO controls**.
+
+While the robot isn't answering, the app looks for it and follows it to a new address by itself
+(see Network). Staff pick robots by name, in **Settings › Robot**.
 
 | Button | Command sent | Speed |
 |---|---|---|
@@ -45,7 +96,7 @@ address by itself (see Network). Addresses aren't shown: staff pick robots by na
 | Discard | `/cmd/set_mode` `{"mode":2}` | doesn't move |
 | Use this map / Rename / Delete / Undo | `/cmd/apply_map`, `/cmd/rename_map`, `/cmd/trash_map`, `/cmd/restore_map` | doesn't move |
 | Set position | `/cmd/reloc_pose` `{"x","y","theta"}` | doesn't move |
-| STOP | stop body, `/cmd/cancel_goal`, `/cmd/charge` type 1, the other stop body, UV lamps OFF | always active |
+| STOP | stop body, `/cmd/cancel_goal`, `/cmd/charge` type 1 (not while charging on the pile), the other stop body, UV lamps OFF | always active |
 
 ## Safety rules
 
@@ -60,12 +111,23 @@ address by itself (see Network). Addresses aren't shown: staff pick robots by na
   navigation and docking, and switches the UV lamps off, then watches the robot for 10 s and
   sends STOP again every 1.5 s if it moves. After 3 tries a red **USE THE PHYSICAL E-STOP**
   banner appears. STOP is a hard stop: for emergencies. Steps end on their own; to stop
-  driving, let go of the arrow.
+  driving, let go of the arrow. **STOP never ends charging:** while the robot sits still,
+  charging on its pile, the docking cancel isn't sent (on the pile it ends charging; UNDOCK uses
+  it for that). A dock under way, or a trip to the charger the robot started itself, is still
+  cancelled.
+- **On the charging pile the d-pad is locked** (greyed out, and the pad's corner says *On the
+  charger. Undock to drive*); its middle is **UNDOCK**, which ends charging, pauses, then pulls
+  15 cm forward off the pile. "On the pile" is latched when the robot reports charging there, and
+  only cleared by proof it left: UNDOCK's pull-away moving it, UNDOCK finding it far from the pile
+  on the map, or a docking reading. Charging ending alone (UNDOCK's first command, a full
+  battery) never unlocks the arrows. In late October 2026 an arrow pressed by accident on the
+  pile drove the robot off it; the likely cause is the old rule, which only counted the robot
+  as docked while it was charging (and STOP then ended charging).
 - **A task owns the robot while it runs.** GO, GO TO CHARGER, START DISINFECTION and the UV
   switch's ON are locked; STOP, the d-pad (only usable while the task waits, lamps off) and
   switching the lamps off are not. Switching the lamps off, STOP and the e-stop all end the task.
 - **Mapping is its own job.** While the robot scans a map, GO, GO TO CHARGER, START
-  DISINFECTION and adding points are locked (the Map tab's readings say "Mapping", and the Tasks
+  DISINFECTION and adding points are locked (the Map page's readings say "Mapping", and the Tasks
   tab says why); the pad and STOP still work. Map commands never move the robot, but they need it connected,
   standing still, the lamps off, and one at a time. The map in use can't be deleted.
 - **The log notes motion the app didn't ask for** ("Robot is moving, but not by this app"),
@@ -182,33 +244,38 @@ lamps go off when you leave it). Keep the phone on the Tasks tab, on good Wi-Fi,
 
 ## Maps
 
-**The Map tab** shows the map the robot navigates on, its saved points, and the robot (a disc with
+**The Map page** shows the map the robot navigates on, its saved points, and the robot (a disc with
 a pointer the way it faces). Pinch to zoom, drag to look around, **Fit** to see it all. The
 robot's pose (`/reeman/pose`) is read twice a second and the image (`/reeman/map`, a PNG) when it
-changes, but only while the tab is open, and in a loop of their own, so the speed and e-stop reads
+changes, but only while the page is open, and in a loop of their own, so the speed and e-stop reads
 never wait behind a big image. The robot's mode (`/reeman/get_mode`) and map in use
 (`/reeman/current_map`) are read every ~3 s whatever is on screen.
 
 The map shows the disinfection points (dots), the **charging pile** (a green square) and the
-**virtual walls** (red lines). The buttons under it are icons, to leave the map the room. The
-**add** button (pin, left) opens a menu:
-- **Disinfection point here**: saves where the robot stands, as on the Disinfection Points page.
-- **Charging pile here**: with the robot docked on its pile; saves `charging_pile` (type
-  `charge`), replacing any pile already marked. GO TO CHARGER drives to it.
-- **Virtual wall**: drag from one end to the other, then the tick. A line the robot won't cross.
-- **Remove a virtual wall**: tap it, then the bin.
+**virtual walls** (red lines). Its buttons are in the dock (see "The dock"), so the map has the
+page. **Edit** opens a menu, its options (each with an icon) under small grey headings that
+can't be tapped:
+- ROBOT: **Set the robot's position** (see below; not while mapping).
+- ADD WHERE THE ROBOT STANDS: **Disinfection point**, saved as on the Disinfection Points page;
+  **Charging pile**, with the robot docked on its pile, saved as `charging_pile` (type `charge`),
+  replacing any pile already marked (GO TO CHARGER drives to it).
+- VIRTUAL WALLS: **Draw a wall** (drag from one end to the other, then **Add wall**; a line the
+  robot won't cross) and **Remove a wall** (tap it, then **Remove**).
 
 Walls are read from `/reeman/restrict_layer` and written with `/cmd/restrict_layer`, which
 replaces the whole set, so the app reads the walls, adds or removes one, and sends them all back.
-**Set position** (crosshair): tap where the robot really is, drag the way it faces, then the tick. While mapping they are **discard** (bin)
-and **save** (disk). What a map command did shows on the map for a few seconds (tap to hide),
-and stays in the Activity tab. The map's name in the readings opens the Maps page.
+**Set the robot's position**: tap where the robot really is, drag the way it faces, then **Set here**. Not
+offered while mapping, when **Save** and **Discard** sit on the map's *Scanning* badge. What a map command did shows on the map for a few seconds (tap to hide),
+and stays in the activity log. The map's name in the readings (**Ward 3 ▾**) is the map's own
+menu: **Start a new map** and **Extend this map** (each asks first, as on the Maps page; not
+while mapping), and **Saved maps**, the Maps page.
   Needed after switching maps away from the pile (see below).
 
-**Mapping.** On the **Maps** page, **+ New map** starts a fresh scan and **Extend this map** adds
-to the map in use (the robot must know where it is on it first). Either way the app goes to the
-Map tab with the drive pad up: drive slowly round the whole area, come back past where you
-started so the map closes up, and watch the scan grow (refreshed every 2 s). The add menu works
+**Mapping.** From the map's name on the Map page (or **+ New map** and **Extend this map** on the
+**Maps** page), a new map starts a fresh scan and extending adds to the map in use (the robot must
+know where it is on it first). Either way the Map page shows it with the drive pad up: drive
+slowly round the whole area, come back past where you started so the map closes up, and watch
+the scan grow (refreshed every 2 s). The Edit menu works
 while mapping too (the charging pile, points, walls): the robot can't store them on a map that
 isn't saved yet, so they wait in the app (drawn dashed) and are written onto the map straight
 after it is saved, and only if the new map is the one in use. Discarding drops them. Then save
@@ -265,7 +332,9 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
 - How close counts as arrived (0.3 m), and how far away docking can find the pile (1.5 m).
 - The task battery margins (30% to start, 25% to carry on), kept above the robot's own app's
   auto-charge level (`low_power`, 20% on this robot).
-- That `/cmd/charge` type 1, sent on every STOP, does nothing while the robot sits on the pile.
+- That a robot sitting on its pile reports charging (`chargeFlag` 2) at least once after the app
+  connects. That reading is how the app knows it's on the pile; one docked with a full battery
+  that never reads 2 wouldn't lock the d-pad.
 - Which point `type` the robot's own app uses (the app saves `delivery`).
 - Whether the e-stop alone cuts the lamps.
 - How the map image lines up with the robot's coordinates: the app assumes the ROS map_server
@@ -285,7 +354,7 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
 ## Real-robot tests
 
 **First drive test.** Robot off the pile, ~1 m clear all round, physical e-stop in reach.
-1. Open the app: Ping icon green, battery shown, grey **E** badge.
+1. Open the app: a green CONNECTED in the line under the readings, the battery ring shows a figure, grey **E** badge.
 2. **Hold** Left for 2 s, let go: it should start turning within ~0.5 s, then ease to a stop
    within ~10°. Then Right, Back, Forward, and Turn 180° (a tap).
 3. Hold Forward and let go: note how far it runs on (~20 cm) and whether the mast rocks.
@@ -315,7 +384,7 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
 
    Expect `{"mode":2}`, the map's name, a list of maps, and a map with `resolution`, `origin_x/y`
    and `image_url`. If these answer 404 on v5.1.20, stop: the paths moved.
-2. Open the Map tab: the robot should sit on the map where it really is, pointing the right way,
+2. Open the Map page: the robot should sit on the map where it really is, pointing the right way,
    with the points where they belong. Hold Forward: it should move forward on the map.
 3. Maps → **+ New map**: the green MAPPING banner, the pad up. Drive a small loop; the scan
    should grow every 2 s. Note whether walls line up as you go.
@@ -323,11 +392,11 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
    shows it too. Then **Use this map** to go back to the old one, with the robot on its pile.
 5. Try **Set position** once with the robot off the pile, and **Delete** then **Undo** on "Test 1".
 
-Copy anything odd from the **Activity** tab (long-press to select).
+Copy anything odd from **Settings › Activity log** (long-press to select).
 
 ## Demo mode
 
-Tap the **DEMO** pill (top right) and **Turn on DEMO**. The app then talks to a simulated robot
+Switch on **Settings › DEMO mode**. The app then talks to a simulated robot
 inside the app (`FakeRobot.kt`): **nothing is sent over the network**, so it is safe on the
 robot's Wi-Fi. A purple strip stays pinned at the top and every log line starts with `[DEMO]`.
 All the app's own logic runs unchanged. Mode can't be switched while something runs or the
@@ -350,11 +419,11 @@ set up on the real robot:
 | Control | What the app should do |
 |---|---|
 | E-stop pressed | **E** badge solid red, driving blocked; mid-step, the robot stops |
-| Wi-Fi dropped | Ping icon orange after ~3 failed polls, driving blocked |
+| Wi-Fi dropped | NOT CONNECTED, orange, in the line under the readings after ~3 failed polls; driving blocked |
 | Obstacle ahead | next step accepted but never starts: "no motion seen" |
 | Robot goes to charge by itself | "moving, but not by this app"; STOP ends the trip for good |
 | Person in the way (during a trip) | robot waits 5 s then carries on; the trip stays locked |
-| Battery −10% | battery figure amber at 20%, red at 10% |
+| Battery −10% | the battery ring orange at 20%, red at 10% |
 | Reset robot | back to the room centre, faults cleared, added points and maps removed |
 
 ## Build and install
@@ -397,8 +466,8 @@ while it's missing, and at once when the phone changes Wi-Fi), in this order:
 | Found | The app |
 |---|---|
 | **This robot** (its hostname) | follows it to its new address without asking, and logs it |
-| Other robots | lists them by name in the robot pill's menu; staff tap theirs |
-| Nothing | says so in the menu |
+| Other robots | lists them by name in **Settings › Robot**; staff tap theirs |
+| Nothing | says so there |
 
 A hospital can have several robots, so the app never moves to a robot it can't recognise without
 a tap: driving or lighting the wrong one has to be deliberate. For the same reason, a robot
@@ -445,8 +514,9 @@ Under `app/src/main/java/com/expiation/reemanremote/`:
   choice and UV settings.
 - `MainActivity.kt`: hosts the screen; leaving the app pauses polling and switches the lamps off.
 - `ui/RemoteScreen.kt`: the Compose screen. It only draws `RemoteState` and forwards taps.
-  The tabs, the drive sheet, the robot pill, the Tasks and Points pages.
-- `ui/MapScreen.kt`: the Map tab (map view, set position, save/discard) and the Maps page.
+  The tabs, the drive sheet, the readings and banners, the Tasks, Points and Settings pages.
+- `ui/NavDock.kt`: the dock at the bottom of the main page: the Map tile, the tab or map buttons, and STOP.
+- `ui/MapScreen.kt`: the Map page (map view, set position, save/discard, and its dock buttons) and the Maps page.
 - `ui/Theme.kt`: colours, including the status colours.
 
 Tests are in `app/src/test/java/com/expiation/reemanremote/`.
