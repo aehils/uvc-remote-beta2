@@ -77,6 +77,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -89,9 +91,11 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -209,7 +213,6 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
     }
     CompositionLocalProvider(LocalOpenSettings provides openSettings) {
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-            BetaMark()
             AnimatedVisibility(state.demo) { DemoStrip() }
             Box(Modifier.weight(1f)) {
                 when {
@@ -296,12 +299,14 @@ private fun MainPage(
     Scaffold(
         topBar = {
             // No title bar: the readings are the top of the page. On the Map page they show the
-            // map in use, not the speed.
+            // map in use, not the speed. Settings has none: its robot card carries the connection
+            // and the battery.
             Column {
                 StatusHeader(
                     state, actions.onDismissAlert,
                     onOpenMaps = onOpenMaps.takeIf { mapOpen },
                     onStartMapping = actions.onStartMapping,
+                    readings = mapOpen || tab != Tab.SETTINGS,
                 )
             }
         },
@@ -350,7 +355,8 @@ private fun robotLabel(state: RemoteState): String =
 /**
  * At the top of every page (under the title bar, where a page has one), pinned so it never
  * scrolls away: the robot's readings, the line under them that says whether the robot is
- * connected, and the runaway and UV banners.
+ * connected, and the runaway and UV banners. Without [readings] (the Settings tab, whose robot
+ * card says it all), only the banners.
  */
 @Composable
 internal fun StatusHeader(
@@ -358,32 +364,18 @@ internal fun StatusHeader(
     onDismissAlert: () -> Unit,
     onOpenMaps: (() -> Unit)? = null,
     onStartMapping: (Boolean) -> Unit = {},
+    readings: Boolean = true,
 ) {
-    Box(Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 8.dp)) { Telemetry(state, onOpenMaps, onStartMapping) }
-    ConnectionDivider(state)
+    if (readings) {
+        Box(Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 8.dp)) { Telemetry(state, onOpenMaps, onStartMapping) }
+        ConnectionDivider(state)
+    }
     AnimatedVisibility(state.runaway) { RunawayBanner() }
     AnimatedVisibility(state.uv != null || state.lampsOffOwed) { UvBanner(state) }
     // Kept while it hides, so the text doesn't vanish before the banner has slid away.
     var alert by remember { mutableStateOf("") }
     state.robotAlert?.let { alert = it }
     AnimatedVisibility(state.robotAlert != null) { RobotAlertBanner(alert, onDismissAlert) }
-}
-
-/** BETA, small and centred at the very top of every page: all that's left of the top line. */
-@Composable
-private fun BetaMark() {
-    Text(
-        "BETA",
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 4.dp),
-        color = RemoteTheme.status.beta,
-        fontSize = 9.sp,
-        fontWeight = FontWeight.Bold,
-        letterSpacing = 2.sp,
-        textAlign = TextAlign.Center,
-        maxLines = 1,
-    )
 }
 
 /**
@@ -428,7 +420,7 @@ private fun ConnectionDivider(state: RemoteState) {
     }
 }
 
-/** A thin band at the top of every page, under BETA, while DEMO is on. */
+/** A thin band at the top of every page while DEMO is on. */
 @Composable
 private fun DemoStrip() {
     Text(
@@ -1657,8 +1649,9 @@ private fun SettingsTab(
 }
 
 /**
- * The robot the app talks to, first in Settings: its name, and on the right whether it's
- * answering (green) or not (orange). Only while it isn't answering does the card grow: what the
+ * The robot the app talks to, first in Settings: its name, and on the right its battery and
+ * whether it's answering (green) or not (orange). Settings has no readings at the top, so this
+ * is where the battery shows there. Only while it isn't answering does the card grow: what the
  * last search found, the robots to pick, and Find robots.
  */
 @Composable
@@ -1675,6 +1668,9 @@ private fun RobotCard(state: RemoteState, actions: RemoteActions) {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            Spacer(Modifier.width(12.dp))
+            // Stale while not answering, so it fades, like the readings on the other pages.
+            Box(Modifier.alpha(if (state.connected) 1f else 0.45f)) { BatteryIcon(state.battery) }
             Spacer(Modifier.width(12.dp))
             Box(
                 Modifier
@@ -1696,6 +1692,75 @@ private fun RobotCard(state: RemoteState, actions: RemoteActions) {
             )
         }
         if (!state.demo && !state.connected) RobotSearch(state, actions)
+    }
+}
+
+/**
+ * The battery as a cell lying on its side, the terminal on the right: filled from the left with
+ * the charge, the figure inside. Green; orange at 20% and below, red at 10%, as [BatteryRing].
+ * Where the fill runs under the figure, the figure takes the card's colour, so it reads at any
+ * charge. Unknown, just the outline and a dash.
+ */
+@Composable
+private fun BatteryIcon(battery: Int?) {
+    val status = RemoteTheme.status
+    val color = when {
+        battery == null -> MaterialTheme.colorScheme.onSurfaceVariant
+        battery <= 10 -> status.danger
+        battery <= 20 -> status.offline
+        else -> status.good
+    }
+    val outline = MaterialTheme.colorScheme.outline
+    val level = (battery ?: 0).coerceIn(0, 100) / 100f
+    Row(
+        // One description for the lot: the figure is drawn twice.
+        Modifier.clearAndSetSemantics {
+            contentDescription = battery?.let { "Battery $it percent" } ?: "Battery unknown"
+        },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(width = 44.dp, height = 22.dp)
+                .border(1.5.dp, outline, RoundedCornerShape(5.dp))
+                .padding(2.5.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .drawBehind {
+                        if (level > 0f) {
+                            drawRoundRect(color, size = Size(size.width * level, size.height), cornerRadius = CornerRadius(2.5.dp.toPx()))
+                        }
+                    },
+            )
+            val figure = battery?.toString() ?: "—"
+            val ink = if (battery != null && battery <= 20) color else MaterialTheme.colorScheme.onSurface
+            // The figure twice, each cut to its side of the fill's edge: in ink over the empty
+            // part, in the card's colour over the fill.
+            for ((over, figureColor) in listOf(false to ink, true to MaterialTheme.colorScheme.surface)) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .drawWithContent {
+                            val edge = size.width * level
+                            clipRect(left = if (over) 0f else edge, right = if (over) edge else size.width) {
+                                this@drawWithContent.drawContent()
+                            }
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(figure, fontSize = 12.sp, lineHeight = 12.sp, fontWeight = FontWeight.Bold, color = figureColor, maxLines = 1)
+                }
+            }
+        }
+        // The terminal.
+        Box(
+            Modifier
+                .size(width = 3.dp, height = 9.dp)
+                .background(outline, RoundedCornerShape(topEnd = 1.5.dp, bottomEnd = 1.5.dp))
+        )
     }
 }
 

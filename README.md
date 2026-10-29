@@ -13,11 +13,11 @@ with the robot switched off.
 
 Two tabs, **Tasks** (the UV switch, **START DISINFECTION**, **Disinfection Points**, which
 opens its own page, and GO TO CHARGER pinned above the dock; the app opens here) and **Settings** (below),
-and the **Map** page (the robot on its map, and the drive pad). A small pastel-blue **BETA**
-sits centred at the very top of every page (the purple DEMO band under it in DEMO). The main page has no
+and the **Map** page (the robot on its map, and the drive pad). In DEMO, a purple band runs across
+the very top of every page. The main page has no
 title bar: the robot's readings (the e-stop badge and the battery ring, then the speed; on the Map
 page, the map in use, whose name is the map's menu) are the top of the page, pinned there on
-every page, and **STOP** is the red key in the middle of the dock's bar at the bottom (a full-width
+every page but the Settings tab (whose robot card carries the battery and the connection), and **STOP** is the red key in the middle of the dock's bar at the bottom (a full-width
 bar on the other pages). It is the only solid fill in the dock, and never narrower than 72dp.
 
 The page is a step darker than its cards (in the dark theme the cards are a step lighter than the
@@ -30,7 +30,7 @@ pulses quickly in amber, and if the robot moves with none running (pushed, or a 
 the border stays amber. The **battery** is a ring the same size: the figure in the middle, and a
 green arc from the top, clockwise, that drains with the charge; orange at 20% and below, red at 10%.
 
-**The connection** is set into the line under the readings, on every page: the rule runs from the
+**The connection** is set into the line under the readings, on every page but the Settings tab: the rule runs from the
 left edge to it and on to the right. In small capitals, CONNECTED in green, or CONNECTING …,
 SEARCHING … or NOT CONNECTED in orange: the colour says it. The robot's name, with a green or
 orange dot, is first in Settings. Not connected, the readings and the controls
@@ -67,7 +67,8 @@ with the pad up.
 **Settings** is grouped by subject, each group one card of plain rows (an icon, a title, a
 chevron; no line of detail under them):
 - **Robot**, first: a card with the robot the app talks to (its name, like `UV 3-07`, or DEMO
-  robot) and, on the right, CONNECTED in green or SEARCHING / OFFLINE in orange. Only while it
+  robot) and, on the right, its battery (a cell on its side, the figure inside, filled and
+  coloured as the ring) and CONNECTED in green or SEARCHING / OFFLINE in orange. Only while it
   isn't answering does the card grow: the robots the app found, to pick from, and **Find robots**.
   Under it, **Robot information** (its full ID, address and firmware; battery, charger and
   e-stop; mode, map and points) and **Robot address** (a dialog, for a robot the app can't find
