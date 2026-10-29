@@ -796,8 +796,6 @@ private fun RowScope.PadNote(state: RemoteState, height: Dp) {
  */
 @Composable
 private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: () -> Unit, onOpenRoutines: () -> Unit, modifier: Modifier) {
-    val count = (state.points as? Points.Loaded)?.list?.size
-    val routines = state.tasks.size
     // START DISINFECTION and the routines go round the points on the robot's map.
     LaunchedEffect(state.connected, state.points is Points.NotLoaded) {
         if (state.connected && state.points is Points.NotLoaded) actions.onLoadPoints()
@@ -820,13 +818,11 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
             TaskItem(
                 icon = R.drawable.ic_routines,
                 title = "Routines",
-                detail = if (routines > 0) "$routines saved. Pick one to run, or make one." else "Your own lists of points, run in order.",
                 onClick = onOpenRoutines,
             )
             TaskItem(
                 icon = R.drawable.ic_tab_tasks,
                 title = "Disinfection Points",
-                detail = if (count != null) "$count saved. Send the robot to one, or add one." else "Send the robot to a saved point, or add one where it stands.",
                 onClick = onOpenPoints,
             )
             UvSwitch(state, actions)
@@ -840,8 +836,8 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
 
 /**
  * The UV lamps, on or off by hand: for when nothing else will do, so it looks unlike the rest.
- * A pastel mauve card with a plum siren, "Toggle UV lamps", why to think twice (or, while on,
- * the run), and ON / OFF right beside the switch. ON asks first, then switches them on at once
+ * A pastel mauve card with a plum siren, "Toggle UV lamps" (nothing under it: Right Now says
+ * what a run is doing), and ON / OFF right beside the switch. ON asks first, then switches them on at once
  * (no countdown); OFF needs no asking. It shows any run, the Points page's included, so it
  * also ends those.
  */
@@ -859,15 +855,7 @@ private fun UvSwitch(state: RemoteState, actions: RemoteActions) {
         Row(Modifier.padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(painterResource(R.drawable.ic_siren), contentDescription = null, modifier = Modifier.size(28.dp), tint = status.uv)
             Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {
-                Text("Toggle UV lamps", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(
-                    if (on) uvStatus(state) else "Only when you must. UV-C burns skin and eyes.",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (on) status.danger else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            Text("Toggle UV lamps", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.width(8.dp))
             Text(
                 if (on) "ON" else "OFF",
@@ -913,9 +901,9 @@ private fun UvSwitch(state: RemoteState, actions: RemoteActions) {
     }
 }
 
-/** One row of the Tasks list. The whole card opens the task's page. */
+/** One row of the Tasks list: an icon and a title, nothing under it. The whole card opens its page. */
 @Composable
-private fun TaskItem(icon: Int, title: String, detail: String, onClick: () -> Unit) {
+private fun TaskItem(icon: Int, title: String, onClick: () -> Unit) {
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
@@ -932,14 +920,7 @@ private fun TaskItem(icon: Int, title: String, detail: String, onClick: () -> Un
                 tint = MaterialTheme.colorScheme.primary,
             )
             Spacer(Modifier.width(16.dp))
-            Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(
-                    detail,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.width(8.dp))
             Text("›", fontSize = 28.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -1052,20 +1033,6 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () ->
                 actions.onAddPoint(it)
             },
         )
-    }
-}
-
-/** "where" text for the disinfection card and dialogs. */
-private fun uvWhere(point: String?) = point?.let { "at $it" } ?: "where the robot stands"
-
-/** One line on the run, for the Tasks list. */
-private fun uvStatus(state: RemoteState): String {
-    val left = state.uvLeftMs?.let { DriveController.clockText(it) } ?: ""
-    return when (val uv = state.uv) {
-        is Uv.Countdown -> "UV lamps on in $left, ${uvWhere(uv.point)}"
-        is Uv.Starting -> "UV lamps switching on ${uvWhere(uv.point)}"
-        is Uv.On -> "UV on ${uvWhere(uv.point)}: $left left"
-        null -> "The UV lamps may still be on: the robot hasn't accepted OFF"
     }
 }
 

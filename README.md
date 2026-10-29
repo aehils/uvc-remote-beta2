@@ -204,7 +204,7 @@ robot's spot and heading as a new point; names must be new, since saving an exis
 move that point. Rename or delete points in the robot's own app.
 
 **UV disinfection.** The Tasks tab's **Toggle UV lamps** card is set apart on purpose: a pastel
-mauve card with a plum siren, "Only when you must", and ON / OFF beside its switch. It turns the
+mauve card with a plum siren, and ON / OFF beside its switch. It turns the
 lamps on by hand (it asks first,
 no countdown, off after 30 min at the latest). The card at the top of the Disinfection Points
 page shows where the robot stands and any run under way; its **tune** button sets the time at
