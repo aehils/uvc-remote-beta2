@@ -11,17 +11,27 @@ with the robot switched off.
 
 ## What it does
 
-Two tabs, **Tasks** (the UV switch, **START DISINFECTION**, **Disinfection Points**, which
-opens its own page, and GO TO CHARGER pinned above the dock; the app opens here) and **Settings** (below),
-and the **Map** page (the robot on its map, and the drive pad). In DEMO, a purple band runs across
-the very top of every page. The main page has no
-title bar: the robot's readings (the e-stop badge and the battery ring, then the speed; on the Map
-page, the map in use, whose name is the map's menu) are the top of the page, pinned there on
-every page but the Settings tab (whose robot card carries the battery and the connection), and **STOP** is the red key in the middle of the dock's bar at the bottom (a full-width
+Two tabs, **Tasks** (**Right Now**, then **START DISINFECTION**, the saved **routines**, and by
+hand the UV switch and **Disinfection Points**, which opens its own page; GO TO CHARGER pinned
+above the dock; the app opens here) and **Settings** (below), and the **Map** page (the robot on
+its map, and the drive pad). In DEMO, a purple band runs across the very top of every page. The
+main page has no title bar. The tabs open on a card: Tasks on Right Now, Settings on the robot
+card (the battery and the connection). Everywhere else the robot's readings (the e-stop badge
+and the battery ring, then the speed; on the Map page, the map in use, whose name is the map's
+menu) are the top of the page, pinned there, and **STOP** is the red key in the middle of the dock's bar at the bottom (a full-width
 bar on the other pages). It is the only solid fill in the dock, and never narrower than 72dp.
 
 The page is a step darker than its cards (in the dark theme the cards are a step lighter than the
 page), so where each card ends reads at a glance.
+
+**Right Now**, pinned at the top of the Tasks tab, says in words what the robot is doing, most
+urgent first: not connected (orange words; tapping it opens Settings), **E-stop pressed** (red),
+the UV lamps (red: on in 0:15, switching on, disinfecting with the time left, or may still be on),
+a task (amber: on the way to a point, stopped before one, switching the lamps off), mapping, a
+trip or a move, then at rest (green: **Charging at the dock**, or **Ready**). Below 30% at rest it
+says the battery is low. The battery sits beside its label, a cell on its side like the robot
+card's. Since it covers the lamps, the Tasks tab has no UV banner; the runaway and robot alert
+banners stay.
 
 **The readings.** The **E** badge is the e-stop: solid red when pressed, grey otherwise (never
 green: released isn't a "go"). It also shows motion, since a pressed e-stop and a moving robot
@@ -210,7 +220,10 @@ OFF can never overtake an ON.
 
 **START DISINFECTION** works like the robot's own app: one route over every saved point on the
 map (except the pile), in the map's order, each with the same UV time and start delay, then back
-to the charger. It asks you to confirm the rooms are clear, then for each point:
+to the charger. **Routines** are your own routes, saved on the phone by point name: the points in
+order, each with its UV time (1–30 min), the start delay, the rounds (1–10), and **Go to charger**
+or **Stay** at the end. **+ New routine**, or tapping one, opens the editor; **START** on its row
+runs it. Either asks you to confirm the rooms are clear, then for each point:
 
 1. the robot goes to the point with `/cmd/nav_name`, undocking first if it is on its pile. If it
    is already standing on the point, there is no trip.

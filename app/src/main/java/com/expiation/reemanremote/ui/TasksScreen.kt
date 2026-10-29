@@ -46,6 +46,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
@@ -57,6 +59,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.expiation.reemanremote.DisinfectionTask
 import com.expiation.reemanremote.DriveController
+import com.expiation.reemanremote.EStop
+import com.expiation.reemanremote.Link
 import com.expiation.reemanremote.Points
 import com.expiation.reemanremote.R
 import com.expiation.reemanremote.RemoteState
@@ -68,27 +72,152 @@ import com.expiation.reemanremote.TaskStop
 import com.expiation.reemanremote.Uv
 import com.expiation.reemanremote.WhenDone
 
+// ---------------------------------------------------------------------- Tasks tab: Right Now
+
+/** How Right Now is coloured: the card's fill and the colour of its label and headline. */
+private enum class Tone { READY, BUSY, DANGER, OFFLINE }
+
+private data class Now(val tone: Tone, val headline: String, val detail: String?)
+
+/**
+ * What the robot is doing, in a few words, most urgent first: not connected, the e-stop, the UV
+ * lamps (they may burn), a task, mapping, a trip or a move, then at rest (charging, or ready).
+ */
+private fun rightNow(state: RemoteState): Now {
+    val left = state.uvLeftMs?.let { DriveController.clockText(it) } ?: ""
+    val run = state.taskRun
+    val uv = state.uv
+    val step = state.running
+    val goal = step?.goal
+    val battery = state.battery
+    val link = state.link
+    return when {
+        !state.connected -> Now(
+            Tone.OFFLINE,
+            when {
+                state.searching -> "Looking for the robot"
+                link is Link.Disconnected && link.lastError != null -> "Not connected"
+                else -> "Connecting …"
+            },
+            "Tap to find the robot in Settings.",
+        )
+        state.estop == EStop.PRESSED -> Now(Tone.DANGER, "E-stop pressed", "Release the e-stop on the robot to drive or disinfect.")
+        uv is Uv.Countdown -> Now(
+            Tone.DANGER,
+            "UV lamps on in $left",
+            (uv.point?.let { "At $it. " } ?: "") + "Leave the room and close the door.",
+        )
+        uv is Uv.Starting -> Now(Tone.DANGER, "UV lamps switching on", "Stay out of the room.")
+        uv is Uv.On -> Now(Tone.DANGER, uv.point?.let { "Disinfecting $it" } ?: "Disinfecting", "UV lamps on · $left left")
+        state.lampsOffOwed -> Now(Tone.DANGER, "UV lamps may still be on", "The robot hasn't accepted OFF yet. The app keeps sending it.")
+        run != null -> {
+            val where = "${run.task.name} · point ${run.number} of ${run.total}"
+            when (val stage = run.stage) {
+                is TaskStage.Held -> Now(Tone.BUSY, "Stopped before ${run.stop.point}", stage.problem)
+                TaskStage.Travelling -> Now(Tone.BUSY, if (state.undocking) "Leaving the charger" else "On the way to ${run.stop.point}", where)
+                TaskStage.LampsOff, TaskStage.Disinfecting -> Now(Tone.BUSY, "Switching the lamps off", where)
+                else -> Now(Tone.BUSY, "Getting ready", where)
+            }
+        }
+        state.mapping -> Now(Tone.BUSY, "Mapping", "Drive it round on the Map page, then save the map.")
+        state.undocking -> Now(Tone.BUSY, "Leaving the charger", null)
+        step?.label?.startsWith("Go to charger") == true -> Now(Tone.BUSY, "Going to the charger", "It docks by itself when it gets there.")
+        goal != null -> Now(Tone.BUSY, "On the way to ${goal.name}", null)
+        step != null -> Now(Tone.BUSY, "Moving", step.label)
+        !state.still -> Now(Tone.BUSY, "Moving", "Not on a command from this app.")
+        state.docked -> Now(Tone.READY, "Charging at the dock", "Ready. Start a disinfection, or undock to drive.")
+        battery != null && battery < DriveController.TASK_MIN_BATTERY -> Now(
+            Tone.BUSY, "Battery low", "Send it to the charger: a disinfection needs ${DriveController.TASK_MIN_BATTERY}%.",
+        )
+        else -> Now(Tone.READY, state.atPoint?.let { "Ready at ${it.name}" } ?: "Ready", "Start a disinfection or a routine below.")
+    }
+}
+
+/**
+ * Right Now, pinned at the top of the Tasks tab: a label with the battery beside it, what the
+ * robot is doing, and a line on what that means. Green at rest, amber while it works, red for
+ * the e-stop and the UV lamps; orange words while it isn't connected, and then it opens Settings.
+ */
+@Composable
+internal fun RightNowCard(state: RemoteState) {
+    val status = RemoteTheme.status
+    val now = rightNow(state)
+    val (fill, accent) = when (now.tone) {
+        Tone.READY -> status.goodContainer to status.goodText
+        Tone.BUSY -> status.warnContainer to status.warn
+        Tone.DANGER -> status.dangerContainer to status.danger
+        Tone.OFFLINE -> MaterialTheme.colorScheme.surface to status.offlineText
+    }
+    val open = LocalOpenSettings.current
+    Panel(
+        modifier = if (now.tone == Tone.OFFLINE && open != null) {
+            Modifier
+                .clip(RoundedCornerShape(14.dp))
+                .clickable(onClickLabel = "Open the robot's settings", onClick = open)
+        } else Modifier,
+        color = fill,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "RIGHT NOW",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.5.sp,
+                color = accent,
+            )
+            // Stale while not connected, so it fades.
+            Box(Modifier.alpha(if (state.connected) 1f else 0.45f)) { BatteryIcon(state.battery) }
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                now.headline,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = accent,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            now.detail?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------- Tasks tab: START DISINFECTION
 
 /**
  * START DISINFECTION: the robot goes round every point on the map in turn (see
- * [DisinfectionTask.route]). It asks first. Why it can't start goes under it.
+ * [DisinfectionTask.route]), then to the charger. It asks first. Why it can't start goes under it.
  */
 @Composable
 internal fun StartDisinfection(state: RemoteState, actions: RemoteActions) {
     var confirming by rememberSaveable { mutableStateOf(false) }
     val problem = state.routeProblem
-    Button(
-        onClick = { confirming = true },
-        enabled = problem == null,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(56.dp),
-        shape = RoundedCornerShape(14.dp),
-    ) {
-        Text("START DISINFECTION", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+    val points = state.route.stops.size
+    Panel {
+        Column {
+            Text("All points", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(
+                if (points > 0) "$points point${if (points == 1) "" else "s"} · ${state.uvSettings.minutes} min UV each · then the charger"
+                else "Every point on the map, then the charger",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Button(
+            onClick = { confirming = true },
+            enabled = problem == null,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+            shape = RoundedCornerShape(14.dp),
+        ) {
+            Text("START DISINFECTION", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+        }
+        problem?.let { TasksNote(it) }
     }
-    problem?.let { TasksNote(it) }
 
     if (confirming) {
         val route = state.route
@@ -115,93 +244,173 @@ internal fun StartDisinfection(state: RemoteState, actions: RemoteActions) {
     }
 }
 
+// ---------------------------------------------------------------------- Tasks tab: routines
+
+/** "3 points · 2 rounds · 30 min UV" */
+private fun taskSummary(task: DisinfectionTask): String =
+    listOfNotNull(
+        "${task.stops.size} point${if (task.stops.size == 1) "" else "s"}",
+        if (task.rounds > 1) "${task.rounds} rounds" else null,
+        "${task.uvMinutes} min UV",
+    ).joinToString(" · ")
+
+/**
+ * The saved routines (the robot's own app calls them fixed-point tasks), each with START (it
+ * asks first), and New routine. Tapping one opens the editor. Why none can start goes once under
+ * the list; what is wrong with one, on its row.
+ */
+@Composable
+internal fun SavedTasks(state: RemoteState, actions: RemoteActions, onEditTask: (String) -> Unit) {
+    var confirming by rememberSaveable { mutableStateOf<String?>(null) }
+    if (state.tasks.isEmpty()) TasksNote("A routine is your own list of points, each with its UV time, run in order.")
+    state.tasks.forEach { task ->
+        TaskRow(
+            task = task,
+            fault = state.taskFault(task),
+            canStart = state.taskProblem(task) == null,
+            onStart = { confirming = task.id },
+            onEdit = { onEditTask(task.id) },
+        )
+    }
+    if (state.tasks.isNotEmpty() && state.taskRun == null) state.taskBlocker?.let { TasksNote(it) }
+    OutlinedButton(
+        onClick = { onEditTask("") },
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(52.dp),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Text("+  New routine", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+    }
+
+    val task = state.tasks.firstOrNull { it.id == confirming }
+    if (task != null) {
+        AlertDialog(
+            onDismissRequest = { confirming = null },
+            title = { Text("Start ${task.name}?") },
+            text = {
+                Text(
+                    "UV-C light burns skin and eyes. Make sure nobody is in the rooms on the route and the doors are closed.\n\n" +
+                        "At each point the lamps come on ${task.delaySeconds} s after the robot arrives. " +
+                        "STOP, the e-stop, or leaving the app ends it and switches them off.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirming = null
+                    actions.onStartTask(task.id)
+                }) { Text("START", fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = { TextButton(onClick = { confirming = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+@Composable
+private fun TaskRow(task: DisinfectionTask, fault: String?, canStart: Boolean, onStart: () -> Unit, onEdit: () -> Unit) {
+    val status = RemoteTheme.status
+    Panel {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(
+                Modifier
+                    .weight(1f)
+                    .clickable(onClickLabel = "Edit ${task.name}", onClick = onEdit)
+            ) {
+                Text(task.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(taskSummary(task), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                fault?.let { Text(it, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, color = status.warn) }
+            }
+            IconButton(onClick = onEdit) {
+                Icon(painterResource(R.drawable.ic_tune), contentDescription = "Edit ${task.name}", modifier = Modifier.size(22.dp))
+            }
+            Button(
+                onClick = onStart,
+                enabled = canStart,
+                modifier = Modifier.height(48.dp),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text("START", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------- Tasks tab: the task under way
 
 /**
- * The task under way: where it is, what the robot is doing at this stop, and END TASK. At a
- * stop the robot couldn't reach, TRY AGAIN and SKIP.
+ * The task under way: its name and how far along it is, the UV time at this stop, and its
+ * controls: START NOW in a countdown, TRY AGAIN and SKIP at a stop the robot couldn't reach,
+ * and END TASK. What the robot is doing is Right Now's, above, so it isn't said again here.
  */
 @Composable
 internal fun TaskRunCard(state: RemoteState, run: TaskRun, actions: RemoteActions) {
     val status = RemoteTheme.status
-    val lampsMayBeOn = state.uv != null || state.lampsOffOwed
-    Panel(color = if (lampsMayBeOn) status.dangerContainer else status.warnContainer) {
+    Panel {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                run.task.name,
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    run.task.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    run.stop.point + if (run.task.rounds > 1) " · round ${run.round} of ${run.task.rounds}" else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Text("${run.number} of ${run.total}", style = MaterialTheme.typography.labelLarge, fontFamily = FontFamily.Monospace)
         }
-        Text(
-            run.stop.point + if (run.task.rounds > 1) " · round ${run.round} of ${run.task.rounds}" else "",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
+        // How far along the whole task is, a step per stop.
+        LinearProgressIndicator(
+            progress = { (run.number - 1).toFloat() / run.total.coerceAtLeast(1) },
+            modifier = Modifier.fillMaxWidth(),
+            trackColor = MaterialTheme.colorScheme.surfaceVariant,
         )
 
-        val left = state.uvLeftMs?.let { DriveController.clockText(it) } ?: ""
         val stage = run.stage
         when {
-            stage is TaskStage.Held -> {
-                Text(stage.problem, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = status.warn)
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedButton(
-                        onClick = actions.onSkipTaskStop,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(52.dp),
-                        shape = RoundedCornerShape(14.dp),
-                    ) { Text("SKIP", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
-                    Button(
-                        onClick = actions.onRetryTaskStop,
-                        enabled = state.canTravel,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(52.dp),
-                        shape = RoundedCornerShape(14.dp),
-                    ) { Text("TRY AGAIN", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
-                }
+            stage is TaskStage.Held -> Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(
+                    onClick = actions.onSkipTaskStop,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(52.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) { Text("SKIP", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
+                Button(
+                    onClick = actions.onRetryTaskStop,
+                    enabled = state.canTravel,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(52.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) { Text("TRY AGAIN", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
             }
             stage == TaskStage.Disinfecting -> when (val uv = state.uv) {
-                is Uv.Countdown -> {
-                    Text("Lamps on in $left. Leave the room.", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, color = status.danger)
-                    Button(
-                        onClick = actions.onStartDisinfectionNow,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(52.dp),
-                        shape = RoundedCornerShape(14.dp),
-                    ) { Text("START NOW", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
-                }
-                is Uv.Starting -> TaskActivity("Switching the lamps on …", status.danger)
+                // Skips the rest of the countdown, for when the room is already clear.
+                is Uv.Countdown -> Button(
+                    onClick = actions.onStartDisinfectionNow,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) { Text("START NOW", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
                 is Uv.On -> {
                     val total = (uv.until - uv.since).coerceAtLeast(1)
                     LinearProgressIndicator(
                         progress = { 1f - (state.uvLeftMs ?: 0L).toFloat() / total },
                         modifier = Modifier.fillMaxWidth(),
                         color = status.danger,
-                        trackColor = MaterialTheme.colorScheme.surface,
-                    )
-                    Text(
-                        "UV ON · $left left of ${DriveController.clockText(total)}",
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        fontFamily = FontFamily.Monospace,
-                        color = status.danger,
+                        trackColor = status.dangerContainer,
                     )
                 }
-                null -> TaskActivity("Switching the lamps off …", status.danger)
+                else -> {}
             }
-            stage == TaskStage.LampsOff -> TaskActivity("Switching the lamps off …", status.danger)
-            stage == TaskStage.Travelling -> TaskActivity(
-                if (state.undocking) "Leaving the charger" else "On the way",
-                MaterialTheme.colorScheme.onSurface,
-            )
-            else -> TaskActivity("Getting ready …", MaterialTheme.colorScheme.onSurface)
+            else -> {}
         }
 
         Button(
@@ -215,11 +424,6 @@ internal fun TaskRunCard(state: RemoteState, run: TaskRun, actions: RemoteAction
             Text("END TASK", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
         }
     }
-}
-
-@Composable
-private fun TaskActivity(text: String, color: Color) {
-    Text(text, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, color = color)
 }
 
 // ---------------------------------------------------------------------- Tasks tab: how the last one ended
@@ -277,7 +481,7 @@ internal fun TaskReportCard(report: TaskReport, onDismiss: () -> Unit) {
 // ---------------------------------------------------------------------- the task editor
 
 /**
- * A new task ([original] null) or a saved one: its name, its points in order with the UV time
+ * A new routine ([original] null) or a saved one: its name, its points in order with the UV time
  * at each, the countdown, the rounds and what happens at the end. Points are the ones saved on
  * the robot's map (the Disinfection Points page adds them).
  */
@@ -293,7 +497,7 @@ internal fun TaskEditorPage(
     val status = RemoteTheme.status
     val others = state.tasks.filter { it.id != original?.id }.map { it.name }
     var name by rememberSaveable {
-        mutableStateOf(original?.name ?: generateSequence(1) { it + 1 }.map { "Task $it" }.first { it !in others })
+        mutableStateOf(original?.name ?: generateSequence(1) { it + 1 }.map { "Routine $it" }.first { it !in others })
     }
     var stops by rememberSaveable(stateSaver = StopsSaver) { mutableStateOf(original?.stops.orEmpty()) }
     var delay by rememberSaveable { mutableStateOf(original?.delaySeconds ?: state.uvSettings.delaySeconds) }
@@ -307,7 +511,7 @@ internal fun TaskEditorPage(
     val nameProblem = when {
         clean.isEmpty() -> "Enter a name."
         clean.length > DisinfectionTask.MAX_NAME -> "Use ${DisinfectionTask.MAX_NAME} characters or fewer."
-        clean in others -> "A task with this name already exists."
+        clean in others -> "A routine with this name already exists."
         else -> null
     }
     val canSave = nameProblem == null && stops.isNotEmpty()
@@ -324,7 +528,7 @@ internal fun TaskEditorPage(
                     },
                     title = {
                         Text(
-                            if (original == null) "New task" else "Edit task",
+                            if (original == null) "New routine" else "Edit routine",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.SemiBold,
                         )
@@ -427,7 +631,7 @@ internal fun TaskEditorPage(
                 ) {
                     Icon(painterResource(R.drawable.ic_delete), contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("Delete task", fontWeight = FontWeight.Bold)
+                    Text("Delete routine", fontWeight = FontWeight.Bold)
                 }
             }
         }
