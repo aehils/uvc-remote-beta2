@@ -11,9 +11,10 @@ with the robot switched off.
 
 ## What it does
 
-Two tabs, **Tasks** (**Right Now**, then **START DISINFECTION**, the saved **routines**, and by
-hand the UV switch and **Disinfection Points**, which opens its own page; GO TO CHARGER pinned
-above the dock; the app opens here) and **Settings** (below), and the **Map** page (the robot on
+Two tabs, **Tasks** (laid out to fit without scrolling: **Right Now**, then **START
+DISINFECTION** on its own, a row each for **Routines** and **Disinfection Points**, which open
+their own pages, the **Toggle UV lamps** card, and GO TO CHARGER pinned above the dock; the app
+opens here) and **Settings** (below), and the **Map** page (the robot on
 its map, and the drive pad). In DEMO, a purple band runs across the very top of every page. The
 main page has no title bar. The tabs open on a card: Tasks on Right Now, Settings on the robot
 card (the battery and the connection). Everywhere else the robot's readings (the e-stop badge
@@ -202,7 +203,9 @@ the point it stopped ("arrived" within 0.3 m). **Add point where the robot is** 
 robot's spot and heading as a new point; names must be new, since saving an existing name would
 move that point. Rename or delete points in the robot's own app.
 
-**UV disinfection.** The Tasks tab's **UV switch** turns the lamps on by hand (it asks first,
+**UV disinfection.** The Tasks tab's **Toggle UV lamps** card is set apart on purpose: a pastel
+mauve card with a plum siren, "Only when you must", and ON / OFF beside its switch. It turns the
+lamps on by hand (it asks first,
 no countdown, off after 30 min at the latest). The card at the top of the Disinfection Points
 page shows where the robot stands and any run under way; its **tune** button sets the time at
 each point (1–30 min) and the start delay (15, 30 or 60 s) that START DISINFECTION uses; both are
@@ -222,8 +225,8 @@ OFF can never overtake an ON.
 map (except the pile), in the map's order, each with the same UV time and start delay, then back
 to the charger. **Routines** are your own routes, saved on the phone by point name: the points in
 order, each with its UV time (1–30 min), the start delay, the rounds (1–10), and **Go to charger**
-or **Stay** at the end. **+ New routine**, or tapping one, opens the editor; **START** on its row
-runs it. Either asks you to confirm the rooms are clear, then for each point:
+or **Stay** at the end. They live on the **Routines** page, off the Tasks tab: **+ New
+routine**, or tapping one, opens the editor; **START** on its row runs it and goes back to Tasks. Either asks you to confirm the rooms are clear, then for each point:
 
 1. the robot goes to the point with `/cmd/nav_name`, undocking first if it is on its pile. If it
    is already standing on the point, there is no trip.

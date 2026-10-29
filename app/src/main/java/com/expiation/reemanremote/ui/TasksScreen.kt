@@ -39,6 +39,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.listSaver
@@ -188,24 +189,15 @@ internal fun RightNowCard(state: RemoteState) {
 // ---------------------------------------------------------------------- Tasks tab: START DISINFECTION
 
 /**
- * START DISINFECTION: the robot goes round every point on the map in turn (see
- * [DisinfectionTask.route]), then to the charger. It asks first. Why it can't start goes under it.
+ * START DISINFECTION, on its own under Right Now: the robot goes round every point on the map in
+ * turn (see [DisinfectionTask.route]), then to the charger. It asks first, and the dialog says
+ * how many points and for how long. Why it can't start goes under it.
  */
 @Composable
 internal fun StartDisinfection(state: RemoteState, actions: RemoteActions) {
     var confirming by rememberSaveable { mutableStateOf(false) }
     val problem = state.routeProblem
-    val points = state.route.stops.size
-    Panel {
-        Column {
-            Text("All points", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Text(
-                if (points > 0) "$points point${if (points == 1) "" else "s"} · ${state.uvSettings.minutes} min UV each · then the charger"
-                else "Every point on the map, then the charger",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Button(
             onClick = { confirming = true },
             enabled = problem == null,
@@ -255,12 +247,56 @@ private fun taskSummary(task: DisinfectionTask): String =
     ).joinToString(" · ")
 
 /**
+ * Routines, off the Tasks tab: the saved routines to pick and run, and a new one. Like the
+ * Disinfection Points page, it keeps STOP and the robot's readings on screen. Starting one goes
+ * back to Tasks, where Right Now follows it.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun RoutinesPage(state: RemoteState, actions: RemoteActions, onEditTask: (String) -> Unit, onBack: () -> Unit) {
+    BackHandler(onBack = onBack)
+    // Routines are checked against the points on the robot's map.
+    LaunchedEffect(state.connected, state.points is Points.NotLoaded) {
+        if (state.connected && state.points is Points.NotLoaded) actions.onLoadPoints()
+    }
+    Scaffold(
+        topBar = {
+            Column {
+                TopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
+                        }
+                    },
+                    title = { Text("Routines", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+                )
+                StatusHeader(state, actions.onDismissAlert)
+            }
+        },
+        bottomBar = { StopBar(actions.onStop) },
+        containerColor = MaterialTheme.colorScheme.background,
+    ) { padding ->
+        Column(
+            Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            SavedTasks(state, actions, onEditTask, onStarted = onBack)
+        }
+    }
+}
+
+/**
  * The saved routines (the robot's own app calls them fixed-point tasks), each with START (it
  * asks first), and New routine. Tapping one opens the editor. Why none can start goes once under
  * the list; what is wrong with one, on its row.
  */
 @Composable
-internal fun SavedTasks(state: RemoteState, actions: RemoteActions, onEditTask: (String) -> Unit) {
+internal fun SavedTasks(state: RemoteState, actions: RemoteActions, onEditTask: (String) -> Unit, onStarted: () -> Unit = {}) {
     var confirming by rememberSaveable { mutableStateOf<String?>(null) }
     if (state.tasks.isEmpty()) TasksNote("A routine is your own list of points, each with its UV time, run in order.")
     state.tasks.forEach { task ->
@@ -300,6 +336,7 @@ internal fun SavedTasks(state: RemoteState, actions: RemoteActions, onEditTask: 
                 TextButton(onClick = {
                     confirming = null
                     actions.onStartTask(task.id)
+                    onStarted()
                 }) { Text("START", fontWeight = FontWeight.Bold) }
             },
             dismissButton = { TextButton(onClick = { confirming = null }) { Text("Cancel") } },

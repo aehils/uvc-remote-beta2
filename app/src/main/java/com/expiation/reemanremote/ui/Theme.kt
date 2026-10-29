@@ -105,6 +105,9 @@ data class StatusColors(
     val demoBold: Color, // fill for white text: active demo buttons and switches
     val stop: Color,
     val exit: Color, // the dock's Exit, leaving the Map page: its icon and label, never a fill
+    // The UV lamps switch on Tasks: a pastel mauve card, apart from every other card, and its
+    // siren in the deeper plum, so it reads as the one to press only when you must.
+    val uv: Color, val uvContainer: Color,
 )
 
 private val LightStatus = StatusColors(
@@ -118,6 +121,7 @@ private val LightStatus = StatusColors(
     demoBold = Color(0xFF5B4B98),
     stop = Color(0xFFB3342C),
     exit = Color(0xFFB0520F), // 5.2:1 on the white dock
+    uv = Color(0xFF8E3B6A), uvContainer = Color(0xFFF3E6EF), // 5.8:1
 )
 
 private val DarkStatus = StatusColors(
@@ -131,6 +135,7 @@ private val DarkStatus = StatusColors(
     demoBold = Color(0xFF5B4B98), // same in both themes so white text stays readable
     stop = Color(0xFFB3342C), // STOP stays the same deep red in both themes
     exit = Color(0xFFEE9A4E), // 8.1:1 on the dark dock
+    uv = Color(0xFFE4A6CB), uvContainer = Color(0xFF34222F), // 7.5:1
 )
 
 private val LocalStatusColors = staticCompositionLocalOf { LightStatus }

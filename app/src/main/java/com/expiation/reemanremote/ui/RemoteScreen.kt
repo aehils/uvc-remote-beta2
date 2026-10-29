@@ -227,10 +227,18 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
                     page == Page.ROBOT_INFO -> SubPage("Robot information", state, actions, onBack = { page = Page.MAIN }) {
                         RobotInfo(state, it)
                     }
+                    page == Page.ROUTINES -> RoutinesPage(
+                        state, actions,
+                        onEditTask = {
+                            editingTask = it
+                            page = Page.TASK_EDIT
+                        },
+                        onBack = { page = Page.MAIN },
+                    )
                     page == Page.TASK_EDIT -> TaskEditorPage(
                         state, actions,
                         original = state.tasks.firstOrNull { it.id == editingTask },
-                        onBack = { page = Page.MAIN },
+                        onBack = { page = Page.ROUTINES },
                     )
                     page == Page.MAPS -> MapsPage(
                         state, actions,
@@ -249,10 +257,7 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
                         onOpenMaps = { page = Page.MAPS },
                         onOpenActivity = { page = Page.ACTIVITY },
                         onOpenRobotInfo = { page = Page.ROBOT_INFO },
-                        onEditTask = {
-                            editingTask = it
-                            page = Page.TASK_EDIT
-                        },
+                        onOpenRoutines = { page = Page.ROUTINES },
                     )
                 }
             }
@@ -264,7 +269,7 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions) {
 internal val LocalOpenSettings = staticCompositionLocalOf<(() -> Unit)?> { null }
 
 /** Pages over the main (tabbed) page. Each keeps STOP and the robot's readings on screen. */
-private enum class Page { MAIN, DEMO_CONTROLS, POINTS, MAPS, TASK_EDIT, ACTIVITY, ROBOT_INFO }
+private enum class Page { MAIN, DEMO_CONTROLS, POINTS, MAPS, ROUTINES, TASK_EDIT, ACTIVITY, ROBOT_INFO }
 
 /** Whether the Map page's drive pad is open, and how to change that. */
 internal class DrivePadState(val open: Boolean, val onOpenChange: (Boolean) -> Unit)
@@ -296,7 +301,7 @@ private fun MainPage(
     onOpenMaps: () -> Unit,
     onOpenActivity: () -> Unit,
     onOpenRobotInfo: () -> Unit,
-    onEditTask: (String) -> Unit,
+    onOpenRoutines: () -> Unit,
 ) {
     // The Map page's tools and dialogs live here, so the dock can carry its buttons.
     val map = rememberMapUi()
@@ -354,7 +359,7 @@ private fun MainPage(
                     MapTab(state, actions, map, drive, Modifier.fillMaxSize())
                 }
             }
-            tab == Tab.TASKS -> TasksTab(state, actions, onOpenPoints, onEditTask, content)
+            tab == Tab.TASKS -> TasksTab(state, actions, onOpenPoints, onOpenRoutines, content)
             else -> SettingsTab(state, actions, onOpenActivity, onOpenRobotInfo, onOpenDemoControls, onOpenMaps, content)
         }
     }
@@ -782,15 +787,17 @@ private fun RowScope.PadNote(state: RemoteState, height: Dp) {
 // ---------------------------------------------------------------------- tasks
 
 /**
- * The Tasks tab. Right Now at the top, pinned: what the robot is doing, in words (it replaces
- * the e-stop badge and speed the other pages carry). Under it, scrolling: the task under way (or
- * how the last one ended), START DISINFECTION over every point, the saved routines, and by hand:
- * the UV switch and Disinfection Points. GO TO CHARGER (UNDOCK while docked) sits at the bottom,
- * over the nav bar, so it never scrolls away.
+ * The Tasks tab, laid out to fit without scrolling. Right Now at the top, pinned: what the robot
+ * is doing, in words (it replaces the e-stop badge and speed the other pages carry). Then START
+ * DISINFECTION on its own (or the task under way, or how the last one ended, above it), a row
+ * each for Routines and Disinfection Points (their own pages), and the UV lamps switch, set apart
+ * in its own colour. GO TO CHARGER (UNDOCK while docked) sits at the bottom, over the nav bar.
+ * The middle still scrolls, for a small screen or a task card.
  */
 @Composable
-private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: () -> Unit, onEditTask: (String) -> Unit, modifier: Modifier) {
+private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: () -> Unit, onOpenRoutines: () -> Unit, modifier: Modifier) {
     val count = (state.points as? Points.Loaded)?.list?.size
+    val routines = state.tasks.size
     // START DISINFECTION and the routines go round the points on the robot's map.
     LaunchedEffect(state.connected, state.points is Points.NotLoaded) {
         if (state.connected && state.points is Points.NotLoaded) actions.onLoadPoints()
@@ -810,18 +817,19 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
             if (run != null) TaskRunCard(state, run, actions)
             else if (report != null) TaskReportCard(report, actions.onDismissTaskReport)
             if (run == null) StartDisinfection(state, actions)
-
-            SectionLabel("Routines")
-            SavedTasks(state, actions, onEditTask)
-
-            SectionLabel("By hand")
-            UvSwitch(state, actions)
+            TaskItem(
+                icon = R.drawable.ic_routines,
+                title = "Routines",
+                detail = if (routines > 0) "$routines saved. Pick one to run, or make one." else "Your own lists of points, run in order.",
+                onClick = onOpenRoutines,
+            )
             TaskItem(
                 icon = R.drawable.ic_tab_tasks,
                 title = "Disinfection Points",
                 detail = if (count != null) "$count saved. Send the robot to one, or add one." else "Send the robot to a saved point, or add one where it stands.",
                 onClick = onOpenPoints,
             )
+            UvSwitch(state, actions)
         }
         Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             if (state.docked) ChargerButton("UNDOCK", state.canDrive, actions.onUndock)
@@ -831,8 +839,11 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
 }
 
 /**
- * The UV lamps, on or off by hand. ON asks first, then switches them on at once (no countdown);
- * OFF needs no asking. It shows any run, the Points page's included, so it also ends those.
+ * The UV lamps, on or off by hand: for when nothing else will do, so it looks unlike the rest.
+ * A pastel mauve card with a plum siren, "Toggle UV lamps", why to think twice (or, while on,
+ * the run), and ON / OFF right beside the switch. ON asks first, then switches them on at once
+ * (no countdown); OFF needs no asking. It shows any run, the Points page's included, so it
+ * also ends those.
  */
 @Composable
 private fun UvSwitch(state: RemoteState, actions: RemoteActions) {
@@ -840,18 +851,32 @@ private fun UvSwitch(state: RemoteState, actions: RemoteActions) {
     var confirming by rememberSaveable { mutableStateOf(false) }
     val owed = state.uv == null && state.lampsOffOwed
     val on = state.uv != null || owed
-    Panel(color = if (on) status.dangerContainer else MaterialTheme.colorScheme.surface) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = status.uvContainer),
+    ) {
+        Row(Modifier.padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(painterResource(R.drawable.ic_siren), contentDescription = null, modifier = Modifier.size(28.dp), tint = status.uv)
+            Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
-                Text("UV Lamps", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text("Toggle UV lamps", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Text(
-                    if (on) uvStatus(state) else "Off",
+                    if (on) uvStatus(state) else "Only when you must. UV-C burns skin and eyes.",
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
                     color = if (on) status.danger else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (on) "ON" else "OFF",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+                color = if (on) status.danger else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(6.dp))
             Switch(
                 checked = on,
                 onCheckedChange = { if (it) confirming = true else actions.onStopDisinfection() },
