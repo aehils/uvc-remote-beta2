@@ -11,8 +11,8 @@ with the robot switched off.
 
 ## What it does
 
-Two tabs, **Tasks** (GO TO CHARGER, the UV switch, the saved **disinfection tasks**, and
-**Disinfection Points**, which opens its own page; the app opens here) and **Settings** (below),
+Two tabs, **Tasks** (the UV switch, **START DISINFECTION**, **Disinfection Points**, which
+opens its own page, and GO TO CHARGER pinned above the dock; the app opens here) and **Settings** (below),
 and the **Map** page (the robot on its map, and the drive pad). A small pastel-blue **BETA**
 sits centred at the very top of every page (the purple DEMO band under it in DEMO). The main page has no
 title bar: the robot's readings (the e-stop badge and the battery ring, then the speed; on the Map
@@ -89,8 +89,8 @@ While the robot isn't answering, the app looks for it and follows it to a new ad
 | GO TO CHARGER | `/reeman/position` + `/reeman/pose`, then `/cmd/charge` type 0 (pile close) or type 2 (pile far) | the firmware's |
 | GO (a saved point) | `/cmd/nav_name` `{"point":"<name>"}` | the firmware's |
 | Add point where the robot is | `/reeman/pose`, then `/cmd/position` `{"name","type":"delivery","pose":{x,y,theta}}` | doesn't move |
-| START DISINFECTION | after the start delay, `/cmd/external_power_supply` `{"type":"24v","operation":"1"}`; at the end `"0"` | doesn't move |
-| START (a task) | per stop: `/cmd/nav_name`, then the lamps as START DISINFECTION; OFF accepted before the next trip | the firmware's |
+| UV switch | `/cmd/external_power_supply` `{"type":"24v","operation":"1"}`; OFF `"0"` | doesn't move |
+| START DISINFECTION | per point: `/cmd/nav_name`, then the lamps on after the start delay and off at the end; OFF accepted before the next trip; then GO TO CHARGER | the firmware's |
 | New map / Extend this map | `/cmd/set_mode` `{"mode":1}` / `{"mode":3}` | doesn't move; you drive |
 | Save map | `/cmd/save_map`, `/cmd/set_mode` `{"mode":2}`, then `/cmd/rename_map` with the name | doesn't move |
 | Discard | `/cmd/set_mode` `{"mode":2}` | doesn't move |
@@ -191,10 +191,11 @@ the point it stopped ("arrived" within 0.3 m). **Add point where the robot is** 
 robot's spot and heading as a new point; names must be new, since saving an existing name would
 move that point. Rename or delete points in the robot's own app.
 
-**UV disinfection** is the card at the top of the Disinfection Points page. **START
-DISINFECTION** asks you to confirm the room is clear, counts down the start delay, switches the
-lamps on for the set time, then off. **START NOW** skips the countdown. The **tune** button sets
-the time (1–30 min) and delay (15, 30 or 60 s); both are saved on the phone. While a run is on,
+**UV disinfection.** The Tasks tab's **UV switch** turns the lamps on by hand (it asks first,
+no countdown, off after 30 min at the latest). The card at the top of the Disinfection Points
+page shows where the robot stands and any run under way; its **tune** button sets the time at
+each point (1–30 min) and the start delay (15, 30 or 60 s) that START DISINFECTION uses; both are
+saved on the phone. **START NOW** skips a countdown. While a run is on,
 a red banner with the time left is pinned on every page and everything that moves the robot is
 locked.
 
@@ -206,16 +207,13 @@ it; until then the banner reads **UV LAMPS MAY STILL BE ON**, nothing that moves
 works, and the app won't switch robot or mode. ON and OFF go out one at a time, in order, so an
 OFF can never overtake an ON.
 
-**Disinfection tasks** work like the fixed-point tasks in the robot's own app. A task is a list
-of saved points in order, each with its UV time (1–30 min), plus the countdown before the lamps
-(15, 30 or 60 s), the number of rounds (1–10), and what to do at the end (**Go to charger** or
-**Stay**). Tasks are saved on the phone, by point name, under **Disinfection tasks** on the
-Tasks tab; **+ New task** and the tune button open the editor. **START** asks you to confirm the
-rooms are clear, then for each stop:
+**START DISINFECTION** works like the robot's own app: one route over every saved point on the
+map (except the pile), in the map's order, each with the same UV time and start delay, then back
+to the charger. It asks you to confirm the rooms are clear, then for each point:
 
 1. the robot goes to the point with `/cmd/nav_name`, undocking first if it is on its pile. If it
-   is already standing on the point (say, round 2 of a one-point task), there is no trip.
-2. the same UV run as START DISINFECTION: countdown, lamps on for the stop's time, then OFF.
+   is already standing on the point, there is no trip.
+2. the start delay, the lamps on for the set time, then OFF.
 3. the next trip only starts once the robot has **accepted OFF**. The lamps are never on while
    it drives.
 
@@ -224,7 +222,7 @@ lamps off: **TRY AGAIN**, **SKIP** that point, or **END TASK**. The d-pad works 
 the robot. The task ends early on: STOP, END TASK, the e-stop, switching the lamps off, the
 robot moving or the connection dropping while the lamps are on or counting down, or leaving the
 app. Under 30% battery a task won't start; under 25% between stops it ends and the robot goes to
-its charger (even with **Stay**). Both sit above the robot's own app's auto-charge level (20% on
+its charger. Both sit above the robot's own app's auto-charge level (20% on
 this robot), which would otherwise take the robot away mid-task. Whatever happens, a card then says how the task went, point by
 point: the UV time that ran, or skipped, not reached, or stopped partway. "Disinfected" means the
 planned time ran there, nothing more: the app can't measure dose.
@@ -319,7 +317,7 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
   own app, with the robot on the pile).
 - A trip to a point (`/cmd/nav_name`): what `/reeman/global_plan` returns on the way, and
   whether `/cmd/cancel_goal` ends it.
-- **Disinfection tasks** (all of it). They're built from the pieces above, so they inherit their
+- **START DISINFECTION** (all of it: the route, then the charger). It's built from the pieces above, so it inherits their
   open questions. See "First task test".
 - **All of Maps and mapping.** The robot couldn't be reached while it was built. The reads come
   from the 2026-09-23 probe on v5.1.12: the documented `/robot/get_mode`, `/robot/map` and

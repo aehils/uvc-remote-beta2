@@ -42,6 +42,19 @@ data class DisinfectionTask(
         const val MAX_NAME = 32
         const val MAX_STOPS = 20
         const val MAX_ROUNDS = 10
+        const val ROUTE_ID = "route"
+
+        /**
+         * What START DISINFECTION runs, like the robot's own app: every point on the map, in the
+         * map's order, each for the same UV time and countdown, then the charger.
+         */
+        fun route(points: List<Waypoint>, settings: UvSettings) = DisinfectionTask(
+            id = ROUTE_ID,
+            name = "Disinfection",
+            stops = points.map { TaskStop(it.name, settings.minutes) },
+            delaySeconds = settings.delaySeconds,
+            whenDone = WhenDone.CHARGER,
+        )
 
         fun listToJson(list: List<DisinfectionTask>): String = JSONArray().apply {
             list.forEach { t ->

@@ -68,93 +68,50 @@ import com.expiation.reemanremote.TaskStop
 import com.expiation.reemanremote.Uv
 import com.expiation.reemanremote.WhenDone
 
-// ---------------------------------------------------------------------- Tasks tab: saved tasks
-
-/** "3 points · 2 rounds · 30 min UV" */
-private fun taskSummary(task: DisinfectionTask): String =
-    listOfNotNull(
-        "${task.stops.size} point${if (task.stops.size == 1) "" else "s"}",
-        if (task.rounds > 1) "${task.rounds} rounds" else null,
-        "${task.uvMinutes} min UV",
-    ).joinToString(" · ")
+// ---------------------------------------------------------------------- Tasks tab: START DISINFECTION
 
 /**
- * The saved tasks, each with START (it asks first), and New task. The tune button opens the
- * editor. Why no task can start goes once under the list; what is wrong with one task, on its row.
+ * START DISINFECTION: the robot goes round every point on the map in turn (see
+ * [DisinfectionTask.route]). It asks first. Why it can't start goes under it.
  */
 @Composable
-internal fun SavedTasks(state: RemoteState, actions: RemoteActions, onEditTask: (String) -> Unit) {
-    var confirming by rememberSaveable { mutableStateOf<String?>(null) }
-    state.tasks.forEach { task ->
-        TaskRow(
-            task = task,
-            fault = state.taskFault(task),
-            canStart = state.taskProblem(task) == null,
-            onStart = { confirming = task.id },
-            onEdit = { onEditTask(task.id) },
-        )
-    }
-    if (state.tasks.isNotEmpty() && state.taskRun == null) state.taskBlocker?.let { TasksNote(it) }
-    OutlinedButton(
-        onClick = { onEditTask("") },
+internal fun StartDisinfection(state: RemoteState, actions: RemoteActions) {
+    var confirming by rememberSaveable { mutableStateOf(false) }
+    val problem = state.routeProblem
+    Button(
+        onClick = { confirming = true },
+        enabled = problem == null,
         modifier = Modifier
             .fillMaxWidth()
-            .height(52.dp),
+            .height(56.dp),
         shape = RoundedCornerShape(14.dp),
     ) {
-        Text("+  New task", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+        Text("START DISINFECTION", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
     }
+    problem?.let { TasksNote(it) }
 
-    val task = state.tasks.firstOrNull { it.id == confirming }
-    if (task != null) {
+    if (confirming) {
+        val route = state.route
         AlertDialog(
-            onDismissRequest = { confirming = null },
-            title = { Text("Start ${task.name}?") },
+            onDismissRequest = { confirming = false },
+            title = { Text("Start disinfection?") },
             text = {
                 Text(
                     "UV-C light burns skin and eyes. Make sure nobody is in the rooms on the route and the doors are closed.\n\n" +
-                        "At each point the lamps come on ${task.delaySeconds} s after the robot arrives. " +
-                        "STOP, the e-stop, or leaving the app ends the task and switches them off.",
+                        "The robot goes to all ${route.stops.size} points in turn. At each, the lamps come on " +
+                        "${route.delaySeconds} s after it arrives and stay on for ${state.uvSettings.minutes} min. " +
+                        "STOP, the e-stop, or leaving the app ends it and switches them off.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
-                    confirming = null
-                    actions.onStartTask(task.id)
+                    confirming = false
+                    actions.onStartRoute()
                 }) { Text("START", fontWeight = FontWeight.Bold) }
             },
-            dismissButton = { TextButton(onClick = { confirming = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { confirming = false }) { Text("Cancel") } },
         )
-    }
-}
-
-@Composable
-private fun TaskRow(task: DisinfectionTask, fault: String?, canStart: Boolean, onStart: () -> Unit, onEdit: () -> Unit) {
-    val status = RemoteTheme.status
-    Panel {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(
-                Modifier
-                    .weight(1f)
-                    .clickable(onClickLabel = "Edit ${task.name}", onClick = onEdit)
-            ) {
-                Text(task.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(taskSummary(task), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                fault?.let { Text(it, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, color = status.warn) }
-            }
-            IconButton(onClick = onEdit) {
-                Icon(painterResource(R.drawable.ic_tune), contentDescription = "Edit ${task.name}", modifier = Modifier.size(22.dp))
-            }
-            Button(
-                onClick = onStart,
-                enabled = canStart,
-                modifier = Modifier.height(48.dp),
-                shape = RoundedCornerShape(12.dp),
-            ) {
-                Text("START", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-            }
-        }
     }
 }
 
