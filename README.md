@@ -66,7 +66,7 @@ with the pad up.
 
 **Settings** is grouped by subject, each group one card of plain rows (an icon, a title, a
 chevron; no line of detail under them):
-- **Robot**, first: a card with the robot the app talks to (its name, like `UV 3-07`, or DEMO
+- **Robot**, first and with no heading over it: a card with the robot the app talks to (its name, like `UV 3-07`, or DEMO
   robot) and, on the right, its battery (a cell on its side, the figure inside, filled and
   coloured as the ring) and CONNECTED in green or SEARCHING / OFFLINE in orange. Only while it
   isn't answering does the card grow: the robots the app found, to pick from, and **Find robots**.

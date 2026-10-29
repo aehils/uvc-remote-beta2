@@ -1,5 +1,7 @@
 package com.expiation.reemanremote.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -138,9 +140,14 @@ object RemoteTheme {
         @Composable get() = LocalStatusColors.current
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun RemoteTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
-    CompositionLocalProvider(LocalStatusColors provides if (dark) DarkStatus else LightStatus) {
+    CompositionLocalProvider(
+        LocalStatusColors provides if (dark) DarkStatus else LightStatus,
+        // No stretch (or glow) at the end of a scroll, anywhere in the app: a list just stops.
+        LocalOverscrollConfiguration provides null,
+    ) {
         MaterialTheme(colorScheme = if (dark) DarkColors else LightColors, content = content)
     }
 }

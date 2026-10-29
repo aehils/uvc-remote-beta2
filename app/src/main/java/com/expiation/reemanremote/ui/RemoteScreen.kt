@@ -1563,8 +1563,9 @@ private fun DemoToggle(title: String, detail: String, on: Boolean, onToggle: () 
 }
 
 /**
- * Settings: what isn't running the robot, grouped by subject. The robot comes first (its name and
- * whether it's answering), then each group as one card of plain rows: a title, nothing under it.
+ * Settings: what isn't running the robot, grouped by subject. The robot comes first, with no
+ * heading (its name, battery and whether it's answering), then each group as one card of plain
+ * rows: a title, nothing under it.
  */
 @Composable
 private fun SettingsTab(
@@ -1584,7 +1585,7 @@ private fun SettingsTab(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        SectionLabel("Robot")
+        // No heading over it: the card is plainly the robot.
         RobotCard(state, actions)
         SettingsGroup {
             SettingsRow(R.drawable.ic_info, "Robot information", onClick = onOpenRobotInfo)
