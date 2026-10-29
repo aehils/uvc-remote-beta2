@@ -58,23 +58,23 @@ map's own buttons, one each side so STOP stays in the middle:
 
 While mapping, **Save** and **Discard** are on the map's *Scanning* badge.
 
-**Driving from anywhere.** There is one drive pad. On the Map page the dock's **Drive** button puts
-it under the map; elsewhere (the Points, Maps, DEMO and Settings pages) a **DRIVE**
-handle sits just above the dock or STOP: tap it, or flick it up, to pull the pad up under whatever
-is on screen, and tap or flick down to put it away. Only the handle takes that gesture, so a held
-arrow keeps its press. Closed, the handle still says what the robot is doing. The Tasks and
-Settings tabs have no pad. Starting a map pulls it up by itself.
+**Driving is on the Map page only.** There is one drive pad, and it lives under the map: the
+dock's **Drive** button opens and closes it. No other page or tab has a pad (Points, Maps, the
+task editor, DEMO controls and the Settings pages carry the readings and STOP, nothing else), so
+the arrows are always shown with the map they move the robot on. Starting a map opens the Map page
+with the pad up.
 
-**Settings** is grouped by subject, each row opening a page or a dialog:
-- **Robot**, first: the robot the app talks to (its name, like `UV 3-07`, or DEMO) with a connection
-  light, green answering, orange not. While it isn't answering: the robots the app found, to
-  pick from, **Find robots**, and an address entry (folded away). Then **Robot information**: its
-  full ID, address and firmware; battery, charger and e-stop; mode, map and points.
-- **Maps: Saved maps**, the Maps page.
-- **Records: Activity log** (its row shows the latest line). The log as a page of its own,
-  newest first, selectable for copying.
-- **Disinfection: Disinfection timing**, the UV time and the exit delay (as the tune button on the
-  Disinfection Points page).
+**Settings** is grouped by subject, each group one card of plain rows (an icon, a title, a
+chevron; no line of detail under them):
+- **Robot**, first: a card with the robot the app talks to (its name, like `UV 3-07`, or DEMO
+  robot) and, on the right, CONNECTED in green or SEARCHING / OFFLINE in orange. Only while it
+  isn't answering does the card grow: the robots the app found, to pick from, and **Find robots**.
+  Under it, **Robot information** (its full ID, address and firmware; battery, charger and
+  e-stop; mode, map and points) and **Robot address** (a dialog, for a robot the app can't find
+  by name; not in DEMO).
+- **Operation: Saved maps** (the Maps page), **Disinfection timing** (the UV time and the exit
+  delay, as the tune button on the Disinfection Points page), and **Activity log** (the log as a
+  page of its own, newest first, selectable for copying).
 - **DEMO**: the **DEMO mode** switch, and, in DEMO, **DEMO controls**.
 
 While the robot isn't answering, the app looks for it and follows it to a new address by itself
@@ -473,7 +473,7 @@ A hospital can have several robots, so the app never moves to a robot it can't r
 a tap: driving or lighting the wrong one has to be deliberate. For the same reason, a robot
 answering at the saved address is checked by its hostname before the app counts it as connected:
 the router may have given that address to another robot. **Find robots** in the menu searches on
-demand. **Enter address** still takes an address (for a robot on a routed network the app can't
+demand. **Settings › Robot address** still takes an address (for a robot on a routed network the app can't
 search).
 
 **Mobile data can stay on.** The app sends everything over Wi-Fi, even when Android prefers mobile
@@ -514,7 +514,7 @@ Under `app/src/main/java/com/expiation/reemanremote/`:
   choice and UV settings.
 - `MainActivity.kt`: hosts the screen; leaving the app pauses polling and switches the lamps off.
 - `ui/RemoteScreen.kt`: the Compose screen. It only draws `RemoteState` and forwards taps.
-  The tabs, the drive sheet, the readings and banners, the Tasks, Points and Settings pages.
+  The tabs, the readings and banners, the drive pad, the Tasks, Points and Settings pages.
 - `ui/NavDock.kt`: the dock at the bottom of the main page: the Map tile, the tab or map buttons, and STOP.
 - `ui/MapScreen.kt`: the Map page (map view, set position, save/discard, and its dock buttons) and the Maps page.
 - `ui/Theme.kt`: colours, including the status colours.
