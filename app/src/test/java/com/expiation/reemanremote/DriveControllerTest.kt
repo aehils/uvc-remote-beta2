@@ -214,14 +214,14 @@ class DriveControllerTest {
 
         c.demoRobot.navStatus = """{"res":6,"reason":-4,"goal":"Bed 9","dist":0,"mileage":0}"""
         waitFor(c) { it.robotAlert != null }
-        assertEquals("Couldn't go to Bed 9: the point isn't on the map", c.state.value.robotAlert)
-        assertTrue(log(c), logged(c, "Robot: Couldn't go to Bed 9"))
+        assertEquals("Bed 9 isn't on this map. Add the point again, or choose another.", c.state.value.robotAlert)
+        assertTrue("the robot's own terms go to the log\n" + log(c), logged(c, "the point isn't on the map"))
         c.dismissAlert()
         assertEquals(null, c.state.value.robotAlert)
 
         c.demoRobot.navStatus = """{"res":3,"reason":1,"goal":"Bed 1","dist":0.8,"mileage":2.0}"""
         waitFor(c) { it.robotAlert != null }
-        assertEquals("Navigation to Bed 1 failed", c.state.value.robotAlert)
+        assertEquals("Couldn't get to Bed 1. Clear the way, then try again.", c.state.value.robotAlert)
         advanceTimeBy(3_000)
         c.dismissAlert()
         advanceTimeBy(3_000)
@@ -236,7 +236,8 @@ class DriveControllerTest {
         // As if the robot's own app docked from too far away: it never moves, and chargeFlag reads 9.
         c.demoRobot.handle("POST", "/cmd/charge", """{"type":0,"point":"charging_pile"}""")
         waitFor(c) { it.robotAlert != null }
-        assertEquals("Docking failed: the robot couldn't find its charging pile", c.state.value.robotAlert)
+        assertEquals("Couldn't dock. Drive the robot in front of its charger, then press GO TO CHARGER.", c.state.value.robotAlert)
+        assertTrue(log(c), logged(c, "the robot couldn't find its charging pile"))
     }
 
     @Test
@@ -765,13 +766,13 @@ class DriveControllerTest {
     fun theUvSwitchTurnsTheLampsOnAtOnceAndOffAgain() = runTest {
         val c = ready()
         c.setUvSettings(UvSettings(minutes = 1, delaySeconds = 60)) // the switch ignores both
-        c.switchLampsOn()
+        c.switchLampsOn(10)
         val took = waitFor(c) { it.uv is Uv.On }
         assertTrue("took $took ms", took < 1_000)
         assertTrue(uvOn(c))
         assertFalse(c.state.value.canDrive)
         val run = c.state.value.uv as Uv.On
-        assertEquals(DriveController.MAX_UV_MINUTES * 60_000L, run.until - run.since)
+        assertEquals(10 * 60_000L, run.until - run.since)
 
         c.stopDisinfection()
         waitFor(c) { !it.lampsOffOwed }
@@ -784,7 +785,7 @@ class DriveControllerTest {
         val c = ready()
         c.demoToggleEstop()
         waitFor(c) { it.estop == EStop.PRESSED }
-        c.switchLampsOn()
+        c.switchLampsOn(5)
         advanceTimeBy(2_000)
         assertEquals(null, c.state.value.uv)
         assertFalse(uvOn(c))
@@ -1501,54 +1502,298 @@ class DriveControllerTest {
         assertFalse("never set off for Bed 2", c.state.value.demoStatus!!.navigating)
     }
 
-    @Test
-    fun aPointThatCantBeReachedHoldsTheTaskUntilSkipped() = runTest {
-        val c = withTask(TaskStop("Bed 1", 1), TaskStop("Bed 2", 1))
-        c.demoBlockNextStep()
-        c.startTask("t")
-        runTask(c) { it.taskRun?.stage is TaskStage.Held }
-        val s = c.state.value
-        assertEquals("Couldn't get to Bed 1", (s.taskRun!!.stage as TaskStage.Held).problem)
-        assertFalse(uvOn(c))
-        assertFalse("the manual buttons stay locked", s.canNavigate)
-        assertTrue("the d-pad works, to free the robot", s.canDriveByHand)
-
-        c.skipTaskStop()
-        runTask(c) { it.uv is Uv.Countdown }
-        assertEquals("Bed 2", c.state.value.atPoint?.name)
-        c.endTaskNow()
-        val r = c.state.value.taskReport!!
-        assertEquals("Task ended from the app", r.reason)
-        assertEquals(listOf(StopOutcome.SKIPPED, StopOutcome.INTERRUPTED), r.results.map { it.outcome })
-        assertEquals(0, r.done)
-        advanceTimeBy(20_000)
-        assertFalse("the countdown never finished", uvOn(c))
+    /** Keeps every trip to a point failing, like a blocked corridor, until [cond]. */
+    private fun TestScope.runTaskBlocked(c: DriveController, maxMs: Long = 180_000, cond: (RemoteState) -> Boolean) {
+        runTask(c, maxMs) {
+            if (it.taskRun?.stage !is TaskStage.Travelling || !it.busy) c.demoBlockNextStep()
+            cond(it)
+        }
     }
 
     @Test
-    fun aPointThatCantBeReachedCanBeTriedAgain() = runTest {
+    fun aPointThatCantBeReachedIsTriedAgainThenLeftOutAndReported() = runTest {
+        val c = withTask(TaskStop("Bed 1", 1), TaskStop("Bed 2", 1))
+        c.demoBlockNextStep()
+        c.startTask("t")
+        runTaskBlocked(c) { it.taskRun?.stage is TaskStage.Retrying }
+        val s = c.state.value
+        val firstFailure = currentTime
+        assertEquals("Couldn't get to Bed 1", (s.taskRun!!.stage as TaskStage.Retrying).problem)
+        assertFalse(uvOn(c))
+        assertFalse("the manual buttons stay locked", s.canNavigate)
+
+        // Still failing past the retry time: it goes on to Bed 2 by itself.
+        runTaskBlocked(c) { it.taskRun?.stop?.point == "Bed 2" }
+        assertTrue("tried for the retry time\n" + log(c), currentTime - firstFailure >= DriveController.TASK_RETRY_MS)
+        assertEquals(listOf("Bed 1" to StopOutcome.NOT_REACHED), c.state.value.taskRun!!.results.map { it.point to it.outcome })
+
+        runTask(c, maxMs = 300_000) { it.taskRun == null }
+        val r = c.state.value.taskReport!!
+        assertTrue("the task completed, with a point missing\n" + log(c), r.completed)
+        assertFalse(r.good)
+        assertEquals(listOf("Bed 1"), r.notReached)
+        assertEquals(1, r.done)
+        assertTrue(r.detail, "not reached: Bed 1" in r.detail)
+    }
+
+    @Test
+    fun aPointReachedOnASecondTryRunsAsUsual() = runTest {
         val c = withTask(TaskStop("Bed 1", 1))
         c.demoBlockNextStep()
         c.startTask("t")
-        runTask(c) { it.taskRun?.stage is TaskStage.Held }
-        c.retryTaskStop()
-        runTask(c) { it.uv is Uv.Countdown }
-        assertEquals("Bed 1", c.state.value.atPoint?.name)
+        runTask(c) { it.taskRun?.stage is TaskStage.Retrying }
+        runTask(c, maxMs = 300_000) { it.taskRun == null }
+        val r = c.state.value.taskReport!!
+        assertTrue(r.good)
+        assertEquals(listOf(StopOutcome.DONE), r.results.map { it.outcome })
+    }
+
+    @Test
+    fun losingTheRobotDoesntUseUpARetry() = runTest {
+        val c = withTask(TaskStop("Bed 1", 1), TaskStop("Bed 2", 1))
+        c.demoBlockNextStep()
+        c.startTask("t")
+        runTask(c) { it.taskRun?.stage is TaskStage.Retrying }
+        c.demoToggleWifi()
+        advanceTimeBy(120_000)
+        assertEquals("Bed 1", c.state.value.taskRun?.stop?.point)
+        assertTrue(c.state.value.taskRun!!.results.isEmpty())
+    }
+
+    @Test
+    fun pausingWithTheLampsOnKeepsTheTimeLeftAndResumeRunsTheRest() = runTest {
+        val c = withTask(TaskStop("Bed 1", 2), TaskStop("Bed 2", 1))
+        c.startTask("t")
+        runTask(c) { it.uv is Uv.On }
+        advanceTimeBy(30_000)
+        c.pauseTask()
+        val paused = c.state.value
+        assertEquals(TaskStage.Paused, paused.taskRun!!.stage)
+        assertEquals(null, paused.uv)
+        waitFor(c) { !it.lampsOffOwed && it.still && !it.busy }
+        assertFalse(uvOn(c))
+        assertEquals(90_000.0, c.state.value.taskRun!!.uvLeftMs!!.toDouble(), 1_000.0)
+        advanceTimeBy(60_000)
+        assertFalse("stays off while paused", uvOn(c))
+        assertEquals("Bed 1", c.state.value.taskRun!!.stop.point)
+
+        c.resumeTask()
+        val on = c.state.value.uv as Uv.Countdown // the whole countdown again, at the same point
+        assertEquals(90_000.0, on.forMs.toDouble(), 1_000.0)
+        runTask(c) { it.uv is Uv.On }
+        runTask(c, maxMs = 300_000) { it.taskRun == null }
+        val r = c.state.value.taskReport!!
+        assertTrue(log(c), r.good)
+        assertEquals(120_000.0, r.results[0].uvMs.toDouble(), 2_000.0)
+    }
+
+    @Test
+    fun pausingOnTheWayStopsTheRobotAndResumeSetsOffAgain() = runTest {
+        val c = withTask(TaskStop("Bed 1", 1))
+        c.startTask("t")
+        runTask(c) { it.taskRun?.stage == TaskStage.Travelling && it.vx > 0.1 }
+        c.pauseTask()
+        waitFor(c) { it.still && !it.busy }
+        assertEquals(TaskStage.Paused, c.state.value.taskRun!!.stage)
+        assertFalse(c.state.value.demoStatus!!.navigating)
+        assertEquals("cancelling the trip is no failure", null, c.state.value.robotAlert)
+        assertTrue("the d-pad works while paused", c.state.value.canDriveByHand)
+        assertFalse("GO stays locked", c.state.value.canNavigate)
+
+        c.resumeTask()
+        runTask(c, maxMs = 300_000) { it.taskRun == null }
+        assertTrue(log(c), c.state.value.taskReport!!.good)
+    }
+
+    @Test
+    fun endingAPausedTaskReportsTheTimeItHad() = runTest {
+        val c = withTask(TaskStop("Bed 1", 2))
+        c.startTask("t")
+        runTask(c) { it.uv is Uv.On }
+        advanceTimeBy(30_000)
+        c.pauseTask()
+        c.endTaskNow()
+        val r = c.state.value.taskReport!!.results.single()
+        assertEquals(StopOutcome.INTERRUPTED, r.outcome)
+        assertEquals(30_000.0, r.uvMs.toDouble(), 1_000.0)
+    }
+
+    @Test
+    fun aTaskCanFinishBackAtItsFirstPoint() = runTest {
+        val c = withTask(TaskStop("Bed 1", 1), TaskStop("Bed 2", 1), whenDone = WhenDone.START)
+        c.startTask("t")
+        runTask(c, maxMs = 400_000) { it.taskRun == null }
+        assertEquals("Bed 2", c.state.value.atPoint?.name)
+        runTask(c) { it.atPoint?.name == "Bed 1" && it.phase == StepPhase.Idle }
+        assertEquals(1.6, robotPose(c, "x"), 0.05)
+        assertFalse(uvOn(c))
+        assertFalse("not the charger", c.state.value.docked)
+    }
+
+    @Test
+    fun aRouteTestVisitsEveryPointWithTheLampsOffThenDocks() = runTest {
+        val (c, points) = withPoints()
+        c.startRouteTest()
+        assertEquals(true, c.state.value.taskRun?.task?.lampsOff)
+        val start = currentTime
+        while (c.state.value.taskRun != null) {
+            check(currentTime - start < 600_000) { "timed out\n" + log(c) }
+            advanceTimeBy(50)
+            assertFalse("no lamps in a route test\n" + log(c), uvOn(c))
+            assertEquals("no lamp run either", null, c.state.value.uv)
+        }
+        val r = c.state.value.taskReport!!
+        assertTrue(log(c), r.good)
+        assertEquals("Route test passed", r.title)
+        assertEquals(points.map { it.name to StopOutcome.DONE }, r.results.map { it.point to it.outcome })
+        assertEquals(null, r.nextStep)
+        assertTrue(c.state.value.docked)
+    }
+
+    @Test
+    fun aRouteTestSaysWhichPointItCouldntReachAndWhatToDo() = runTest {
+        val (c, points) = withPoints()
+        c.demoBlockNextStep()
+        c.startRouteTest()
+        val first = points.first().name
+        runTaskBlocked(c, maxMs = 300_000) { it.taskRun?.stop?.point != first }
+        runTask(c, maxMs = 600_000) { it.taskRun == null }
+        val r = c.state.value.taskReport!!
+        assertFalse(r.good)
+        assertEquals("Route test found a problem", r.title)
+        assertEquals(listOf(first), r.notReached)
+        assertEquals("Clear the way to $first, then run it again.", r.nextStep)
+    }
+
+    @Test
+    fun aRouteTestWithNoChargingPileSaysSo() = runTest {
+        val (c, _) = withPoints()
+        c.deletePoint("charging_pile")
+        waitFor(c) { s -> s.points.let { it is Points.Loaded && it.pile == null } }
+        c.startRouteTest()
+        runTask(c, maxMs = 600_000) { it.taskRun == null }
+        val r = c.state.value.taskReport!!
+        assertFalse(r.good)
+        assertEquals(TaskReport.NO_PILE, r.reason)
+        assertTrue(r.nextStep!!, "mark the charging pile" in r.nextStep!!)
+    }
+
+    @Test
+    fun aRouteTestCanBePausedAndStopped() = runTest {
+        val (c, _) = withPoints()
+        c.startRouteTest()
+        runTask(c) { it.taskRun?.stage == TaskStage.Travelling && it.vx > 0.1 }
+        c.pauseTask()
+        waitFor(c) { it.still && !it.busy }
+        c.resumeTask()
+        runTask(c) { it.taskRun?.stage == TaskStage.Travelling }
+        c.stop()
+        assertEquals("Route test ended", c.state.value.taskReport!!.title)
+        assertFalse(uvOn(c))
+    }
+
+    @Test
+    fun aReportSaysWhatToDoNext() {
+        val t = DisinfectionTask("t", "Ward A", listOf(TaskStop("Bed 1", 1)))
+        fun step(reason: String?, vararg results: StopResult) = TaskReport(t, reason == null, reason, results.toList(), at = 0).nextStep
+        assertEquals(null, step(null, StopResult(1, "Bed 1", StopOutcome.DONE, 60_000)))
+        assertEquals(null, step("STOP pressed"))
+        assertEquals("Charge the robot, then run it again.", step("battery low (14%)"))
+        assertEquals("Clear the way to Bed 1, then run it again.", step(null, StopResult(1, "Bed 1", StopOutcome.NOT_REACHED)))
+        val odd = TaskReport(t, false, "ON FAILED timed out", emptyList(), at = 0)
+        assertFalse("no raw errors for staff", "FAILED" in odd.detail)
+    }
+
+    @Test
+    fun aPointCanBeDeleted() = runTest {
+        val (c, points) = withPoints()
+        val name = points.last().name
+        c.deletePoint(name)
+        waitFor(c) { s -> (s.points as? Points.Loaded)?.list?.none { it.name == name } == true }
+        assertEquals("Deleted \"$name\"", c.state.value.pointMessage)
+        assertEquals(points.size - 1, (c.state.value.points as Points.Loaded).list.size)
+    }
+
+    @Test
+    fun noPointIsDeletedWhileATaskRuns() = runTest {
+        val c = withTask(TaskStop("Bed 1", 1))
+        c.startTask("t")
+        assertFalse(c.state.value.canDeletePoint)
+        c.deletePoint("Bed 2")
+        advanceTimeBy(2_000)
+        assertTrue((c.state.value.points as Points.Loaded).list.any { it.name == "Bed 2" })
+    }
+
+    @Test
+    fun aRoutineIsDeletedUnlessItIsTheOneRunning() = runTest {
+        val c = withTask(TaskStop("Bed 1", 1))
+        c.deleteTask("t")
+        assertTrue(c.state.value.tasks.isEmpty())
+    }
+
+    @Test
+    fun theLowBatteryLevelIsTheUsers() = runTest {
+        val c = withTask(TaskStop("Bed 1", 1), TaskStop("Bed 2", 1), whenDone = WhenDone.STAY)
+        repeat(4) { c.demoDrainBattery() } // 87% -> 47%
+        waitFor(c) { (it.battery ?: 100) < 50 }
+        val task = c.state.value.tasks.single()
+        assertEquals(null, c.state.value.taskProblem(task))
+
+        c.setLowBattery(50)
+        assertEquals(55, c.state.value.taskMinBattery)
+        assertTrue(c.state.value.taskProblem(task)!!.startsWith("Battery too low to start"))
+
+        c.setLowBattery(10) // under the robot's own app's level: not offered
+        assertEquals(DriveController.MIN_LOW_BATTERY, c.state.value.lowBattery)
+
+        // Between stops the level counts too, and with STAY still goes to charge.
+        c.setLowBattery(40)
+        c.startTask("t")
+        runTask(c) { it.uv is Uv.On }
+        c.setLowBattery(50)
+        runTask(c) { it.taskRun == null }
+        assertTrue(c.state.value.taskReport!!.reason!!.startsWith("battery low"))
+    }
+
+    @Test
+    fun theRunningSpeedIsAlwaysSentAndNeverOverTheLimit() = runTest {
+        val c = ready()
+        waitFor(c) { logged(c, "Running speed set to 0.5 m/s") } // the default, with nothing picked
+        assertEquals(null, c.state.value.runningSpeed)
+
+        c.setRunningSpeed(0.3)
+        waitFor(c) { logged(c, "Running speed set to 0.3 m/s") }
+
+        c.setRunningSpeed(0.8) // say, saved by an earlier build
+        assertEquals("capped", 0.5, c.state.value.runningSpeed!!, 0.001)
+        advanceTimeBy(2_000)
+        assertFalse(log(c), logged(c, "Running speed set to 0.8"))
+
+        // Sent again at the start of a task, in case the robot's own app has changed it.
+        c.setRunningSpeed(0.4)
+        waitFor(c) { logged(c, "Running speed set to 0.4 m/s") }
+        val (t, _) = withPoints()
+        t.saveTask(DisinfectionTask("t", "Ward A", listOf(TaskStop("Bed 1", 1))))
+        t.setRunningSpeed(0.3)
+        waitFor(t) { logged(t, "Running speed set to 0.3 m/s") }
+        val before = t.state.value.log.count { "Running speed set to 0.3" in it }
+        t.startTask("t")
+        waitFor(t) { s -> s.log.count { "Running speed set to 0.3" in it } > before }
     }
 
     @Test
     fun aTaskNeedsItsPointsOnTheMapAndEnoughBattery() = runTest {
         val c = withTask(TaskStop("Bed 1", 1), TaskStop("Bed 9", 1))
         val task = c.state.value.tasks.single()
-        assertEquals("Not on this map: Bed 9", c.state.value.taskProblem(task))
+        assertEquals("Bed 9 isn't on this map. Take it out of the routine.", c.state.value.taskProblem(task))
         c.startTask("t")
         assertEquals(null, c.state.value.taskRun)
-        assertTrue(log(c), logged(c, "not started: Not on this map: Bed 9"))
+        assertTrue(log(c), logged(c, "not started: Bed 9 isn't on this map"))
 
         c.saveTask(task.copy(stops = listOf(TaskStop("Bed 1", 1))))
         assertEquals(null, c.state.value.taskProblem(c.state.value.tasks.single()))
         repeat(6) { c.demoDrainBattery() } // 87% -> 27%
-        waitFor(c) { (it.battery ?: 100) < DriveController.TASK_MIN_BATTERY }
+        waitFor(c) { (it.battery ?: 100) < it.taskMinBattery }
         val low = c.state.value.taskProblem(c.state.value.tasks.single())
         assertTrue(low, low!!.startsWith("Battery too low to start"))
     }
@@ -1601,7 +1846,7 @@ class DriveControllerTest {
         assertTrue(log(c), logged(c, "not started: Another task is running"))
         runTask(c) { it.uv is Uv.Countdown }
         c.startDisinfection() // the task's run is the only one
-        c.switchLampsOn()
+        c.switchLampsOn(5)
         assertTrue(c.state.value.uv is Uv.Countdown)
     }
 
@@ -1627,6 +1872,58 @@ class DriveControllerTest {
         advanceTimeBy(1_000)
         assertFalse(uvOn(c))
         assertEquals("app left", c.state.value.taskReport!!.reason)
+    }
+
+    @Test
+    fun aRoutineCarriesOnOutOfSightAndPollingStopsAfterIt() = runTest {
+        val c = withTask(TaskStop("Bed 1", 1), TaskStop("Bed 2", 1), whenDone = WhenDone.STAY)
+        c.keepRunningInBackground = true
+        c.startTask("t")
+        runTask(c) { it.uv is Uv.On }
+        c.pause()
+        advanceTimeBy(1_000)
+        assertTrue(uvOn(c))
+        assertTrue(c.state.value.taskRun != null)
+
+        runTask(c, maxMs = 600_000) { it.taskReport != null && !it.runUnderWay }
+        val report = c.state.value.taskReport!!
+        assertTrue(report.good)
+        assertEquals(2, report.done)
+        assertFalse(uvOn(c))
+
+        advanceTimeBy(2_000)
+        c.demoToggleEstop()
+        advanceTimeBy(3_000)
+        assertEquals("no polls once it is over", EStop.RELEASED, c.state.value.estop)
+
+        c.resume()
+        waitFor(c) { it.estop == EStop.PRESSED }
+    }
+
+    @Test
+    fun theEStopStillEndsARunOutOfSight() = runTest {
+        val c = withTask(TaskStop("Bed 1", 5))
+        c.keepRunningInBackground = true
+        c.startTask("t")
+        runTask(c) { it.uv is Uv.On }
+        c.pause()
+        c.demoToggleEstop()
+        waitFor(c) { !it.runUnderWay }
+        assertFalse(uvOn(c))
+        assertFalse(c.state.value.taskReport!!.completed)
+    }
+
+    @Test
+    fun closingTheAppEndsARunAndGetsTheLampsOff() = runTest {
+        val c = withTask(TaskStop("Bed 1", 5))
+        c.keepRunningInBackground = true
+        c.startTask("t")
+        runTask(c) { it.uv is Uv.On }
+        c.pause()
+        c.endRun("app closed")
+        waitFor(c) { !it.runUnderWay }
+        assertFalse(uvOn(c))
+        assertEquals("app closed", c.state.value.taskReport!!.reason)
     }
 
     @Test

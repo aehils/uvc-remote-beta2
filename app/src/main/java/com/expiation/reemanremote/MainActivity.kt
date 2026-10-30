@@ -1,10 +1,13 @@
 package com.expiation.reemanremote
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.viewModels
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.expiation.reemanremote.ui.RemoteActions
@@ -17,16 +20,25 @@ import com.expiation.reemanremote.ui.RemoteTheme
  */
 class MainActivity : ComponentActivity() {
 
-    private val vm: RemoteViewModel by viewModels()
+    private val session by lazy { RobotSession.get(application) }
+    private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        val c = vm.controller
+        // Reminders, and a routine carrying on out of sight, show as notifications. Asked here, not
+        // at START: the dialog takes the screen, which would count as leaving the app.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        val c = session.controller
         val actions = RemoteActions(
-            onDemoChange = vm::setDemo,
-            onPing = vm::testConnection,
+            onDemoChange = session::setDemo,
+            onPing = session::testConnection,
             onFindRobot = c::findRobot,
             onPickRobot = c::pickRobot,
             onMove = c::drive,
@@ -37,13 +49,16 @@ class MainActivity : ComponentActivity() {
             onLoadPoints = c::loadPoints,
             onGoTo = c::goTo,
             onAddPoint = c::addPointHere,
+            onDeletePoint = c::deletePoint,
             onGoToCharger = c::goToCharger,
             onUndock = c::undock,
             onStartDisinfectionNow = c::startDisinfectionNow,
             onStopDisinfection = c::stopDisinfection,
             onSwitchLampsOn = c::switchLampsOn,
             onDismissAlert = c::dismissAlert,
-            onUvSettings = vm::setUvSettings,
+            onUvSettings = session::setUvSettings,
+            onLowBattery = session::setLowBattery,
+            onRunningSpeed = session::setRunningSpeed,
             onDemoEstop = c::demoToggleEstop,
             onDemoWifi = c::demoToggleWifi,
             onDemoBlock = c::demoBlockNextStep,
@@ -64,32 +79,34 @@ class MainActivity : ComponentActivity() {
             onAddChargingPile = c::addChargingPileHere,
             onAddWall = c::addWall,
             onRemoveWall = c::removeWall,
-            onSaveTask = vm::saveTask,
-            onDeleteTask = vm::deleteTask,
+            onSaveTask = session::saveTask,
+            onDeleteTask = session::deleteTask,
             onStartTask = c::startTask,
             onStartRoute = c::startRoute,
-            onRetryTaskStop = c::retryTaskStop,
-            onSkipTaskStop = c::skipTaskStop,
+            onStartRouteTest = c::startRouteTest,
+            onPauseTask = c::pauseTask,
+            onResumeTask = c::resumeTask,
             onEndTask = c::endTaskNow,
             onDismissTaskReport = c::dismissTaskReport,
+            onAnswerDue = session::answerDue,
         )
         setContent {
             val state by c.state.collectAsStateWithLifecycle()
+            val due by session.dueRoutine.collectAsStateWithLifecycle()
+            val history by session.history.collectAsStateWithLifecycle()
             RemoteTheme {
-                RemoteScreen(state, actions)
+                RemoteScreen(state, actions, due, history)
             }
         }
     }
 
     override fun onResume() {
         super.onResume()
-        vm.controller.resume()
+        session.resume()
     }
 
     override fun onPause() {
         super.onPause()
-        // Leaving the app stops polling and switches the UV lamps off. A step already running
-        // finishes by itself.
-        vm.controller.pause()
+        session.pause()
     }
 }

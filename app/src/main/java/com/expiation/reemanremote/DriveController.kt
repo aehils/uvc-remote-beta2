@@ -10,6 +10,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -184,10 +185,10 @@ sealed interface Uv {
     val point: String?
 
     /** Lamps still off; they come on at [lampsOnAt] unless the run is cancelled. */
-    data class Countdown(override val point: String?, val lampsOnAt: Long, val minutes: Int) : Uv
+    data class Countdown(override val point: String?, val lampsOnAt: Long, val forMs: Long) : Uv
 
     /** ON sent; waiting for the robot to accept it. */
-    data class Starting(override val point: String?, val minutes: Int) : Uv
+    data class Starting(override val point: String?, val forMs: Long) : Uv
 
     /** The robot accepted ON at [since]; OFF is sent at [until]. */
     data class On(override val point: String?, val since: Long, val until: Long) : Uv
@@ -234,6 +235,10 @@ data class RemoteState(
     /** Time left in the countdown, or with the lamps on. */
     val uvLeftMs: Long?,
     val uvSettings: UvSettings,
+    /** Under this between stops a task ends and goes to charge (see [DriveController.setLowBattery]). */
+    val lowBattery: Int = DriveController.DEFAULT_LOW_BATTERY,
+    /** The speed picked in Settings, in m/s; null: [DriveController.DEFAULT_RUNNING_SPEED]. */
+    val runningSpeed: Double? = null,
     /** The app sent OFF but the robot hasn't accepted it yet: the lamps may still be on. */
     val lampsOffOwed: Boolean,
     val demoStatus: DemoStatus?,
@@ -298,6 +303,28 @@ data class RemoteState(
 
     val still: Boolean get() = abs(vx) <= DriveController.MOVING_VX && abs(vth) <= DriveController.MOVING_VTH
 
+    /** A routine or the lamps under way, or OFF still owed: what carries on when the app is left. */
+    val runUnderWay: Boolean get() = taskRun != null || uv != null || lampsOffOwed
+
+    /** Doing something STOP could end: moving, or a run under way. */
+    val active: Boolean get() = busy || !still || runUnderWay
+
+    /** What can't wait for someone to come back to the app: lamps that won't go off. */
+    val needsSomeone: String? get() = if (lampsOffOwed && uv == null) "UV lamps may still be on" else null
+
+    /** The battery a task needs to start: a margin over [lowBattery], so it doesn't end at its first stop. */
+    val taskMinBattery: Int get() = lowBattery + DriveController.TASK_START_MARGIN
+
+    /** Deleting a saved point: on the robot's map, with nothing running that could be using it. */
+    val canDeletePoint: Boolean
+        get() = connected && !busy && !mapping && taskRun == null && mapStep == null && !addingPoint && points is Points.Loaded
+
+    /** Pausing the task under way; not in the moment its lamps are going off, on the way to the next stop. */
+    val canPauseTask: Boolean get() = taskRun.let { it != null && it.stage != TaskStage.Paused && it.stage != TaskStage.LampsOff && it.stage != TaskStage.Docking }
+
+    /** Carrying on after a pause takes what any trip takes. */
+    val canResumeTask: Boolean get() = taskRun?.stage == TaskStage.Paused && canTravel
+
     /** Saving the robot's spot as a point: connected, standing still, on a map, and the existing names known. */
     val canAddPoint: Boolean get() = connected && !busy && still && !mapping && points is Points.Loaded && !addingPoint
 
@@ -349,7 +376,7 @@ data class RemoteState(
         taskRun != null -> "Another task is running."
         mapping -> "The robot is mapping. Save the map first."
         points !is Points.Loaded -> "Load the robot's points first."
-        battery != null && battery < DriveController.TASK_MIN_BATTERY -> "Battery too low to start ($battery%)."
+        battery != null && battery < taskMinBattery -> "Battery too low to start ($battery%)."
         estop == EStop.PRESSED -> "The e-stop is pressed."
         !canNavigate -> "The robot must be still, with the lamps off."
         else -> null
@@ -360,7 +387,11 @@ data class RemoteState(
         if (task.stops.isEmpty()) return "Add a point to the task first."
         val loaded = (points as? Points.Loaded)?.list ?: return null
         val missing = task.stops.map { it.point }.distinct().filter { p -> loaded.none { it.name == p } }
-        return if (missing.isEmpty()) null else "Not on this map: ${missing.joinToString()}"
+        return when (missing.size) {
+            0 -> null
+            1 -> "${missing.single()} isn't on this map. Take it out of the routine."
+            else -> "${missing.joinToString()} aren't on this map. Take them out of the routine."
+        }
     }
 
     /** Why [task] can't start now, or null if it can. [DriveController.startTask] refuses with it. */
@@ -501,6 +532,10 @@ class DriveController(
     private var atPoint: Waypoint? = null
     private var uv: Uv? = null
     private var uvSettings = UvSettings()
+    private var lowBattery = DEFAULT_LOW_BATTERY
+    private var runningSpeed: Double? = null
+    private var runningSpeedOwed = false
+    private var runningSpeedSentAt = Long.MIN_VALUE / 2
     private var lampsOffOwed = false
     private var lampsOffInFlight = false
     private var lampsOffFailures = 0
@@ -516,7 +551,9 @@ class DriveController(
     private var tasks: List<DisinfectionTask> = emptyList()
     private var taskRun: TaskRun? = null
     private var taskReport: TaskReport? = null
+    private var leftApp = false
     private var taskJob: Job? = null
+    private var dockIdleAt: Long? = null
 
     // Maps (see [mapLoop]): the robot's mode and map in use, the image and pose while a map is on
     // screen, the saved maps, and one map command at a time.
@@ -550,27 +587,48 @@ class DriveController(
     // ------------------------------------------------------------------ lifecycle
 
     fun resume() {
+        leftApp = false
         if (pollJob == null) pollJob = scope.launch { pollLoop() }
         if (mapJob == null) mapJob = scope.launch { mapLoop() }
     }
 
     /**
-     * Leaving the app stops polling and switches the UV lamps off: the app's timer can't be
-     * trusted to run in the background. A running step finishes by itself, and a held arrow
-     * counts as let go.
+     * [RunService] is keeping the app alive, so a run can carry on after [pause]. Set by
+     * [RobotSession] just before it, and only while the notification with STOP is showing.
+     */
+    var keepRunningInBackground = false
+
+    /**
+     * Leaving the app: a held arrow counts as let go, the map and any search stop, and a step
+     * already running finishes by itself. A run under way carries on while
+     * [keepRunningInBackground], polling until it has ended and OFF is accepted. Otherwise polling
+     * stops here and the run ends, lamps off: nothing else would be keeping their time.
      */
     fun pause() {
-        pollJob?.cancel()
-        pollJob = null
+        leftApp = true
         searchJob?.cancel()
         mapJob?.cancel()
         mapJob = null
+        (phase as? StepPhase.Holding)?.let { endHold(it, "${it.step.label}: app left, robot slowing to a stop") }
+        if (keepRunningInBackground && snapshot().runUnderWay) {
+            log("App left: the run carries on")
+            publish()
+            return
+        }
+        pollJob?.cancel()
+        pollJob = null
         chargerJob?.cancel()
         dropUndockPlan()
-        (phase as? StepPhase.Holding)?.let { endHold(it, "${it.step.label}: app left, robot slowing to a stop") }
         // Polling stops, so a task can't be followed: it ends here (a trip under way finishes by itself).
         endTask("app left")
         endDisinfection("app left")
+        publish()
+    }
+
+    /** Ends the run now, lamps off, for when the app is closed for good. Polling goes on until OFF is accepted. */
+    fun endRun(reason: String) {
+        endTask(reason)
+        endDisinfection(reason)
         publish()
     }
 
@@ -829,6 +887,11 @@ class DriveController(
             val pose = if (nav) a.get("/reeman/pose") else null
             val report = if (withBase) a.get(NAV_STATUS_PATH) else null
             onPoll(s, b, plan, pose, report)
+            // Left running for a run that has now ended, and any trip to the charger after it.
+            if (leftApp && snapshot().let { !it.runUnderWay && !it.busy } && chargerJob?.isActive != true) {
+                pollJob = null
+                return
+            }
             delay((POLL_MS - (now() - started)).coerceAtLeast(0))
         }
     }
@@ -849,6 +912,7 @@ class DriveController(
             } // unexpected body: keep previous values
             if (link is Link.Disconnected) {
                 link = Link.Connected(estop = null)
+                runningSpeedOwed = true
                 forgetNavStatus() // what it reports first may be from before
                 log(robotName?.let { "Connected to ${RobotName.short(it)}" } ?: "Connected")
                 foundRobots = emptyList()
@@ -876,7 +940,7 @@ class DriveController(
                     if (f != chargeFlag) pileLeft = false
                     // Turned 9 just now (not read as 9 on connecting): a dock has just failed.
                     if (f == CHARGE_NOT_FOUND && chargeFlag != null && chargeFlag != CHARGE_NOT_FOUND && now() >= recoveringUntil) {
-                        raise("Docking failed: the robot couldn't find its charging pile")
+                        raise(DOCK_ADVICE, "docking failed, chargeFlag $f: the robot couldn't find its charging pile")
                     }
                     chargeFlag = f
                     if (f == CHARGE_DOCKED && !pileLeft) onPile = true
@@ -915,6 +979,7 @@ class DriveController(
         noticeOwnMotion(speedValid)
         tickDisinfection(speedValid)
         tickTask()
+        tickRunningSpeed()
         publish()
     }
 
@@ -1235,7 +1300,7 @@ class DriveController(
         if (saved == null || dist(saved, spot) > 0.02 || abs(turnBetween(saved.theta, spot.theta)) > 0.02) {
             val problem = savePoint(a, Waypoint(APPROACH_POINT, APPROACH_TYPE, spot))
             if (problem != null) {
-                raise("Go to charger: couldn't save the spot in front of the pile ($problem)")
+                raise(DOCK_ADVICE, "couldn't save the spot in front of the pile: $problem")
                 return
             }
         }
@@ -1268,7 +1333,7 @@ class DriveController(
      */
     private fun lineUpAfterRefusal(step: Step) {
         val pile = chargePile
-        if (pile?.pose == null) return raise("Couldn't go to ${step.goal?.name}: the robot wouldn't drive to its pile from here")
+        if (pile?.pose == null) return raise(DOCK_ADVICE, "the robot wouldn't drive to ${step.goal?.name} from here")
         chargeRecovered = true
         recoveringUntil = now() + RECOVERY_QUIET_MS // the dock cancelled here may still report 9
         finishStep(step, "Go to charger: the robot wouldn't drive to the pile from here, so lining up in front of it first")
@@ -1484,12 +1549,12 @@ class DriveController(
             val p = a.get(POSE_PATH)
             val pose = if (p.ok) parsePose(p.body) else null
             val result = when {
-                pose == null -> "Couldn't read where the robot is: ${p.error ?: "unexpected reply ${p.body.take(80)}"}"
+                pose == null -> failed("Couldn't read where the robot is", p.error ?: "unexpected reply ${p.body.take(80)}")
                 mapping -> {
                     pendingPoints = pendingPoints.filterNot { it.name == clean } + Waypoint(clean, type, pose)
                     fmt("Marked %s at x %.2f, y %.2f. It's saved with the map.", label, pose.x, pose.y)
                 }
-                else -> savePoint(a, Waypoint(clean, type, pose))?.let { "Couldn't add $label: $it" }
+                else -> savePoint(a, Waypoint(clean, type, pose))?.let { failed("Couldn't add $label", it) }
                     ?: fmt("Added %s at x %.2f, y %.2f", label, pose.x, pose.y)
             }
             log(result)
@@ -1497,6 +1562,33 @@ class DriveController(
             addingPoint = false
             publish()
             if (!mapping && pose != null) loadPoints() // shows the new point, and confirms the robot kept it
+        }
+    }
+
+    /**
+     * Deletes a saved point from the map in use, for good: the robot has no bin for points. The
+     * body is a JSON array of names; the API's printed {"test"} and {"name":..} are both refused
+     * (tried on the robot 2026-10-30, v5.1.20). Routines using it then show it as missing.
+     */
+    fun deletePoint(name: String) {
+        val s = snapshot()
+        if (!s.canDeletePoint) return
+        pointMessage = "Deleting \"$name\" …"
+        publish()
+        val a = api
+        scope.launch {
+            val r = a.delete(ADD_POINT_PATH, JSONArray().put(name).toString())
+            val rejected = if (r.ok) robotError(r.body) else null
+            val problem = r.error ?: rejected
+            if (problem == null) {
+                pointMessage = "Deleted \"$name\""
+                log(pointMessage!!)
+                if (atPoint?.name == name) atPoint = null
+                loadPoints()
+            } else {
+                pointMessage = failed("Couldn't delete \"$name\"", problem)
+            }
+            publish()
         }
     }
 
@@ -1536,7 +1628,7 @@ class DriveController(
         }
         runMapCommand("Adding a virtual wall …", mapProblemNow(mapping = false)) { a ->
             val now = readWalls(a) ?: return@runMapCommand "Couldn't read the map's virtual walls, so nothing was changed."
-            writeWalls(a, now + wall)?.let { return@runMapCommand "Couldn't add the wall: $it" }
+            writeWalls(a, now + wall)?.let { return@runMapCommand failed("Couldn't add the wall", it) }
             walls = now + wall
             fmt("Virtual wall added (%.1f m)", wall.length)
         }
@@ -1554,7 +1646,7 @@ class DriveController(
             val now = readWalls(a) ?: return@runMapCommand "Couldn't read the map's virtual walls, so nothing was changed."
             val left = now.filterNot { sameWall(it, wall) }
             if (left.size == now.size) return@runMapCommand "That wall is no longer on the map."
-            writeWalls(a, left)?.let { return@runMapCommand "Couldn't remove the wall: $it" }
+            writeWalls(a, left)?.let { return@runMapCommand failed("Couldn't remove the wall", it) }
             walls = left
             "Virtual wall removed"
         }
@@ -1671,8 +1763,8 @@ class DriveController(
      */
     fun stop() = halt("STOP pressed")
 
-    /** [stop], logged as [reason]. */
-    private fun halt(reason: String) {
+    /** [stop], logged as [reason]. [endRun] false leaves the task to whoever called (see [pauseTask]). */
+    private fun halt(reason: String, endRun: Boolean = true) {
         val p = phase
         val turnFirst = snapshot().running?.isTurn ?: (abs(vth) > MOVING_VTH && abs(vx) <= MOVING_VX)
         log(reason)
@@ -1695,8 +1787,8 @@ class DriveController(
         dropUndockPlan()
         stopGuard = StopGuard(pressedAt = t, until = t + STOP_GUARD_MS, lastSent = t, resends = 0)
         runaway = false
-        endTask(reason)
-        endDisinfection("STOP pressed")
+        if (endRun) endTask(reason)
+        endDisinfection(if (endRun) "STOP pressed" else reason)
         if (lampsOffOwed) sendLampsOff()
         publish()
         sendStop(turnFirst, "STOP", jog = jog)
@@ -1802,20 +1894,36 @@ class DriveController(
         navFresh = false
         if (!news) return
         val problem = when {
-            n.res == NAV_START && n.reason != 0 -> "Couldn't go to ${n.goal}: ${refusal(n.reason)}"
-            n.res == NAV_END && n.reason != 0 -> "Navigation to ${n.goal} failed"
+            n.res == NAV_START && n.reason != 0 -> refusalAdvice(n.reason, n.goal)
+            n.res == NAV_END && n.reason != 0 -> "Couldn't get to ${n.goal}. Clear the way, then try again."
             else -> return
         }
+        val detail = "nav_status res ${n.res} reason ${n.reason}, ${n.goal}" + if (n.res == NAV_START) ": ${refusal(n.reason)}" else ""
         val step = snapshot().running
         val refusedPile = n.res == NAV_START && abs(n.reason) == 1 &&
             step != null && step.path == DOCK_PATH && step.goal?.name == n.goal
-        if (refusedPile && !chargeRecovered) lineUpAfterRefusal(step!!) else raise(problem)
+        if (refusedPile && !chargeRecovered) lineUpAfterRefusal(step!!) else raise(problem, detail)
     }
 
-    private fun raise(problem: String) {
-        robotAlert = problem
-        log("Robot: $problem")
+    /**
+     * Tells staff what to do ([advice], until dismissed). What went wrong, in the robot's own
+     * terms, goes to the Activity log for whoever looks into it.
+     */
+    private fun raise(advice: String, detail: String) {
+        robotAlert = advice
+        log("Robot: $advice")
+        logDetail(detail)
         publish()
+    }
+
+    private fun logDetail(detail: String) {
+        log("  Detail: $detail. Battery $battery%, chargeFlag $chargeFlag, e-stop ${snapshot().estop}, mode $mode, " + fmt("vx %.2f, vth %.2f", vx, vth))
+    }
+
+    /** What failed, in full, for the Activity log; a line for staff saying what to do, to show. */
+    private fun failed(what: String, detail: String): String {
+        log("$what: $detail")
+        return "$what. Check the robot is connected, then try again."
     }
 
     fun dismissAlert() {
@@ -1871,7 +1979,11 @@ class DriveController(
             }
             !tr.sawMotion && t > tr.noMotionDeadline ->
                 if (stopping) "${step.label}: stopped before it moved"
-                else "${step.label}: no motion seen. ${step.stallHint}"
+                else {
+                    // Not when it's on the pile already: then not moving is the right answer.
+                    if (step.path == DOCK_PATH && !onPile) raise(CONFIRM_ADVICE, "${step.label}: no motion seen")
+                    "${step.label}: no motion seen. ${step.stallHint}"
+                }
             t > tr.hardCap -> "${step.label}: timed out waiting for the robot to stop"
             else -> null
         }
@@ -1907,7 +2019,7 @@ class DriveController(
         val next = step.then
         if (message != null && next != null && !stopping && tr.sawMotion && t <= tr.hardCap) {
             when {
-                goal != null && atPoint != goal -> raise("Go to charger: couldn't get to the spot in front of the pile")
+                goal != null && atPoint != goal -> raise(DOCK_ADVICE, "couldn't get to the spot in front of the pile")
                 snapshot().canTravel -> send(next)
                 else -> log("${next.label}: not sent (e-stop pressed, or the robot is moving)")
             }
@@ -1992,14 +2104,14 @@ class DriveController(
      * The lamps are an external supply of the power board (/cmd/external_power_supply; see
      * [UV_SUPPLY]). The robot can't report whether the
      * lamps are on, so the timer is the app's, and the run ends (lamps off) on STOP, the e-stop,
-     * lost connection, the robot moving, or leaving the app.
+     * lost connection, the robot moving, or closing the app (see [pause]).
      */
     fun startDisinfection() {
         if (!snapshot().canDisinfect) return
         val point = atPoint?.name
         val set = uvSettings
         val where = point?.let { "at $it" } ?: "where the robot stands"
-        uv = Uv.Countdown(point, now() + set.delaySeconds * 1000L, set.minutes)
+        uv = Uv.Countdown(point, now() + set.delaySeconds * 1000L, set.minutes * 60_000L)
         log("Disinfection $where: UV lamps on in ${set.delaySeconds} s, for ${set.minutes} min. Leave the room.")
         publish()
     }
@@ -2008,20 +2120,60 @@ class DriveController(
     fun startDisinfectionNow() {
         val run = uv as? Uv.Countdown ?: return
         log("Disinfection: countdown skipped, lamps on now")
-        lampsOn(run.point, run.minutes)
+        lampsOn(run.point, run.forMs)
         publish()
     }
 
     /**
      * The Tasks tab's UV switch: the lamps on now, with no countdown (the switch's own dialog is
-     * the warning). Same interlock and same run as [startDisinfection], so everything that ends
-     * a run still switches them off, and [MAX_UV_MINUTES] is the latest they go off on their own.
+     * the warning), for the [minutes] picked there. Same interlock and same run as
+     * [startDisinfection], so everything that ends a run still switches them off.
      */
-    fun switchLampsOn() {
+    fun switchLampsOn(minutes: Int) {
         if (!snapshot().canDisinfect) return
-        log("UV lamps switched on from the app (off after $MAX_UV_MINUTES min at the latest)")
-        lampsOn(atPoint?.name, MAX_UV_MINUTES)
+        val m = minutes.coerceIn(1, MAX_UV_MINUTES)
+        log("UV lamps switched on from the app, off after $m min")
+        lampsOn(atPoint?.name, m * 60_000L)
         publish()
+    }
+
+    /** Takes effect from the next time the battery is checked. */
+    fun setLowBattery(percent: Int) {
+        lowBattery = percent.coerceIn(MIN_LOW_BATTERY, MAX_LOW_BATTERY)
+        log("Low battery level: $lowBattery%")
+        publish()
+    }
+
+    /**
+     * The speed the robot plans its own trips at (/cmd/max_speed), never over [MAX_RUNNING_SPEED].
+     * Always sent, now, on every connection and at the start of every task, since the robot's own
+     * app has its own setting, up to 0.8 m/s. Null: the default. The drive pad has its own, lower
+     * limits ([MAX_LINEAR]).
+     */
+    fun setRunningSpeed(speed: Double?) {
+        runningSpeed = speed?.coerceIn(MIN_RUNNING_SPEED, MAX_RUNNING_SPEED)
+        runningSpeedOwed = true
+        runningSpeedSentAt = Long.MIN_VALUE / 2
+        publish()
+    }
+
+    private fun tickRunningSpeed() {
+        val speed = runningSpeed ?: DEFAULT_RUNNING_SPEED
+        val t = now()
+        if (!runningSpeedOwed || link !is Link.Connected || t - runningSpeedSentAt < RUNNING_SPEED_RETRY_MS) return
+        runningSpeedSentAt = t
+        val a = api
+        scope.launch {
+            val r = a.post(RUNNING_SPEED_PATH, JSONObject().put("speed", speed).toString())
+            val rejected = if (r.ok) robotError(r.body) else null
+            if (r.ok && rejected == null) {
+                if ((runningSpeed ?: DEFAULT_RUNNING_SPEED) == speed) runningSpeedOwed = false
+                log(fmt("Running speed set to %.1f m/s", speed))
+            } else {
+                log("Running speed not set: ${r.error ?: rejected}")
+            }
+            publish()
+        }
     }
 
     /** Cancels the countdown, or switches the lamps off early. */
@@ -2030,8 +2182,8 @@ class DriveController(
         publish()
     }
 
-    private fun lampsOn(point: String?, minutes: Int) {
-        uv = Uv.Starting(point, minutes)
+    private fun lampsOn(point: String?, forMs: Long) {
+        uv = Uv.Starting(point, forMs)
         log("UV lamps: sending $UV_PATH $UV_ON")
         val a = api
         scope.launch {
@@ -2041,8 +2193,8 @@ class DriveController(
             val rejected = if (r.ok) robotError(r.body) else null
             if (r.ok && rejected == null) {
                 val t = now()
-                uv = Uv.On(point, t, t + minutes * 60_000L)
-                log("UV lamps ON for $minutes min" + (point?.let { " at $it" } ?: ""))
+                uv = Uv.On(point, t, t + forMs)
+                log("UV lamps ON for ${uvTimeText(forMs)}" + (point?.let { " at $it" } ?: ""))
             } else {
                 // A timed-out ON may still have reached the robot, so switch off to be sure.
                 endDisinfection("ON " + if (!r.ok) "FAILED ${r.error}" else "rejected: $rejected")
@@ -2115,7 +2267,7 @@ class DriveController(
                 link is Link.Disconnected -> endDisinfection("lost connection")
                 (link as? Link.Connected)?.estop == EStop.PRESSED -> endDisinfection("e-stop pressed")
                 moving -> endDisinfection("the robot moved")
-                run is Uv.Countdown && t >= run.lampsOnAt -> lampsOn(run.point, run.minutes)
+                run is Uv.Countdown && t >= run.lampsOnAt -> lampsOn(run.point, run.forMs)
                 run is Uv.On && t >= run.until -> endDisinfection("done")
             }
         }
@@ -2155,16 +2307,16 @@ class DriveController(
      * Runs a saved task, as the robot's own app does, one stop at a time, moved along by every
      * poll (see [tickTask]):
      *  1. to the stop's point with /cmd/nav_name, undocking first if the robot is on its pile;
-     *     no trip if it is standing there already. Not reached: the task holds, lamps off, for
-     *     the user to retry, skip the stop, or end the task.
+     *     no trip if it is standing there already. Not reached: with the lamps off, it tries again
+     *     for [TASK_RETRY_MS], then leaves the stop out, and the report names it (see [stopFailed]).
      *  2. the same UV run as START DISINFECTION: the task's countdown, then the lamps on for the
      *     stop's minutes, then off.
      *  3. on to the next stop only once the robot has accepted OFF: the lamps are never on while
      *     it drives.
      * Every stop, every round, then [WhenDone]. Whatever ends a UV run early (STOP, the e-stop,
-     * the robot moving, lost connection, LAMPS OFF, leaving the app) ends the task; so does the
-     * e-stop at any time. Battery under [TASK_LOW_BATTERY] between stops ends it and sends the
-     * robot to its charger.
+     * the robot moving, lost connection, LAMPS OFF, closing the app) ends the task; so does the
+     * e-stop at any time. Battery under the low level between stops ends it and sends the robot
+     * to its charger. [pauseTask] stops it all until [resumeTask].
      */
     fun startTask(id: String) {
         val task = tasks.firstOrNull { it.id == id } ?: return
@@ -2187,33 +2339,69 @@ class DriveController(
         beginTask(s.route)
     }
 
+    /**
+     * Every point on the map with the lamps off, then the charger: proves a route before any UV
+     * runs on it. Run by the same engine as a task, so a point not reached is tried again and
+     * left out, and PAUSE and STOP work; [startStopUv] never starts a lamp run for it.
+     */
+    fun startRouteTest() {
+        val s = snapshot()
+        s.routeProblem?.let {
+            log("Route test not started: $it")
+            publish()
+            return
+        }
+        beginTask(DisinfectionTask.routeTest((s.points as Points.Loaded).list))
+    }
+
     private fun beginTask(task: DisinfectionTask) {
         taskReport = null
+        runningSpeedOwed = true
         taskRun = TaskRun(task, round = 1, index = 0, stage = TaskStage.Checking, results = emptyList())
         log(
             "Task \"${task.name}\" started: ${task.stops.size} point(s)" +
-                (if (task.rounds > 1) " × ${task.rounds} rounds" else "") + ", ${task.uvMinutes} min of UV"
+                (if (task.rounds > 1) " × ${task.rounds} rounds" else "") + if (task.lampsOff) ", lamps off" else ", ${task.uvMinutes} min of UV"
         )
         beginStop()
         publish()
     }
 
-    /** At a stop where the robot couldn't get to: try the trip again. */
-    fun retryTaskStop() {
+    /**
+     * Holds the task where it is: the robot stops as for STOP, and the lamps go off with the stop's
+     * UV time kept. The d-pad works meanwhile. On [resumeTask] the robot goes back to the stop if it
+     * has to, and the full countdown runs again, since someone may have walked in.
+     */
+    fun pauseTask() {
+        val s = snapshot()
         val run = taskRun ?: return
-        if (run.stage !is TaskStage.Held) return
-        log("Task: trying ${run.stop.point} again")
-        beginStop()
-        publish()
+        if (!s.canPauseTask) return
+        val t = now()
+        var left = run.uvLeftMs
+        var done = run.uvDoneMs
+        if (run.stage == TaskStage.Disinfecting) {
+            when (val u = uv) {
+                is Uv.Countdown -> left = u.forMs
+                is Uv.Starting -> left = u.forMs
+                is Uv.On -> {
+                    if (t >= u.until) return // its time is up: about to move on anyway
+                    left = u.until - t
+                    done += t - u.since
+                }
+                null -> return // its lamps have just gone off
+            }
+        }
+        taskJob?.cancel()
+        taskRun = run.copy(stage = TaskStage.Paused, retryUntil = null, uvLeftMs = left, uvDoneMs = done)
+        forgetNavStatus() // the trip it cancels isn't a failure to report
+        halt("Task paused", endRun = false)
     }
 
-    /** At a stop where the robot couldn't get to: leave it out and go on to the next. */
-    fun skipTaskStop() {
+    fun resumeTask() {
         val run = taskRun ?: return
-        if (run.stage !is TaskStage.Held) return
-        log("Task: ${run.stop.point} skipped")
-        taskRun = run.copy(results = run.results + StopResult(run.round, run.stop.point, StopOutcome.SKIPPED))
-        nextStop()
+        if (!snapshot().canResumeTask) return
+        log("Task resumed")
+        taskRun = run.copy(stage = TaskStage.Checking)
+        beginStop()
         publish()
     }
 
@@ -2231,13 +2419,13 @@ class DriveController(
     private fun beginStop() {
         val run = taskRun ?: return
         val b = battery
-        if (b != null && b < TASK_LOW_BATTERY) {
+        if (b != null && b < lowBattery) {
             endTask("battery low ($b%)")
             charge()
             return
         }
         val point = (points as? Points.Loaded)?.list?.firstOrNull { it.name == run.stop.point }
-            ?: return hold("${run.stop.point} is no longer on the map")
+            ?: return giveUpOnStop("${run.stop.point} is no longer on the map")
         if (atPoint?.name == point.name) return startStopUv()
         // Standing on it already, though the app didn't see it arrive (say, the last task ended
         // here)? A trip there wouldn't move, and would read as "couldn't get there".
@@ -2256,7 +2444,7 @@ class DriveController(
                 travel(point)
                 val sent = phase != StepPhase.Idle || chargerJob?.isActive == true
                 if (sent) taskRun = checking.copy(stage = TaskStage.Travelling)
-                else hold("Couldn't set off for ${point.name}: the robot isn't still, or the lamps may be on")
+                else stopFailed("Couldn't set off for ${point.name}")
             }
             publish()
         }
@@ -2265,12 +2453,18 @@ class DriveController(
     /** At the stop: the countdown starts, then [tickDisinfection] runs the lamps as for any run. */
     private fun startStopUv() {
         val run = taskRun ?: return
-        if (!snapshot().canTravel) return hold("Couldn't start the lamps at ${run.stop.point}: the robot isn't still")
+        if (!snapshot().canTravel) return stopFailed("Couldn't start the lamps at ${run.stop.point}")
+        if (run.task.lampsOff) {
+            log("Route test: reached ${run.stop.point} (${run.number} of ${run.total})")
+            taskRun = run.copy(results = run.results + StopResult(run.round, run.stop.point, StopOutcome.DONE))
+            return nextStop()
+        }
         val stop = run.stop
+        val forMs = run.uvLeftMs ?: (stop.minutes * 60_000L)
         uvEnded = null
-        uv = Uv.Countdown(stop.point, now() + run.task.delaySeconds * 1000L, stop.minutes)
-        taskRun = run.copy(stage = TaskStage.Disinfecting)
-        log("Task: at ${stop.point} (${run.number} of ${run.total}). UV lamps on in ${run.task.delaySeconds} s, for ${stop.minutes} min")
+        uv = Uv.Countdown(stop.point, now() + run.task.delaySeconds * 1000L, forMs)
+        taskRun = run.copy(stage = TaskStage.Disinfecting, retryUntil = null)
+        log("Task: at ${stop.point} (${run.number} of ${run.total}). UV lamps on in ${run.task.delaySeconds} s, for ${uvTimeText(forMs)}")
     }
 
     /** Runs on every poll, after [tickDisinfection]: moves the task on when the stop's stage is over. */
@@ -2278,11 +2472,30 @@ class DriveController(
         val run = taskRun ?: return
         if ((link as? Link.Connected)?.estop == EStop.PRESSED) return endTask("e-stop pressed")
         when (run.stage) {
-            TaskStage.Checking, is TaskStage.Held -> Unit
+            TaskStage.Checking, TaskStage.Paused -> Unit
+            TaskStage.Docking -> {
+                // A trip to the pile can pause between its parts, so it's over once idle a little while.
+                if (phase != StepPhase.Idle || chargerJob?.isActive == true) {
+                    dockIdleAt = null
+                    return
+                }
+                val since = dockIdleAt ?: now().also { dockIdleAt = it }
+                if (now() - since >= TEST_DOCK_SETTLE_MS) finishTask(run, if (onPile) null else TaskReport.NOT_DOCKED)
+            }
+            is TaskStage.Retrying -> {
+                // Lost Wi-Fi says nothing about the point: its time starts again once the robot answers.
+                if (link !is Link.Connected) {
+                    taskRun = run.copy(stage = run.stage.copy(nextTryAt = now() + TASK_RETRY_GAP_MS), retryUntil = now() + TASK_RETRY_MS)
+                    return
+                }
+                // Not while the d-pad is in use, or the robot is still slowing down.
+                if (now() < run.stage.nextTryAt || phase != StepPhase.Idle || !snapshot().still) return
+                if (now() >= (run.retryUntil ?: 0)) giveUpOnStop(run.stage.problem) else beginStop()
+            }
             TaskStage.Travelling -> {
                 // Still on its way, still undocking, or about to set off after undocking.
                 if (phase != StepPhase.Idle || chargerJob?.isActive == true || goAfterUndock != null) return
-                if (atPoint?.name == run.stop.point) startStopUv() else hold("Couldn't get to ${run.stop.point}")
+                if (atPoint?.name == run.stop.point) startStopUv() else stopFailed("Couldn't get to ${run.stop.point}")
             }
             TaskStage.Disinfecting -> {
                 if (uv != null) return
@@ -2290,7 +2503,7 @@ class DriveController(
                 if (end?.completed != true) return endTask(end?.reason ?: "the lamps went off")
                 taskRun = run.copy(
                     stage = TaskStage.LampsOff,
-                    results = run.results + StopResult(run.round, run.stop.point, StopOutcome.DONE, end.onMs),
+                    results = run.results + StopResult(run.round, run.stop.point, StopOutcome.DONE, run.uvDoneMs + end.onMs),
                 )
             }
             // OFF sent by endDisinfection, and resent until the robot accepts it.
@@ -2298,11 +2511,29 @@ class DriveController(
         }
     }
 
-    private fun hold(problem: String) {
+    /** A trip failed: try it again soon, until the stop's time is up. Lamps off throughout. */
+    private fun stopFailed(problem: String) {
         val run = taskRun ?: return
-        taskRun = run.copy(stage = TaskStage.Held(problem))
-        log("Task: $problem. Try again, skip it, or end the task")
+        val t = now()
+        val until = run.retryUntil ?: (t + TASK_RETRY_MS).also {
+            log("Task: $problem. Trying again for ${TASK_RETRY_MS / 1000} s")
+            logDetail(problem)
+        }
+        taskRun = run.copy(stage = TaskStage.Retrying(problem, t + TASK_RETRY_GAP_MS), retryUntil = until)
     }
+
+    /** Leaves the stop out and goes on; the report says it wasn't reached. */
+    private fun giveUpOnStop(problem: String) {
+        val run = taskRun ?: return
+        log("Task: $problem. Going on without it")
+        taskRun = run.copy(results = run.results + unfinished(run))
+        nextStop()
+    }
+
+    /** What became of a stop left before its time ran: not reached, unless it had started there. */
+    private fun unfinished(run: TaskRun) =
+        if (run.uvLeftMs != null) StopResult(run.round, run.stop.point, StopOutcome.INTERRUPTED, run.uvDoneMs)
+        else StopResult(run.round, run.stop.point, StopOutcome.NOT_REACHED)
 
     private fun nextStop() {
         val run = taskRun ?: return
@@ -2313,17 +2544,53 @@ class DriveController(
             round++
         }
         if (round > run.task.rounds) return finishTask(run)
-        taskRun = run.copy(round = round, index = index, stage = TaskStage.Checking)
+        taskRun = run.copy(round = round, index = index, stage = TaskStage.Checking, retryUntil = null, uvLeftMs = null, uvDoneMs = 0)
         beginStop()
     }
 
-    private fun finishTask(run: TaskRun) {
+    /** The points are done. A route test goes on to try the charger, on its pile already or not. */
+    private fun testDocking(run: TaskRun) {
+        val docking = run.copy(stage = TaskStage.Docking)
+        when {
+            (points as? Points.Loaded)?.pile == null -> finishTask(docking, TaskReport.NO_PILE)
+            onPile -> finishTask(docking)
+            else -> {
+                log("Route test: trying the charger")
+                taskRun = docking
+                dockIdleAt = null
+                charge()
+            }
+        }
+    }
+
+    private fun finishTask(run: TaskRun, reason: String? = null) {
+        if (run.task.lampsOff && run.stage != TaskStage.Docking) return testDocking(run)
         taskRun = null
         taskJob?.cancel()
-        val report = TaskReport(run.task, completed = true, reason = null, results = run.results)
+        val report = TaskReport(run.task, completed = true, reason = reason, results = run.results, at = System.currentTimeMillis())
         taskReport = report
-        log("Task \"${run.task.name}\" finished: ${report.done} of ${report.total} stop(s) disinfected")
-        if (run.task.whenDone == WhenDone.CHARGER) charge()
+        log("Task \"${run.task.name}\" finished: ${report.done} of ${report.total} stop(s) " + (if (run.task.lampsOff) "reached" else "disinfected") + (reason?.let { ", $it" } ?: ""))
+        when (run.task.whenDone) {
+            WhenDone.CHARGER -> charge()
+            WhenDone.START -> backToFirstPoint(run)
+            WhenDone.STAY -> Unit
+        }
+    }
+
+    /** To the task's first point, unless the robot is standing on it. */
+    private fun backToFirstPoint(run: TaskRun) {
+        val first = run.task.stops.first().point
+        val point = (points as? Points.Loaded)?.list?.firstOrNull { it.name == first }
+            ?: return log("Task: $first is no longer on the map, so the robot stays here")
+        val a = api
+        taskJob = scope.launch {
+            val here = readPose(a)
+            val to = point.pose
+            if (here != null && to != null && dist(here, to) <= ARRIVED_M) atPoint = point
+            else if (snapshot().canTravel) travel(point)
+            else log("Task: couldn't set off back to $first: the robot isn't still")
+            publish()
+        }
     }
 
     /**
@@ -2336,12 +2603,13 @@ class DriveController(
         taskJob?.cancel()
         endDisinfection(reason)
         val here = when (run.stage) {
-            TaskStage.Checking -> null // never set off for it (low battery, or STOP before it moved)
-            TaskStage.LampsOff -> null // already counted as done
-            TaskStage.Disinfecting -> StopResult(run.round, run.stop.point, StopOutcome.INTERRUPTED, uvEnded?.onMs ?: 0)
-            TaskStage.Travelling, is TaskStage.Held -> StopResult(run.round, run.stop.point, StopOutcome.NOT_REACHED)
+            TaskStage.Checking -> run.uvDoneMs.takeIf { it > 0 }?.let { unfinished(run) } // else never set off for it (low battery, or STOP before it moved)
+            TaskStage.LampsOff, TaskStage.Docking -> null // already counted
+            TaskStage.Disinfecting -> StopResult(run.round, run.stop.point, StopOutcome.INTERRUPTED, run.uvDoneMs + (uvEnded?.onMs ?: 0))
+            TaskStage.Travelling, TaskStage.Paused, is TaskStage.Retrying -> unfinished(run)
         }
-        val report = TaskReport(run.task, completed = false, reason = reason, results = run.results + listOfNotNull(here))
+        logDetail("task ended at ${run.stage::class.simpleName}: $reason")
+        val report = TaskReport(run.task, completed = false, reason = reason, results = run.results + listOfNotNull(here), at = System.currentTimeMillis())
         taskReport = report
         log("Task \"${run.task.name}\" ended: $reason. ${report.done} of ${report.total} stop(s) disinfected")
     }
@@ -2404,6 +2672,8 @@ class DriveController(
         }
     }
 
+    private var imageProblemLogged: String? = null
+
     private suspend fun readImage(a: RobotApi) {
         val r = a.get(MAP_PATH)
         imageAt = now()
@@ -2415,9 +2685,13 @@ class DriveController(
             wantImage = false
         } else {
             mapProblem = when {
-                !r.ok -> "Couldn't read the map: ${r.error}"
-                rejected != null -> "The robot has no map to show ($rejected)"
-                else -> "Unexpected map reply: ${r.body.take(80)}"
+                !r.ok -> "Couldn't read the map. Check the robot is connected."
+                rejected != null -> "The robot has no map to show. Start one from the map's name above."
+                else -> "Couldn't read the map. Try again in a moment."
+            }
+            if (mapProblem != imageProblemLogged) {
+                imageProblemLogged = mapProblem
+                log("Map image: ${r.error ?: rejected ?: "unexpected reply ${r.body.take(80)}"}")
             }
         }
     }
@@ -2491,7 +2765,7 @@ class DriveController(
             ?: if (extend && target == null) "The map in use isn't known yet." else null
         runMapCommand(if (extend) "Extending ${target?.label} …" else "Starting a new map …", problem) { a ->
             val m = if (extend) RobotMode.EXTENDING else RobotMode.MAPPING
-            mapCommand(a, SET_MODE_PATH, modeJson(m))?.let { return@runMapCommand "Couldn't start mapping: $it" }
+            mapCommand(a, SET_MODE_PATH, modeJson(m))?.let { return@runMapCommand failed("Couldn't start mapping", it) }
             mode = m
             mapBefore = currentMap?.id
             atPoint = null
@@ -2514,7 +2788,7 @@ class DriveController(
         val problem = mapProblemNow(mapping = true)
             ?: if (clean.length > MAX_MAP_NAME) "Use a name of $MAX_MAP_NAME characters or fewer." else null
         runMapCommand("Saving the map …", problem) { a ->
-            mapCommand(a, SAVE_MAP_PATH, "{}")?.let { return@runMapCommand "Couldn't save the map: $it. The robot is still mapping." }
+            mapCommand(a, SAVE_MAP_PATH, "{}")?.let { return@runMapCommand failed("Couldn't save the map, and the robot is still mapping", it) }
             log("Map: saved")
             val nav = mapCommand(a, SET_MODE_PATH, modeJson(RobotMode.NAVIGATION))
             if (nav == null) mode = RobotMode.NAVIGATION
@@ -2555,7 +2829,7 @@ class DriveController(
     fun discardMapping() {
         val extending = mode == RobotMode.EXTENDING
         runMapCommand("Leaving mapping …", mapProblemNow(mapping = true)) { a ->
-            mapCommand(a, SET_MODE_PATH, modeJson(RobotMode.NAVIGATION))?.let { return@runMapCommand "Couldn't leave mapping: $it" }
+            mapCommand(a, SET_MODE_PATH, modeJson(RobotMode.NAVIGATION))?.let { return@runMapCommand failed("Couldn't leave mapping", it) }
             mode = RobotMode.NAVIGATION
             mapImage = null
             refreshImage()
@@ -2574,7 +2848,7 @@ class DriveController(
             ?: if (map.id == currentMap?.id) "${map.label} is already in use." else null
         runMapCommand("Switching to ${map.label} …", problem) { a ->
             mapCommand(a, APPLY_MAP_PATH, JSONObject().put("name", map.id).toString())
-                ?.let { return@runMapCommand "Couldn't switch to ${map.label}: $it" }
+                ?.let { return@runMapCommand failed("Couldn't switch to ${map.label}", it) }
             currentMap = map.copy(thumbnail = null)
             onMapChanged()
             "Now using ${map.label}. The robot assumes it's on its charging pile: if it isn't, set its position."
@@ -2590,7 +2864,7 @@ class DriveController(
         }
         runMapCommand("Renaming ${map.label} …", problem) { a ->
             mapCommand(a, RENAME_MAP_PATH, JSONObject().put("name", map.id).put("alias", clean).toString())
-                ?.let { return@runMapCommand "Couldn't rename ${map.label}: $it" }
+                ?.let { return@runMapCommand failed("Couldn't rename ${map.label}", it) }
             if (currentMap?.id == map.id) currentMap = currentMap?.copy(alias = clean)
             (maps as? Maps.Loaded)?.let { m -> maps = Maps.Loaded(m.list.map { if (it.id == map.id) it.copy(alias = clean) else it }) }
             "Renamed ${map.label} to $clean"
@@ -2606,7 +2880,7 @@ class DriveController(
             ?: if (map.id == currentMap?.id) "Switch to another map before deleting ${map.label}." else null
         runMapCommand("Deleting ${map.label} …", problem) { a ->
             mapCommand(a, TRASH_MAP_PATH, JSONObject().put("name", map.id).toString())
-                ?.let { return@runMapCommand "Couldn't delete ${map.label}: $it" }
+                ?.let { return@runMapCommand failed("Couldn't delete ${map.label}", it) }
             trashed = map
             (maps as? Maps.Loaded)?.let { m -> maps = Maps.Loaded(m.list.filterNot { it.id == map.id }) }
             "Moved ${map.label} to the robot's bin. It stays there 30 days."
@@ -2618,7 +2892,7 @@ class DriveController(
         val map = trashed ?: return
         runMapCommand("Restoring ${map.label} …", mapProblemNow(mapping = null)) { a ->
             mapCommand(a, RESTORE_MAP_PATH, JSONObject().put("name", map.id).toString())
-                ?.let { return@runMapCommand "Couldn't restore ${map.label}: $it" }
+                ?.let { return@runMapCommand failed("Couldn't restore ${map.label}", it) }
             trashed = null
             maps = Maps.NotLoaded
             "Restored ${map.label}"
@@ -2633,7 +2907,7 @@ class DriveController(
     fun setPosition(pose: Pose) {
         runMapCommand("Setting the robot's position …", mapProblemNow(mapping = false)) { a ->
             val body = JSONObject().put("x", round3(pose.x)).put("y", round3(pose.y)).put("theta", round3(pose.theta)).toString()
-            mapCommand(a, RELOC_PATH, body)?.let { return@runMapCommand "Couldn't set the position: $it" }
+            mapCommand(a, RELOC_PATH, body)?.let { return@runMapCommand failed("Couldn't set the position", it) }
             atPoint = null
             fmt("Position set: x %.2f, y %.2f, facing %.0f°", pose.x, pose.y, Math.toDegrees(pose.theta))
         }
@@ -2792,6 +3066,8 @@ class DriveController(
             else -> null
         },
         uvSettings = uvSettings,
+        lowBattery = lowBattery,
+        runningSpeed = runningSpeed,
         lampsOffOwed = lampsOffOwed,
         demoStatus = if (demo) DemoStatus(
             demoRobot.isEstopPressed, demoRobot.isOffline, demoRobot.isBlockNextPending,
@@ -2953,8 +3229,21 @@ class DriveController(
         // sends it to charge by itself at its "low_power" setting: 20% on this robot (its prefs,
         // read 2026-10-16). Both limits sit above that, so a task ends cleanly before that app
         // takes the robot away mid-task. The margins themselves are a GUESS. ----
-        const val TASK_MIN_BATTERY = 30     // % to start a task
-        const val TASK_LOW_BATTERY = 25     // % between stops: the task ends and the robot goes to charge
+        const val DEFAULT_LOW_BATTERY = 25  // % between stops: the task ends and the robot goes to charge
+        const val MIN_LOW_BATTERY = 25      // settable from here up; lower and the robot's own app acts first
+        const val MAX_LOW_BATTERY = 70
+        const val TASK_START_MARGIN = 5     // % over that to start a task
+        // A stop not reached is tried again every GAP for this long after the first failure, then left out.
+        const val TASK_RETRY_MS = 30_000L
+        const val TASK_RETRY_GAP_MS = 5_000L
+        // /cmd/max_speed takes 0.3-1.0 m/s and the robot's own app offers up to 0.8; here nothing
+        // goes over 0.5 (the user's limit, 2026-10-30). The robot's own setting was 0.6, so the
+        // default can't be "leave it as it is": it's the limit.
+        const val MIN_RUNNING_SPEED = 0.3
+        const val MAX_RUNNING_SPEED = 0.5
+        const val DEFAULT_RUNNING_SPEED = MAX_RUNNING_SPEED
+        private const val RUNNING_SPEED_PATH = "/cmd/max_speed"
+        private const val RUNNING_SPEED_RETRY_MS = 5_000L
 
         // ---- Maps (REEMAN SLAM WEB API, "map module"). The documented reads /robot/get_mode,
         // /robot/map and /robot/history_map answered 404 on this robot (probe 2026-09-23,
@@ -3083,6 +3372,21 @@ class DriveController(
          * Why the robot refused a trip (nav_status res 6). From the Web API manual's list; the
          * robot sends them negative (-1 seen on 2026-10-15), so either sign is read.
          */
+        private const val DOCK_ADVICE = "Couldn't dock. Drive the robot in front of its charger, then press GO TO CHARGER."
+        private const val CONFIRM_ADVICE = "The robot didn't set off. If its screen is asking, press Confirm, then press GO TO CHARGER again."
+        const val TEST_DOCK_SETTLE_MS = 3_000L
+
+        /** A refused trip: what staff can do about it, not what the code means (that's [refusal], for the log). */
+        private fun refusalAdvice(reason: Int, goal: String) = when (abs(reason)) {
+            1 -> "Couldn't go to $goal: it's too close to the charger. Drive it away a little, then try again."
+            2 -> "Couldn't go to $goal. Release the e-stop, then try again."
+            3 -> "Couldn't go to $goal. Unplug the charging cable, then try again."
+            4 -> "$goal isn't on this map. Add the point again, or choose another."
+            5 -> DOCK_ADVICE
+            6 -> "The robot has lost its place. Set its position on the Map page, then try again."
+            else -> "Couldn't go to $goal. Clear the way, then try again. If it keeps happening, restart the robot."
+        }
+
         private fun refusal(reason: Int) = when (abs(reason)) {
             1 -> "it went to dock where it stood instead. Too close to the pile?"
             2 -> "the e-stop is pressed"
@@ -3154,6 +3458,9 @@ class DriveController(
         private suspend fun readPose(a: RobotApi): Pose? = a.get("/reeman/pose").takeIf { it.ok }?.let { parsePose(it.body) }
 
         /** 135_000 -> "2:15" */
+        /** "5 min", or the clock's "1:30" for what a pause left. */
+        private fun uvTimeText(ms: Long): String = if (ms % 60_000 == 0L) "${ms / 60_000} min" else clockText(ms)
+
         fun clockText(ms: Long): String {
             val s = (ms + 999) / 1000
             return String.format(Locale.US, "%d:%02d", s / 60, s % 60)

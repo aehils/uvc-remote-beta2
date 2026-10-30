@@ -1,5 +1,6 @@
 package com.expiation.reemanremote
 
+import org.json.JSONArray
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.Random
@@ -149,6 +150,7 @@ class FakeRobot(
         val body = when (method) {
             "GET" -> get(path, now)
             "POST" -> post(path, json.orEmpty(), now)
+            "DELETE" -> if (path == "/cmd/position") deletePoints(json.orEmpty()) else null
             else -> null
         }
         val latency = if (realistic) 15L + rng.nextInt(30) else 0L
@@ -206,6 +208,7 @@ class FakeRobot(
         "/cmd/charge" -> charge(json, now)
         "/cmd/nav_name" -> navName(json, now)
         "/cmd/position" -> setPoint(json)
+        "/cmd/max_speed" -> if (num(json, "speed")?.let { it in 0.3..1.0 } == true) OK else error("001", "Request body is not correct.")
         "/cmd/external_power_supply" -> externalPower(json)
         "/cmd/cancel_goal" -> {
             if (navGoal != null) halt()
@@ -432,6 +435,13 @@ class FakeRobot(
         }
         points.removeAll { it.name == name }
         points.add(SavedPoint(name, type, x, y, theta))
+        return OK
+    }
+
+    /** DELETE /cmd/position: a JSON array of names, the only body the real robot takes (tried 2026-10-30). */
+    private fun deletePoints(json: String): String {
+        val names = runCatching { JSONArray(json) }.getOrNull() ?: return error("001", "Request body is not correct.")
+        for (i in 0 until names.length()) points.removeAll { it.name == names.optString(i) }
         return OK
     }
 

@@ -98,7 +98,7 @@ connection that drops mid-drive makes the robot carry on for about 1.2 s before 
 - **GO TO CHARGER asks for confirmation on the robot's own screen.** Someone at the robot has to
   press Confirm. Tell staff before they rely on it.
 - **Auto-charge level.** The robot's own app sends it to charge at its `low_power` level (20% on
-  the test robot). The app's tasks need 30% to start and 25% to carry on, so they stay above it.
+  the test robot). The app's tasks need 30% to start and 25% to carry on unless changed in Settings, never less, so they stay above it.
 - **The physical e-stop** has to be reachable whenever the robot is driven or the lamps are on.
 
 ## Before handing over: checklist

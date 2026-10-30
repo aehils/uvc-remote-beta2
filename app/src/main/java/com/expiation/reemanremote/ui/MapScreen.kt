@@ -923,6 +923,7 @@ internal fun MapsPage(
         topBar = {
             Column {
                 TopAppBar(
+                    expandedHeight = PAGE_BAR_HEIGHT,
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
@@ -1013,7 +1014,7 @@ internal fun MapsPage(
                     }
                 }
                 Maps.Loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
-                is Maps.Failed -> TasksNote("Couldn't read the maps: ${maps.error}")
+                is Maps.Failed -> TasksNote("Couldn't read the maps. Check the robot is connected, then tap Refresh.")
                 Maps.NotLoaded -> if (!state.connected) TasksNote("Connect to the robot to see its maps.")
             }
         }
