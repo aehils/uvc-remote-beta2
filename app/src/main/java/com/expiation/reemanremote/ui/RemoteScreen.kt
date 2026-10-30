@@ -1029,7 +1029,7 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () ->
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 )
-                StatusHeader(state, actions.onDismissAlert)
+                StatusHeader(state, actions.onDismissAlert, readings = false)
             }
         },
         bottomBar = { StopBar(actions.onStop) },
@@ -1040,8 +1040,44 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () ->
                 .padding(padding)
                 .fillMaxSize()
         ) {
-            // The disinfection card stays put, so START (and LAMPS OFF) never scroll out of view.
-            Box(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) { DisinfectCard(state, actions) }
+            RobotPlaceBand(state)
+            // Pinned above the list: however many points there are, these never scroll out of reach.
+            Column(
+                Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (state.uv != null) UvRunCard(state, actions)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedButton(
+                        onClick = { adding = true },
+                        enabled = state.canAddPoint,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
+                    ) {
+                        Text(
+                            if (state.addingPoint) "Saving …" else "+  Add point",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = { testing = true },
+                        enabled = state.routeProblem == null,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
+                    ) { Text("Test route", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold) }
+                }
+                (state.pointMessage ?: when {
+                    !state.connected -> "Connect to the robot first."
+                    state.mapping -> "The robot is mapping. Save the map first."
+                    state.busy || !state.still -> "The robot must be standing still."
+                    else -> null
+                })?.let { TasksNote(it) }
+            }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Column(
                 Modifier
@@ -1059,43 +1095,11 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () ->
                             PointRow(it, goingHere = it == goal, here = it == state.atPoint, state.canNavigate, actions.onGoTo, state.canDeletePoint) { deleting = it.name }
                         }
                     }
-                    points is Points.Loaded -> TasksNote("No disinfection points are saved on this robot's map yet. Add one below.")
+                    points is Points.Loaded -> TasksNote("No disinfection points are saved on this robot's map yet. Add one above.")
                     points is Points.Failed -> TasksNote("Couldn't read the points. Check the robot is connected, then tap Refresh.")
                     points == Points.Loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
                     !state.connected -> TasksNote("Connect to the robot to see its points.")
                 }
-
-                OutlinedButton(
-                    onClick = { testing = true },
-                    enabled = state.routeProblem == null,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp),
-                    shape = RoundedCornerShape(14.dp),
-                ) { Text("Test route", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold) }
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                SectionLabel("Add a point")
-                OutlinedButton(
-                    onClick = { adding = true },
-                    enabled = state.canAddPoint,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp),
-                    shape = RoundedCornerShape(14.dp),
-                ) {
-                    Text(
-                        if (state.addingPoint) "Saving …" else "+  Add point where the robot is",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
-                (state.pointMessage ?: when {
-                    !state.connected -> "Connect to the robot first."
-                    state.mapping -> "The robot is mapping. Save the map first."
-                    state.busy || !state.still -> "The robot must be standing still."
-                    else -> null
-                })?.let { TasksNote(it) }
             }
         }
     }
@@ -1150,32 +1154,30 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () ->
     }
 }
 
-/**
- * Top of the Disinfection Points page: where the robot stands, and any UV run under way. The
- * tune button opens the settings START DISINFECTION uses at every point.
- */
+/** Under the Disinfection Points title: where the robot stands, a band across the page rather than a card. */
 @Composable
-private fun DisinfectCard(state: RemoteState, actions: RemoteActions) {
+private fun RobotPlaceBand(state: RemoteState) {
+    val point = state.uv?.point ?: state.atPoint?.name
+    Text(
+        point?.let { "At $it" } ?: "Not at a saved point",
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.SemiBold,
+        color = if (point != null) RemoteTheme.status.goodText else MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/** While the lamps are on or about to be: what they're doing, and the controls that end the run. */
+@Composable
+private fun UvRunCard(state: RemoteState, actions: RemoteActions) {
     val status = RemoteTheme.status
-    var editing by rememberSaveable { mutableStateOf(false) }
     val uv = state.uv
-    val set = state.uvSettings
     val left = state.uvLeftMs?.let { DriveController.clockText(it) } ?: ""
 
-    Panel(color = if (uv != null || state.lampsOffOwed) status.dangerContainer else MaterialTheme.colorScheme.surface) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            val point = if (uv != null) uv.point else state.atPoint?.name
-            Text(
-                point?.let { "At $it" } ?: "Not at a saved point",
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            IconButton(onClick = { editing = true }, enabled = uv == null) {
-                Icon(painterResource(R.drawable.ic_tune), contentDescription = "Disinfection settings", modifier = Modifier.size(22.dp))
-            }
-        }
-
+    Panel(color = status.dangerContainer) {
         val off = @Composable { label: String ->
             Button(
                 onClick = actions.onStopDisinfection,
@@ -1237,17 +1239,6 @@ private fun DisinfectCard(state: RemoteState, actions: RemoteActions) {
                 off("LAMPS OFF")
             }
         }
-    }
-
-    if (editing) {
-        UvSettingsDialog(
-            current = set,
-            onDismiss = { editing = false },
-            onSave = {
-                editing = false
-                actions.onUvSettings(it)
-            },
-        )
     }
 }
 

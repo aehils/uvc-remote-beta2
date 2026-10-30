@@ -85,7 +85,7 @@ chevron; no line of detail under them):
   e-stop; mode, map and points) and **Robot address** (a dialog, for a robot the app can't find
   by name; not in DEMO).
 - **Operation: Saved maps** (the Maps page), **Disinfection timing** (the UV time and the exit
-  delay, as the tune button on the Disinfection Points page), and **Activity log** (with **Copy** and **Export** at the top, and no readings; the log as a
+  delay), and **Activity log** (with **Copy** and **Export** at the top, and no readings; the log as a
   page of its own, newest first, selectable for copying).
 - **DEMO**: the **DEMO mode** switch, and, in DEMO, **DEMO controls**.
 
@@ -208,8 +208,9 @@ with a JSON array of names, `["Point 2"]`. The API's printed body and `{"name":�
 **UV disinfection.** The Tasks tab's **Toggle UV lamps** card is set apart on purpose: a pastel
 mauve card with a plum siren, and ON / OFF beside its switch. It turns the
 lamps on by hand (it asks first,
-no countdown, off after 30 min at the latest). The card at the top of the Disinfection Points
-page shows where the robot stands and any run under way; its **tune** button sets the time at
+no countdown, off after 30 min at the latest). The Disinfection Points page has no readings row: a band under its title says where the robot
+stands, then **Add point** and **Test route** are pinned above the list, so a long list can't push
+them away, with a card for any UV run under way. **Settings › Disinfection timing** sets the time at
 each point (1–30 min) and the start delay (15, 30 or 60 s) that START DISINFECTION uses; both are
 saved on the phone. **START NOW** skips a countdown. While a run is on,
 a red banner with the time left is pinned on every page and everything that moves the robot is
