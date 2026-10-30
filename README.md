@@ -11,17 +11,28 @@ with the robot switched off.
 
 ## What it does
 
-Two tabs, **Tasks** (GO TO CHARGER, the UV switch, the saved **disinfection tasks**, and
-**Disinfection Points**, which opens its own page; the app opens here) and **Settings** (below),
-and the **Map** page (the robot on its map, and the drive pad). A small pastel-blue **BETA**
-sits centred at the very top of every page (the purple DEMO band under it in DEMO). The main page has no
-title bar: the robot's readings (the e-stop badge and the battery ring, then the speed; on the Map
-page, the map in use, whose name is the map's menu) are the top of the page, pinned there on
-every page, and **STOP** is the red key in the middle of the dock's bar at the bottom (a full-width
+Two tabs, **Tasks** (laid out to fit without scrolling: **Right Now**, then **START
+DISINFECTION** on its own, a row each for **Routines** and **Disinfection Points**, which open
+their own pages, the **Toggle UV lamps** card, and GO TO CHARGER pinned above the dock; the app
+opens here) and **Settings** (below), and the **Map** page (the robot on
+its map, and the drive pad). In DEMO, a purple band runs across the very top of every page. The
+main page has no title bar. The tabs open on a card: Tasks on Right Now, Settings on the robot
+card (the battery and the connection). Everywhere else the robot's readings (the e-stop badge
+and the battery ring, then the speed; on the Map page, the map in use, whose name is the map's
+menu) are the top of the page, pinned there, and **STOP** is the red key in the middle of the dock's bar at the bottom (a full-width
 bar on the other pages). It is the only solid fill in the dock, and never narrower than 72dp.
 
 The page is a step darker than its cards (in the dark theme the cards are a step lighter than the
 page), so where each card ends reads at a glance.
+
+**Right Now**, pinned at the top of the Tasks tab, says in words what the robot is doing, most
+urgent first: not connected (orange words; tapping it opens Settings), **E-stop pressed** (red),
+the UV lamps (red: on in 0:15, switching on, disinfecting with the time left, or may still be on),
+a task (amber: on the way to a point, stopped before one, switching the lamps off), mapping, a
+trip or a move, then at rest (green: **Charging at the dock**, or **Ready**). Below what a task needs to start (30% unless changed) at rest it
+says the battery is low. The battery sits beside its label, a cell on its side like the robot
+card's. Since it covers the lamps, the Tasks tab has no UV banner; the runaway and robot alert
+banners stay.
 
 **The readings.** The **E** badge is the e-stop: solid red when pressed, grey otherwise (never
 green: released isn't a "go"). It also shows motion, since a pressed e-stop and a moving robot
@@ -30,7 +41,7 @@ pulses quickly in amber, and if the robot moves with none running (pushed, or a 
 the border stays amber. The **battery** is a ring the same size: the figure in the middle, and a
 green arc from the top, clockwise, that drains with the charge; orange at 20% and below, red at 10%.
 
-**The connection** is set into the line under the readings, on every page: the rule runs from the
+**The connection** is set into the line under the readings, on every page but the Settings tab: the rule runs from the
 left edge to it and on to the right. In small capitals, CONNECTED in green, or CONNECTING …,
 SEARCHING … or NOT CONNECTED in orange: the colour says it. The robot's name, with a green or
 orange dot, is first in Settings. Not connected, the readings and the controls
@@ -66,14 +77,15 @@ with the pad up.
 
 **Settings** is grouped by subject, each group one card of plain rows (an icon, a title, a
 chevron; no line of detail under them):
-- **Robot**, first: a card with the robot the app talks to (its name, like `UV 3-07`, or DEMO
-  robot) and, on the right, CONNECTED in green or SEARCHING / OFFLINE in orange. Only while it
+- **Robot**, first and with no heading over it: a card with the robot the app talks to (its name, like `UV 3-07`, or DEMO
+  robot) and, on the right, its battery (a cell on its side, the figure inside, filled and
+  coloured as the ring) and CONNECTED in green or SEARCHING / OFFLINE in orange. Only while it
   isn't answering does the card grow: the robots the app found, to pick from, and **Find robots**.
   Under it, **Robot information** (its full ID, address and firmware; battery, charger and
   e-stop; mode, map and points) and **Robot address** (a dialog, for a robot the app can't find
   by name; not in DEMO).
 - **Operation: Saved maps** (the Maps page), **Disinfection timing** (the UV time and the exit
-  delay, as the tune button on the Disinfection Points page), and **Activity log** (the log as a
+  delay), and **Activity log** (with **Copy** and **Export** at the top, and no readings; the log as a
   page of its own, newest first, selectable for copying).
 - **DEMO**: the **DEMO mode** switch, and, in DEMO, **DEMO controls**.
 
@@ -89,8 +101,8 @@ While the robot isn't answering, the app looks for it and follows it to a new ad
 | GO TO CHARGER | `/reeman/position` + `/reeman/pose`, then `/cmd/charge` type 0 (pile close) or type 2 (pile far) | the firmware's |
 | GO (a saved point) | `/cmd/nav_name` `{"point":"<name>"}` | the firmware's |
 | Add point where the robot is | `/reeman/pose`, then `/cmd/position` `{"name","type":"delivery","pose":{x,y,theta}}` | doesn't move |
-| START DISINFECTION | after the start delay, `/cmd/external_power_supply` `{"type":"24v","operation":"1"}`; at the end `"0"` | doesn't move |
-| START (a task) | per stop: `/cmd/nav_name`, then the lamps as START DISINFECTION; OFF accepted before the next trip | the firmware's |
+| UV switch | `/cmd/external_power_supply` `{"type":"24v","operation":"1"}`; OFF `"0"` | doesn't move |
+| START DISINFECTION | per point: `/cmd/nav_name`, then the lamps on after the start delay and off at the end; OFF accepted before the next trip; then GO TO CHARGER | the firmware's |
 | New map / Extend this map | `/cmd/set_mode` `{"mode":1}` / `{"mode":3}` | doesn't move; you drive |
 | Save map | `/cmd/save_map`, `/cmd/set_mode` `{"mode":2}`, then `/cmd/rename_map` with the name | doesn't move |
 | Discard | `/cmd/set_mode` `{"mode":2}` | doesn't move |
@@ -189,12 +201,18 @@ to one with `/cmd/nav_name`; it plans its own route and speed. During a trip the
 the trip only ends once the robot reports no plan (`007`), and the log then says how far from
 the point it stopped ("arrived" within 0.3 m). **Add point where the robot is** saves the
 robot's spot and heading as a new point; names must be new, since saving an existing name would
-move that point. Rename or delete points in the robot's own app.
+move that point. The bin on a point's row deletes it, for good, after asking: `DELETE /cmd/position`
+with a JSON array of names, `["Point 2"]`. The API's printed body and `{"name":…}` are both refused
+(tried on the robot 2026-10-30, v5.1.20). Rename points in the robot's own app.
 
-**UV disinfection** is the card at the top of the Disinfection Points page. **START
-DISINFECTION** asks you to confirm the room is clear, counts down the start delay, switches the
-lamps on for the set time, then off. **START NOW** skips the countdown. The **tune** button sets
-the time (1–30 min) and delay (15, 30 or 60 s); both are saved on the phone. While a run is on,
+**UV disinfection.** The Tasks tab's **Toggle UV lamps** card is set apart on purpose: a pastel
+mauve card with a plum siren, and ON / OFF beside its switch. It turns the
+lamps on by hand (it asks first,
+no countdown, off after 30 min at the latest). The Disinfection Points page has no readings row: a band under its title says where the robot
+stands, then **Add point** and **Test route** are pinned above the list, so a long list can't push
+them away, with a card for any UV run under way. **Settings › Disinfection timing** sets the time at
+each point (1–30 min) and the start delay (15, 30 or 60 s) that START DISINFECTION uses; both are
+saved on the phone. **START NOW** skips a countdown. While a run is on,
 a red banner with the time left is pinned on every page and everything that moves the robot is
 locked.
 
@@ -206,28 +224,53 @@ it; until then the banner reads **UV LAMPS MAY STILL BE ON**, nothing that moves
 works, and the app won't switch robot or mode. ON and OFF go out one at a time, in order, so an
 OFF can never overtake an ON.
 
-**Disinfection tasks** work like the fixed-point tasks in the robot's own app. A task is a list
-of saved points in order, each with its UV time (1–30 min), plus the countdown before the lamps
-(15, 30 or 60 s), the number of rounds (1–10), and what to do at the end (**Go to charger** or
-**Stay**). Tasks are saved on the phone, by point name, under **Disinfection tasks** on the
-Tasks tab; **+ New task** and the tune button open the editor. **START** asks you to confirm the
-rooms are clear, then for each stop:
+**START DISINFECTION** works like the robot's own app: one route over every saved point on the
+map (except the pile), in the map's order, each with the same UV time and start delay, then back
+to the charger. **Routines** are your own routes, saved on the phone by point name: the points in
+order, each with its UV time (1–30 min), the start delay, the rounds (1–10), and **Go to charger**,
+**Back to first point** or **Stay** at the end. The bin on a routine's row deletes it. They live on the **Routines** page, off the Tasks tab: **+ New
+routine**, or tapping one, opens the editor; **START** on its row runs it and goes back to Tasks. Either asks you to confirm the rooms are clear, then for each point:
 
 1. the robot goes to the point with `/cmd/nav_name`, undocking first if it is on its pile. If it
-   is already standing on the point (say, round 2 of a one-point task), there is no trip.
-2. the same UV run as START DISINFECTION: countdown, lamps on for the stop's time, then OFF.
+   is already standing on the point, there is no trip.
+2. the start delay, the lamps on for the set time, then OFF.
 3. the next trip only starts once the robot has **accepted OFF**. The lamps are never on while
    it drives.
 
-If the robot can't reach a point (blocked, refused, or stopped short), the task **waits** with the
-lamps off: **TRY AGAIN**, **SKIP** that point, or **END TASK**. The d-pad works meanwhile, to free
-the robot. The task ends early on: STOP, END TASK, the e-stop, switching the lamps off, the
+If the robot can't reach a point (blocked, refused, or stopped short), the lamps stay off and it
+**tries again** every 5 s for 30 s (`TASK_RETRY_MS`), then **goes on without that point**, so a
+blocked door doesn't hold up the rest of the rooms. The task still finishes, and its report names
+the points that weren't reached. The 30 s doesn't run while the robot isn't answering: lost Wi-Fi
+says nothing about the point. The d-pad works between tries, to free the robot.
+
+**Test route**, on the Disinfection Points page, proves a route before UV runs on it: every point
+in the map's order with the lamps off the whole way, then onto the charger. A point it can't reach
+is tried and left out as in a task. Its report says **Route test passed** or what's wrong and what
+to do about it.
+
+**When something goes wrong, staff are told what to do, not what broke.** Banners, Right Now and
+reports give the next step ("Couldn't get to Bed 1. Clear the way, then try again."). What the robot
+actually reported (codes, charge flag, e-stop, speeds) goes to the **Activity log** for whoever
+looks into it.
+
+**PAUSE** on the running task stops the robot as STOP does and switches the lamps off, keeping the
+UV time left at that point. The d-pad works meanwhile. **RESUME** goes back to the point if it has
+to, runs the **full countdown again** (someone may have walked in), then the rest of the time.
+
+The task ends early on: STOP, END TASK, the e-stop, switching the lamps off, the
 robot moving or the connection dropping while the lamps are on or counting down, or leaving the
-app. Under 30% battery a task won't start; under 25% between stops it ends and the robot goes to
-its charger (even with **Stay**). Both sit above the robot's own app's auto-charge level (20% on
-this robot), which would otherwise take the robot away mid-task. Whatever happens, a card then says how the task went, point by
-point: the UV time that ran, or skipped, not reached, or stopped partway. "Disinfected" means the
+app. Under the **Low battery level** (Settings, 25% unless changed, up to 70%) between stops it
+ends and the robot goes to its charger; a task needs 5% more than that to start. The level can't
+go under 25% because the robot's own app sends it to charge at 20% on this robot, which would
+otherwise take the robot away mid-task. Whatever happens, a card then says how the task went, point by
+point: the UV time that ran, or not reached, or stopped partway. "Disinfected" means the
 planned time ran there, nothing more: the app can't measure dose.
+
+**Running speed** (Settings) sets how fast the robot plans its own trips: 0.3, 0.4 or 0.5 m/s,
+with `/cmd/max_speed`, sent when it's changed, on every connection and at the start of every task.
+Nothing in the app goes over 0.5 m/s, and **Default** is that limit, since the robot's own setting
+can be higher (0.6 m/s on the test robot). The robot's own screen can still set up to 0.8 m/s for
+its own tasks. The drive pad keeps its own lower limits.
 
 **The robot's own app** (`com.reeman.robot.disinfection` v4.0.7, read 2026-10-16) runs one route
 over every numbered point in order, with one stay time for all of them, a 10 s countdown before
@@ -238,9 +281,13 @@ and resumes once nobody is seen; ending a task asks for a password on its screen
 
 What it has that this doesn't: **human detection** and **voice prompts** both live on the robot's
 head unit, reached over its serial link, with no HTTP command (that app also turns detection
-off on its home screen, so it is off while this app runs tasks); and
-**scheduled** tasks would need the app to run in the background, which it deliberately doesn't (the
-lamps go off when you leave it). Keep the phone on the Tasks tab, on good Wi-Fi, for the whole task.
+off on its home screen, so it is off while this app runs tasks).
+
+**Routine reminders.** At a routine's time an exact alarm puts up a notification, with the app
+closed too, and opening the app asks whether to start it. If notifications are off, the Routines
+page says so and opens the setting. If the app finds a routine due with no reminder sent, the
+Activity log says so. A phone maker's battery manager can stop the app so that no alarm fires;
+Android has no way round that from inside the app.
 
 ## Maps
 
@@ -311,6 +358,8 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
 - Requests from a laptop on the robot's Wi-Fi: median ~10 ms, slowest ~100 ms.
 
 **Built, not yet tried on the robot**
+- Route test, PAUSE and RESUME, a stop retried then left out, Back to first point, Running speed,
+  Low battery level, and a routine's reminder with the app closed (exact alarm).
 - Hold-to-drive (this version). See "First drive test".
 - A UV run from the phone (timer, LAMPS OFF, STOP, e-stop). See "UV test".
 - GO TO CHARGER, both ways. **Note:** on 2026-10-12 the robot's map had no `charging_pile`
@@ -319,7 +368,7 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
   own app, with the robot on the pile).
 - A trip to a point (`/cmd/nav_name`): what `/reeman/global_plan` returns on the way, and
   whether `/cmd/cancel_goal` ends it.
-- **Disinfection tasks** (all of it). They're built from the pieces above, so they inherit their
+- **START DISINFECTION** (all of it: the route, then the charger). It's built from the pieces above, so it inherits their
   open questions. See "First task test".
 - **All of Maps and mapping.** The robot couldn't be reached while it was built. The reads come
   from the 2026-09-23 probe on v5.1.12: the documented `/robot/get_mode`, `/robot/map` and
@@ -330,7 +379,7 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
 
 **Guesses** (marked `GUESS` in the code)
 - How close counts as arrived (0.3 m), and how far away docking can find the pile (1.5 m).
-- The task battery margins (30% to start, 25% to carry on), kept above the robot's own app's
+- The task battery margins (by default 30% to start, 25% to carry on), kept above the robot's own app's
   auto-charge level (`low_power`, 20% on this robot).
 - That a robot sitting on its pile reports charging (`chargeFlag` 2) at least once after the app
   connects. That reading is how the app knows it's on the pile; one docked with a full battery
@@ -392,7 +441,7 @@ over-the-air update before 2026-10-12; earlier tests were on v5.1.12_01).
    shows it too. Then **Use this map** to go back to the old one, with the robot on its pile.
 5. Try **Set position** once with the robot off the pile, and **Delete** then **Undo** on "Test 1".
 
-Copy anything odd from **Settings › Activity log** (long-press to select).
+Send anything odd from **Settings › Activity log**: **Copy** or **Export** at the top of the page, or long-press to select a part.
 
 ## Demo mode
 
