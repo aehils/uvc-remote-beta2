@@ -310,11 +310,15 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions, due: DisinfectionTa
 internal val LocalOpenSettings = staticCompositionLocalOf<(() -> Unit)?> { null }
 
 /** Pages over the main (tabbed) page. Each keeps STOP and the robot's readings on screen. */
-/** Where every page's first thing starts, under the top of the app: Right Now's card, and the rest to match. */
+/** Where every page's first thing starts, under the top of the app or under its title bar: Right Now's card, and the rest to match. */
 internal val PAGE_TOP = 16.dp
 
-/** A title bar this high centres its 24 dp back arrow on [PAGE_TOP]. */
-internal val PAGE_BAR_HEIGHT = 56.dp
+/**
+ * A title bar's row: its back button's height. The row, not its lettering, starts on [PAGE_TOP], as
+ * Right Now's card does, which puts the title about level with the first words inside that card.
+ * Lettering on the line itself looked too high (the user, on the phone, 2026-10-30).
+ */
+internal val PAGE_BAR_HEIGHT = 48.dp
 
 private val SECTION_GAP = 12.dp
 
@@ -1015,6 +1019,7 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () ->
             Column {
                 TopAppBar(
                     expandedHeight = PAGE_BAR_HEIGHT,
+                    modifier = Modifier.padding(top = PAGE_TOP),
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
@@ -1043,7 +1048,7 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () ->
             RobotPlaceBand(state)
             // Pinned above the list: however many points there are, these never scroll out of reach.
             Column(
-                Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                Modifier.padding(start = 16.dp, end = 16.dp, top = PAGE_TOP, bottom = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 if (state.uv != null) UvRunCard(state, actions)
@@ -1084,7 +1089,7 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () ->
                     .weight(1f)
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    .padding(start = 16.dp, end = 16.dp, top = PAGE_TOP, bottom = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 SectionLabel("Send the robot to")
@@ -1600,6 +1605,7 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
             Column {
                 TopAppBar(
                     expandedHeight = PAGE_BAR_HEIGHT,
+                    modifier = Modifier.padding(top = PAGE_TOP),
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
@@ -1619,7 +1625,7 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
                 .padding(padding)
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(start = 16.dp, end = 16.dp, top = PAGE_TOP, bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             SectionLabel("Faults")
@@ -2095,6 +2101,7 @@ private fun SubPage(
             Column {
                 TopAppBar(
                     expandedHeight = PAGE_BAR_HEIGHT,
+                    modifier = Modifier.padding(top = PAGE_TOP),
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
@@ -2124,7 +2131,7 @@ private fun RobotInfo(state: RemoteState, modifier: Modifier) {
     Column(
         modifier
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(start = 16.dp, end = 16.dp, top = PAGE_TOP, bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         InfoSection("Robot", first = true) {
@@ -2230,7 +2237,7 @@ private fun ActivityLog(lines: List<String>, modifier: Modifier) {
     Column(
         modifier
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(start = 16.dp, end = 16.dp, top = PAGE_TOP, bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         SectionLabel("Newest first")
