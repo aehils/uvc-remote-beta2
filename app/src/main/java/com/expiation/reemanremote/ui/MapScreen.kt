@@ -924,6 +924,7 @@ internal fun MapsPage(
             Column {
                 TopAppBar(
                     expandedHeight = PAGE_BAR_HEIGHT,
+                    modifier = Modifier.padding(top = PAGE_TOP),
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
@@ -946,7 +947,7 @@ internal fun MapsPage(
                 .padding(padding)
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(start = 16.dp, end = 16.dp, top = PAGE_TOP, bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (state.mapping) {

@@ -300,6 +300,7 @@ internal fun RoutinesPage(state: RemoteState, actions: RemoteActions, onEditTask
             Column {
                 TopAppBar(
                     expandedHeight = PAGE_BAR_HEIGHT,
+                    modifier = Modifier.padding(top = PAGE_TOP),
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
@@ -321,7 +322,7 @@ internal fun RoutinesPage(state: RemoteState, actions: RemoteActions, onEditTask
                 .padding(padding)
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(start = 16.dp, end = 16.dp, top = PAGE_TOP, bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             SavedTasks(state, actions, onEditTask, onStarted = onBack)
@@ -642,6 +643,7 @@ internal fun HistoryPage(state: RemoteState, actions: RemoteActions, history: Li
             Column {
                 TopAppBar(
                     expandedHeight = PAGE_BAR_HEIGHT,
+                    modifier = Modifier.padding(top = PAGE_TOP),
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
@@ -661,7 +663,7 @@ internal fun HistoryPage(state: RemoteState, actions: RemoteActions, history: Li
                 .padding(padding)
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(start = 16.dp, end = 16.dp, top = PAGE_TOP, bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             if (history.isEmpty()) TasksNote("No routines have run yet.")
@@ -725,6 +727,7 @@ internal fun TaskEditorPage(
             Column {
                 TopAppBar(
                     expandedHeight = PAGE_BAR_HEIGHT,
+                    modifier = Modifier.padding(top = PAGE_TOP),
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
@@ -759,7 +762,7 @@ internal fun TaskEditorPage(
                 .padding(padding)
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(start = 16.dp, end = 16.dp, top = PAGE_TOP, bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             OutlinedTextField(
