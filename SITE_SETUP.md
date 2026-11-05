@@ -101,6 +101,24 @@ connection that drops mid-drive makes the robot carry on for about 1.2 s before 
   the test robot). The app's tasks need 30% to start and 25% to carry on unless changed in Settings, never less, so they stay above it.
 - **The physical e-stop** has to be reachable whenever the robot is driven or the lamps are on.
 
+## Safety: before the UV lamps are used on site
+
+These are open gaps in the app today, not setup steps. Each one has to be closed, or the site
+told plainly, before staff run UV where people can walk in.
+
+- **The robot-side lamp backup has to be installed and pass its safety tests.** The phone keeps
+  the lamps' time and sends OFF. A routine carries on when staff switch apps or take a call, but
+  if the phone dies, Android closes the app, or the phone loses the Wi-Fi mid-run, nothing
+  switches the lamps off. The backup is our own app on the robot's screen unit: it switches the
+  lamps off when the phone goes quiet, and the phone refuses UV when the backup is missing.
+- **Person detection doesn't cover our routines yet.** The robot can pause and switch the lamps off
+  when it sees someone, but that runs inside the robot's own app, and it was found switched off
+  while our app runs routines. Until our app or the backup handles it, nothing stops the lamps if
+  someone walks in: rooms on a route have to be cleared, closed and signed first.
+- **The robot's screen unit needs locking down before it joins a hospital network.** Its factory
+  setup isn't fit for a hospital network as it comes. The steps are in the private handoff notes,
+  not in this public file.
+
 ## Before handing over: checklist
 
 - [ ] Both robot computers have fixed addresses (DHCP reservations); ROS and Android addresses recorded privately
@@ -110,3 +128,6 @@ connection that drops mid-drive makes the robot carry on for about 1.2 s before 
 - [ ] The robot stays connected while it drives its routes, past every access point
 - [ ] The charging pile is saved on the map, and GO TO CHARGER works (with Confirm on the robot)
 - [ ] Staff know where the physical e-stop is
+- [ ] The robot-side lamp backup is installed and has passed its safety tests on this robot
+- [ ] Person detection is checked with our routines, or the site has agreed in writing to clear and sign rooms before every run
+- [ ] The robot's screen unit is locked down, following the private handoff notes
