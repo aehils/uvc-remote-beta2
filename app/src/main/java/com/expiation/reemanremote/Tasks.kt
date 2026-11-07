@@ -160,8 +160,11 @@ sealed interface TaskStage {
 /** SKIPPED is only in reports saved by earlier builds: a stop now ends as NOT_REACHED by itself. */
 enum class StopOutcome { DONE, SKIPPED, NOT_REACHED, INTERRUPTED }
 
-/** What became of one stop in one round. [uvMs] is how long the lamps were on there. */
-data class StopResult(val round: Int, val point: String, val outcome: StopOutcome, val uvMs: Long = 0)
+/**
+ * What became of one stop in one round. [uvMs] is how long the lamps were on there; [personPauses]
+ * how many times the robot's safety app paused them because something moved.
+ */
+data class StopResult(val round: Int, val point: String, val outcome: StopOutcome, val uvMs: Long = 0, val personPauses: Int = 0)
 
 /** A task under way. [round] counts from 1, [index] is the stop in [task]'s list. */
 data class TaskRun(
@@ -176,6 +179,8 @@ data class TaskRun(
     val uvLeftMs: Long? = null,
     /** UV time this stop has already had before a pause. */
     val uvDoneMs: Long = 0,
+    /** Times the robot's safety app has paused this stop's lamps because something moved. */
+    val personPauses: Int = 0,
 ) {
     val stop: TaskStop get() = task.stops[index]
 
@@ -228,6 +233,10 @@ data class TaskReport(
                 r.startsWith("battery low") -> "Charge the robot, then run it again."
                 r.startsWith("e-stop") -> "Release the e-stop when it's safe, then run it again."
                 r == "lost connection" || r.startsWith("ON ") -> "Check the phone is on the robot's Wi-Fi, then run it again."
+                r == "lost the robot's safety app" || r == DriveController.CANT_REACH_AGENT ->
+                    "Check the robot's screen shows its safety app, then run it again."
+                r.startsWith("Lost the phone") -> "Keep the phone on the robot's Wi-Fi while the lamps are on, then run it again."
+                r.startsWith("refused: ") -> "Sort out what the robot reported, then run it again."
                 r == "the robot moved" -> "Make sure nothing moves the robot while the lamps are on, then run it again."
                 r == "app left" || r == "app closed" -> "Leave the app running in the background, then run it again."
                 r == NO_PILE -> "Dock the robot by hand, then mark the charging pile on the Map page."
@@ -252,7 +261,10 @@ data class TaskReport(
                         .put("at", r.at)
                         .put("results", JSONArray().apply {
                             r.results.forEach {
-                                put(JSONObject().put("round", it.round).put("point", it.point).put("outcome", it.outcome.name).put("uv_ms", it.uvMs))
+                                put(
+                                    JSONObject().put("round", it.round).put("point", it.point).put("outcome", it.outcome.name).put("uv_ms", it.uvMs)
+                                        .put("person_pauses", it.personPauses)
+                                )
                             }
                         })
                 )
@@ -273,7 +285,10 @@ data class TaskReport(
                         reason = if (o.isNull("reason")) null else o.getString("reason"),
                         results = (0 until results.length()).map {
                             val r = results.getJSONObject(it)
-                            StopResult(r.getInt("round"), r.getString("point"), StopOutcome.valueOf(r.getString("outcome")), r.getLong("uv_ms"))
+                            StopResult(
+                                r.getInt("round"), r.getString("point"), StopOutcome.valueOf(r.getString("outcome")), r.getLong("uv_ms"),
+                                r.optInt("person_pauses", 0),
+                            )
                         },
                         at = o.getLong("at"),
                     )

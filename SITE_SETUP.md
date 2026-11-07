@@ -16,7 +16,7 @@ The robot has two computers on the Wi-Fi, and each has its own address:
 | Computer | What it is | Does the app use it? |
 |---|---|---|
 | **ROS (navigation computer)** | Drives the robot and answers the app's commands (`/reeman/...`, `/cmd/...`) over plain http on port 80 | **Yes: this is the address the app needs** |
-| **Android (head unit)** | The robot's own screen and its own app | No |
+| **Android (head unit)** | The robot's own screen and its own app. With our safety app installed on it, that app answers on port **8765** and alone switches the UV lamps on | Only for the safety app, which the app finds by itself |
 
 Both show on the robot's own screen. If you type the Android address into the app, it will never
 connect. Check: `http://<ROS address>` in a phone's browser should load the robot's console.
@@ -65,8 +65,11 @@ and only a phone on that same access point can reach it.
   from talking to each other, which blocks phone-to-robot traffic.
 - A staff-only network, not the guest or public Wi-Fi.
 - If IT keeps phones and robot on separate networks (VLANs), they must allow traffic from the
-  phones to the robot's ROS address on **port 80** (http). In that case staff type the robot's
-  fixed address into the app once: the app's automatic search only covers the phone's own network.
+  phones to the robot's ROS address on **port 80** (http), and to its Android address on
+  **port 8765** (the safety app). In that case staff type the robot's fixed address into the app
+  once: the app's automatic search only covers the phone's own network.
+- Multicast DNS (mDNS, port 5353) let through between phones and robots: the app finds the robot and
+  its safety app by name with it, in a moment instead of a search of every address.
 
 ### 5. 2.4 GHz and 5 GHz
 
