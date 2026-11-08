@@ -76,6 +76,8 @@ class FakeAgentCheck {
         assertTrue(c.state.value.log.any { "done: UV lamps off" in it })
 
         // 2. The phone goes away mid-run: no more lease, and the agent ends it within 5 s.
+        // The UV switch stays held until the run's OFF is confirmed: wait for it, as a person would.
+        until(c, 5_000, "UV available again after the run's OFF") { it.canDisinfect }
         withContext(thread) { c.switchLampsOn(5) }
         until(c, 10_000, "lamps on again") { it.uv is Uv.On }
         val gone = System.nanoTime()
