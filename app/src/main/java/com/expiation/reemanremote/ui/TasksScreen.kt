@@ -84,6 +84,7 @@ import com.expiation.reemanremote.R
 import com.expiation.reemanremote.Repeat
 import com.expiation.reemanremote.RepeatUnit
 import com.expiation.reemanremote.RemoteState
+import com.expiation.reemanremote.RobotAgent
 import com.expiation.reemanremote.RoutineSchedule
 import com.expiation.reemanremote.StopOutcome
 import com.expiation.reemanremote.TaskReport
@@ -133,6 +134,12 @@ internal fun rightNow(state: RemoteState): Now {
         )
         uv is Uv.Starting -> Now(Tone.DANGER, "UV lamps switching on", "Stay out of the room.")
         uv is Uv.On -> Now(Tone.DANGER, uv.point?.let { "Disinfecting $it" } ?: "Disinfecting", "UV lamps on · $left left")
+        // Lamps off, but they come back by themselves: still a reason to stay out.
+        uv is Uv.PersonSeen -> Now(
+            Tone.DANGER,
+            "UV paused · movement detected",
+            listOfNotNull(RobotAgent.domes(uv.domes).ifEmpty { null }, "A new countdown comes first").joinToString(" · "),
+        )
         state.lampsOffOwed -> Now(Tone.DANGER, "UV lamps may still be on", "Stay out of the room. Check the phone is on the robot's Wi-Fi: the app keeps sending OFF.")
         run != null -> {
             val where = "${run.task.name} · point ${run.number} of ${run.total}"
@@ -349,7 +356,7 @@ internal fun SavedTasks(state: RemoteState, actions: RemoteActions, onEditTask: 
     }
     if (state.tasks.any { it.startMinute != null }) NotificationsOffNote()
     if (state.tasks.isEmpty()) TasksNote("A routine is your own list of points, each with its UV time, run in order.")
-    if (state.tasks.isNotEmpty() && state.taskRun == null) state.taskBlocker?.let { TasksNote(it) }
+    if (state.tasks.isNotEmpty() && state.taskRun == null) (state.taskBlocker ?: state.uvProblem)?.let { TasksNote(it) }
     state.tasks.forEach { task ->
         TaskRow(
             task = task,
@@ -525,8 +532,9 @@ internal fun TaskRunCard(state: RemoteState, run: TaskRun, actions: RemoteAction
         val stage = run.stage
         when {
             stage == TaskStage.Disinfecting -> when (val uv = state.uv) {
-                // Skips the rest of the countdown, for when the room is already clear.
-                is Uv.Countdown -> Button(
+                // Skips the rest of the countdown, for when the room is already clear. The robot's
+                // safety app keeps its countdown whole.
+                is Uv.Countdown -> if (!state.uvByAgent) Button(
                     onClick = actions.onStartDisinfectionNow,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -611,7 +619,7 @@ private fun TaskReportCard(report: TaskReport) {
             report.results.forEach { r ->
                 Row {
                     Text(
-                        (if (rounds) "R${r.round}  " else "") + r.point,
+                        (if (rounds) "R${r.round}  " else "") + r.point + personPausesText(r.personPauses),
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -1087,4 +1095,11 @@ private fun Stepper(text: String, onDown: () -> Unit, downEnabled: Boolean, onUp
         )
         OutlinedButton(onClick = onUp, enabled = upEnabled, shape = RoundedCornerShape(10.dp)) { Text("+", fontSize = 20.sp) }
     }
+}
+
+/** " · movement 2×" after a point whose lamps the robot paused; empty if it never did. */
+internal fun personPausesText(n: Int): String = when (n) {
+    0 -> ""
+    1 -> " · movement seen"
+    else -> " · movement $n×"
 }

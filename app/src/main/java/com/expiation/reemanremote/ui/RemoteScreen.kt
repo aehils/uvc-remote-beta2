@@ -125,6 +125,8 @@ import com.expiation.reemanremote.Points
 import com.expiation.reemanremote.Pose
 import com.expiation.reemanremote.R
 import com.expiation.reemanremote.RemoteState
+import com.expiation.reemanremote.AgentView
+import com.expiation.reemanremote.RobotAgent
 import com.expiation.reemanremote.RobotMode
 import com.expiation.reemanremote.RobotName
 import com.expiation.reemanremote.SavedMap
@@ -172,6 +174,8 @@ data class RemoteActions(
     val onDemoWifi: () -> Unit = {},
     val onDemoBlock: () -> Unit = {},
     val onDemoPerson: () -> Unit = {},
+    val onDemoAgentDown: () -> Unit = {},
+    val onDemoMovement: () -> Unit = {},
     val onDemoChargeOnItsOwn: () -> Unit = {},
     val onDemoBattery: () -> Unit = {},
     val onDemoReset: () -> Unit = {},
@@ -557,6 +561,7 @@ private fun UvBanner(state: RemoteState) {
         is Uv.Countdown -> "UV LAMPS ON IN $left. LEAVE THE ROOM."
         is Uv.Starting -> "UV LAMPS SWITCHING ON"
         is Uv.On -> "UV LAMPS ON · $left LEFT"
+        is Uv.PersonSeen -> "UV PAUSED · MOVEMENT DETECTED. STAY OUT."
         null -> "UV LAMPS MAY STILL BE ON. STAY OUT OF THE ROOM."
     }
     Text(
@@ -1064,7 +1069,7 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () ->
                     }
                     OutlinedButton(
                         onClick = { testing = true },
-                        enabled = state.routeProblem == null,
+                        enabled = state.routeTestProblem == null,
                         modifier = Modifier
                             .weight(1f)
                             .height(52.dp),
@@ -1199,7 +1204,8 @@ private fun UvRunCard(state: RemoteState, actions: RemoteActions) {
                     fontWeight = FontWeight.SemiBold,
                     color = status.danger,
                 )
-                // START NOW skips the rest of the countdown, for when the room is already clear.
+                // START NOW skips the rest of the countdown, for when the room is already clear. The
+                // robot's safety app keeps its countdown whole.
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedButton(
                         onClick = actions.onStopDisinfection,
@@ -1208,7 +1214,7 @@ private fun UvRunCard(state: RemoteState, actions: RemoteActions) {
                             .height(52.dp),
                         shape = RoundedCornerShape(14.dp),
                     ) { Text("CANCEL", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
-                    Button(
+                    if (!state.uvByAgent) Button(
                         onClick = actions.onStartDisinfectionNow,
                         modifier = Modifier
                             .weight(1f)
@@ -1234,6 +1240,15 @@ private fun UvRunCard(state: RemoteState, actions: RemoteActions) {
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     fontFamily = FontFamily.Monospace,
+                    color = status.danger,
+                )
+                off("LAMPS OFF")
+            }
+            is Uv.PersonSeen -> {
+                Text("UV paused · movement detected", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = status.danger)
+                Text(
+                    listOfNotNull(RobotAgent.domes(uv.domes).ifEmpty { null }, "$left of UV left", "a new countdown comes first").joinToString(" · "),
+                    style = MaterialTheme.typography.bodyMedium,
                     color = status.danger,
                 )
                 off("LAMPS OFF")
@@ -1638,6 +1653,22 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
                 enabled = demo.navigating,
                 shape = RoundedCornerShape(10.dp),
             ) { Text("Person in the way") }
+
+            state.agent?.let { agent ->
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                SectionLabel("Safety app")
+                Text(
+                    if (agent.inApp) "In the app" else "Fake agent at ${agent.address ?: "—"}",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                DemoToggle("Safety app down", "It stops answering, as if it had crashed. UV is refused.", demo.agentDown, actions.onDemoAgentDown, enabled = agent.inApp)
+                OutlinedButton(
+                    actions.onDemoMovement,
+                    Modifier.fillMaxWidth(),
+                    enabled = agent.inApp && state.uvByAgent,
+                    shape = RoundedCornerShape(10.dp),
+                ) { Text("Movement near the robot") }
+            }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             SectionLabel("Robot")
@@ -2135,6 +2166,7 @@ private fun RobotInfo(state: RemoteState, modifier: Modifier) {
             }
             InfoRow("Navigation firmware", state.version ?: "—", mono = true)
         }
+        state.agent?.let { AgentInfoSection(it, state.demo) }
         InfoSection("Power") {
             InfoRow("Battery", state.battery?.let { "$it%" } ?: "—", mono = true)
             InfoRow("On the charger", if (state.docked) "Yes" else "No")
@@ -2160,6 +2192,38 @@ private fun RobotInfo(state: RemoteState, modifier: Modifier) {
             InfoRow("Map in use", state.currentMap?.label ?: "—")
             InfoRow("Saved points", (state.points as? Points.Loaded)?.list?.size?.toString() ?: "—", mono = true)
         }
+    }
+}
+
+/** The robot's safety app: is it answering, which version, its lamps and person sensor, what's wrong. */
+@Composable
+private fun AgentInfoSection(agent: AgentView, demo: Boolean) {
+    val s = agent.status
+    InfoSection("Safety app") {
+        InfoRow(
+            "Safety app",
+            when {
+                agent.reachable -> if (agent.inApp) "DEMO, in the app" else "Connected"
+                agent.searching -> "Looking for it"
+                agent.address == null -> "Not found"
+                else -> "Not answering"
+            },
+        )
+        InfoRow("Version", agent.info?.let { "${it.version} · API ${it.api}" } ?: "—", mono = true)
+        if (!agent.inApp && (!demo || agent.address != null)) InfoRow("Address", agent.address ?: "—", mono = true)
+        InfoRow("Lamps", s?.let { if (it.unlocked) "Unlocked" else "Locked" } ?: "—")
+        InfoRow(
+            "Person sensor",
+            s?.let {
+                when (it.sensorMode) {
+                    "on" -> "On" + (it.lastSeenAgoMs?.let { ago -> ", movement ${DriveController.clockText(ago)} ago" } ?: "")
+                    "arming" -> "Switching on"
+                    "no_answer" -> "Not answering"
+                    else -> "Off"
+                }
+            } ?: "—",
+        )
+        InfoRow("Faults", s?.let { st -> st.faults.joinToString("\n") { RobotAgent.faultText(it) }.ifEmpty { "None" } } ?: "—")
     }
 }
 

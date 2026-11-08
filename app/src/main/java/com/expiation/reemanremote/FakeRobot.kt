@@ -37,17 +37,22 @@ import kotlin.math.sqrt
  *
  * @param clock monotonic time in nanoseconds
  * @param realistic adds request latency and speed noise; off for deterministic tests
+ * @param withAgent the robot has a safety app on its head unit (see [FakeAgent]), answering /v1/
  */
 class FakeRobot(
     private val clock: () -> Long = System::nanoTime,
     private val rng: Random = Random(),
     private val realistic: Boolean = true,
+    withAgent: Boolean = false,
 ) {
 
     class Reply(val code: Int, val body: String, val latencyMs: Long)
 
     /** What /reeman/hostname answers (see [RobotName]); tests give fakes different ones. */
     var hostname = HOSTNAME
+
+    /** The robot's safety app, if it has one: it switches the lamps through the same supply as /cmd/external_power_supply. */
+    val agent: FakeAgent? = if (withAgent) FakeAgent(setLamps = ::setUvSupply, estop = { estopPressed }) else null
 
     /** One planned step: ramp up, cruise, ramp down, like the firmware's own planner. */
     private class Motion(
@@ -146,6 +151,11 @@ class FakeRobot(
         if (offline) return null
         val now = clock()
         advance(now)
+        if (path.startsWith("/v1/")) {
+            val a = agent ?: return Reply(404, "", 0)
+            val (code, body) = a.handle(method, path, json.orEmpty(), now / 1_000_000) ?: return null
+            return Reply(code, body, if (realistic) 10L + rng.nextInt(20) else 0L)
+        }
 
         val body = when (method) {
             "GET" -> get(path, now)
@@ -573,7 +583,27 @@ class FakeRobot(
         return OK
     }
 
+    private fun setUvSupply(on: Boolean) {
+        when (DriveController.UV_SUPPLY) {
+            "24v" -> power24 = on
+            "36v" -> power36 = on
+            else -> { power24 = on; power36 = on }
+        }
+    }
+
     // ------------------------------------------------------------------ demo controls
+
+    /** The safety app stops answering, or answers again (DEMO controls). */
+    @get:Synchronized @set:Synchronized
+    var isAgentDown: Boolean
+        get() = agent?.down == true
+        set(value) { agent?.down = value }
+
+    /** Someone moves near the robot: its safety app pauses the lamps. */
+    @Synchronized
+    fun personNearRobot() {
+        agent?.personSeen(clock() / 1_000_000)
+    }
 
     /** The UV lamps: whichever supply DriveController.UV_SUPPLY says they are on. */
     @get:Synchronized
@@ -671,6 +701,7 @@ class FakeRobot(
         blockNext = false
         power24 = false
         power36 = false
+        agent?.reset()
     }
 
     private fun noise() = if (realistic) (rng.nextDouble() * 2 - 1) * SPEED_NOISE else 0.0

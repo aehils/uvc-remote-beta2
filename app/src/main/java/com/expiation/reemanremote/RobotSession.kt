@@ -37,6 +37,7 @@ class RobotSession private constructor(private val app: Application) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val connectivity = app.getSystemService(ConnectivityManager::class.java)
+    private val agentNsd = AgentNsd(app)
 
     @Volatile
     private var wifi: Network? = null
@@ -84,8 +85,9 @@ class RobotSession private constructor(private val app: Application) {
         val emulatorDefault = !prefs.contains(KEY_DEMO) && isEmulator()
         val demo = prefs.getBoolean(KEY_DEMO, emulatorDefault)
         controller = DriveController(
-            scope, RobotApi(host), FakeRobot(), demo,
+            scope, RobotApi(host), FakeRobot(withAgent = true), demo,
             search = ::searchWifi, robotName = prefs.getString(KEY_ROBOT_NAME, null),
+            phoneId = phoneId(), agentSearch = ::searchAgent, knownAgents = knownAgents(),
         )
         val defaults = UvSettings()
         controller.setUvSettings(
@@ -118,6 +120,16 @@ class RobotSession private constructor(private val app: Application) {
                     .remove(KEY_ROBOT_MAP) // how earlier builds recognised the robot
                     .apply()
             }
+        }
+        // Each robot seen with a safety app, and where it answered last: its lamps only ever come
+        // on through it from now on (fail closed), even after a restart.
+        scope.launch {
+            controller.state.map { s -> s.robotName?.takeIf { !s.demo }?.let { n -> s.agent?.address?.let { n to it } } }
+                .distinctUntilChanged().collect { pair ->
+                    val (name, address) = pair ?: return@collect
+                    val known = knownAgents()
+                    if (known[name] != address) prefs.edit().putString(KEY_AGENTS, JSONObject((known + (name to address)) as Map<*, *>).toString()).apply()
+                }
         }
         scope.launch { followRuns() }
         connectivity.registerNetworkCallback(
@@ -189,6 +201,34 @@ class RobotSession private constructor(private val app: Application) {
         val hosts = RobotFinder.candidates(v4.address.hostAddress ?: return none, v4.prefixLength, known)
         return SearchResult(hosts.size, RobotFinder.find(hosts) { RobotFinder.identify(RobotApi(it)) })
     }
+
+    /**
+     * Looks for a robot's safety app on the phone's Wi-Fi (see [AgentFinder]): at [last], then by
+     * NSD, then at every address on the network.
+     */
+    private suspend fun searchAgent(hostname: String?, demo: Boolean, last: String?): FoundAgent? {
+        val network = wifi ?: return null
+        return AgentFinder.find(
+            hostname, demo, last,
+            nsd = { agentNsd.browse() },
+            scan = {
+                val v4 = connectivity.getLinkProperties(network)?.linkAddresses?.firstOrNull { it.address is Inet4Address }
+                val ip = v4?.address?.hostAddress
+                if (ip == null) emptyList()
+                else RobotFinder.candidates(ip, v4.prefixLength, listOfNotNull(last)).map { RobotAgent.address(it) }
+            },
+            info = { address -> RobotApi(address).probe(RobotAgent.INFO_PATH).takeIf { it.ok }?.let { RobotAgent.parseInfo(it.body) } },
+        )
+    }
+
+    private fun knownAgents(): Map<String, String> {
+        val o = runCatching { JSONObject(prefs.getString(KEY_AGENTS, null) ?: "{}") }.getOrElse { JSONObject() }
+        return o.keys().asSequence().associateWith { o.optString(it) }
+    }
+
+    /** This phone's name to the robot's safety app, made up once. */
+    private fun phoneId(): String = prefs.getString(KEY_PHONE_ID, null)
+        ?: ("phone-" + java.util.UUID.randomUUID().toString().take(8)).also { prefs.edit().putString(KEY_PHONE_ID, it).apply() }
 
     private fun pastHosts(): List<String> =
         prefs.getString(KEY_PAST_HOSTS, null)?.split(',')?.filter { it.isNotBlank() }.orEmpty()
@@ -306,6 +346,8 @@ class RobotSession private constructor(private val app: Application) {
         private const val KEY_ROBOT_NAME = "robot_name" // the robot's hostname: how it is recognised at a new address
         private const val KEY_PAST_HOSTS = "past_hosts" // addresses it has answered at, most recent first
         private const val MAX_PAST_HOSTS = 6
+        private const val KEY_AGENTS = "robot_agents" // robot hostname to its safety app's last address
+        private const val KEY_PHONE_ID = "phone_id"
 
         private fun isEmulator() = Build.FINGERPRINT.startsWith("generic") || "emulator" in Build.FINGERPRINT ||
             "ranchu" in Build.HARDWARE || "goldfish" in Build.HARDWARE || "sdk" in Build.PRODUCT
