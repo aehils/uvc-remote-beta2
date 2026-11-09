@@ -26,6 +26,10 @@ class RobotApi private constructor(host: String, private val fake: FakeRobot?) {
     @Volatile
     var host: String = host
 
+    /** The robot's safety app's pairing token, sent as `Authorization: Bearer`; null: none. */
+    @Volatile
+    var token: String? = null
+
     val isDemo: Boolean get() = fake != null
 
     suspend fun get(path: String): Result = request("GET", path, null, 1500, 2000)
@@ -50,7 +54,7 @@ class RobotApi private constructor(host: String, private val fake: FakeRobot?) {
     }
 
     private suspend fun simulate(fake: FakeRobot, method: String, path: String, json: String?, connectMs: Int): Result {
-        val r = fake.handle(method, path, json)
+        val r = fake.handle(method, path, json, token)
         // A dropped connection costs the same wait as the real timeout would.
         delay(r?.latencyMs ?: connectMs.toLong())
         if (r == null) return Result(false, -1, "", "timed out: robot not answering (DEMO: simulated Wi-Fi drop)")
@@ -65,6 +69,7 @@ class RobotApi private constructor(host: String, private val fake: FakeRobot?) {
             c.connectTimeout = connectMs
             c.readTimeout = readMs
             c.useCaches = false
+            token?.let { c.setRequestProperty("Authorization", "Bearer $it") }
             if (json != null) {
                 val bytes = json.toByteArray(Charsets.UTF_8)
                 c.doOutput = true

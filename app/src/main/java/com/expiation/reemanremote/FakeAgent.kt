@@ -33,17 +33,30 @@ class FakeAgent(
     /** How many times the voice test was asked for and allowed: the DEMO robot has no voice. */
     var voiceTests = 0; private set
 
+    /** Pairing switched on, as `agent pairing on` does on a robot: starting things needs a token. */
+    var pairingRequired = false
+
+    /** What the DEMO robot's screen would show: the pairing code, while it lasts. */
+    var shownCode: String? = null; private set
+    private var codeUntil = 0L
+    private val tokens = HashSet<String>()
+
     /** The safety app has stopped answering (DEMO controls). */
     var down = false
 
     val lampsOn: Boolean get() = lamp is Lamp.On
 
     /** A reply, or null for no answer at all (as a timeout). [now] in ms. */
-    fun handle(method: String, path: String, json: String, now: Long): Pair<Int, String>? {
+    fun handle(method: String, path: String, json: String, now: Long, token: String? = null): Pair<Int, String>? {
         if (down) return null
         advance(now)
-        return when ("$method $path") {
-            "GET ${RobotAgent.INFO_PATH}" -> 200 to """{"api":${RobotAgent.API},"agent":"demo","host":"${FakeRobot.HOSTNAME}","lampsUnlocked":true}"""
+        if (shownCode != null && now >= codeUntil) shownCode = null
+        val call = "$method $path"
+        if (pairingRequired && call in NEEDS_TOKEN && token !in tokens)
+            return 401 to """{"ok":false,"reasons":["Pair this phone with the robot first"]}"""
+        return when (call) {
+            "GET ${RobotAgent.INFO_PATH}" -> 200 to """{"api":${RobotAgent.API},"agent":"demo","host":"${FakeRobot.HOSTNAME}","lampsUnlocked":true,"pairingRequired":$pairingRequired}"""
+            "POST ${RobotAgent.PAIR_PATH}" -> pair(str(json, "code"), now)
             "GET ${RobotAgent.STATE_PATH}" -> 200 to state(now)
             "POST ${RobotAgent.LAMP_ON_PATH}" -> lampOn(json, now)
             "POST ${RobotAgent.LEASE_PATH}" ->
@@ -111,6 +124,20 @@ class FakeAgent(
         return reply
     }
 
+    private fun pair(code: String?, now: Long): Pair<Int, String> {
+        if (code == null) {
+            if (lamp != Lamp.Off) return 409 to """{"ok":false,"reasons":["Pair when the robot isn't running UV"]}"""
+            if (shownCode == null) { shownCode = "%06d".format((now * 7919 + 104_729) % 1_000_000); codeUntil = now + CODE_MS }
+            return 200 to """{"ok":true,"showing":true,"forMs":${codeUntil - now}}"""
+        }
+        val c = shownCode ?: return 403 to """{"ok":false,"expired":true,"reasons":["This code has expired"]}"""
+        if (code.trim() != c) return 403 to """{"ok":false,"expired":false,"reasons":["Wrong code: check the robot's screen"]}"""
+        shownCode = null
+        val t = "demo-token-${tokens.size + 1}"
+        tokens += t
+        return 200 to """{"ok":true,"token":"$t"}"""
+    }
+
     private fun advance(now: Long) {
         if (now >= maskUntil) mask = 0
         if (lamp == Lamp.Off) return
@@ -162,5 +189,8 @@ class FakeAgent(
         const val MASK_MS = 1_500L
         const val MAX_MS = 30 * 60_000L
         const val FRONT = 0x04
+        const val CODE_MS = 5 * 60_000L
+        val NEEDS_TOKEN = setOf("POST ${RobotAgent.LAMP_ON_PATH}", "POST ${RobotAgent.LEASE_PATH}",
+            "POST ${RobotAgent.SETTINGS_PATH}", "POST ${RobotAgent.VOICE_TEST_PATH}")
     }
 }

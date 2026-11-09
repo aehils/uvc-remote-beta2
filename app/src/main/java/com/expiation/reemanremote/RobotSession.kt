@@ -88,6 +88,7 @@ class RobotSession private constructor(private val app: Application) {
             scope, RobotApi(host), FakeRobot(withAgent = true), demo,
             search = ::searchWifi, robotName = prefs.getString(KEY_ROBOT_NAME, null),
             phoneId = phoneId(), agentSearch = ::searchAgent, knownAgents = knownAgents(),
+            agentTokens = agentTokens(), saveAgentToken = ::saveAgentToken,
         )
         val defaults = UvSettings()
         controller.setUvSettings(
@@ -221,6 +222,22 @@ class RobotSession private constructor(private val app: Application) {
         )
     }
 
+    /** Pairing tokens by robot hostname, in this app's own storage (no backup: see the manifest). */
+    private fun agentTokens(): Map<String, String> {
+        val o = runCatching { JSONObject(prefs.getString(KEY_AGENT_TOKENS, null) ?: "{}") }.getOrElse { JSONObject() }
+        return o.keys().asSequence().associateWith { o.optString(it) }.filterValues { it.isNotBlank() }
+    }
+
+    private fun saveAgentToken(hostname: String, token: String?) {
+        val all = agentTokens().toMutableMap()
+        if (token == null) all.remove(hostname) else all[hostname] = token
+        prefs.edit().putString(KEY_AGENT_TOKENS, JSONObject(all as Map<*, *>).toString()).apply()
+    }
+
+    fun askPairCode() = controller.askPairCode()
+    fun sendPairCode(code: String) = controller.sendPairCode(code)
+    fun endPairing() = controller.endPairing()
+
     private fun knownAgents(): Map<String, String> {
         val o = runCatching { JSONObject(prefs.getString(KEY_AGENTS, null) ?: "{}") }.getOrElse { JSONObject() }
         return o.keys().asSequence().associateWith { o.optString(it) }
@@ -350,6 +367,7 @@ class RobotSession private constructor(private val app: Application) {
         private const val KEY_PAST_HOSTS = "past_hosts" // addresses it has answered at, most recent first
         private const val MAX_PAST_HOSTS = 6
         private const val KEY_AGENTS = "robot_agents" // robot hostname to its safety app's last address
+        private const val KEY_AGENT_TOKENS = "robot_agent_tokens" // robot hostname to this phone's pairing token
         private const val KEY_PHONE_ID = "phone_id"
 
         private fun isEmulator() = Build.FINGERPRINT.startsWith("generic") || "emulator" in Build.FINGERPRINT ||

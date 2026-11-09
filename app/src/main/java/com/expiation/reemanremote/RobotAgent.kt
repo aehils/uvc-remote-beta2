@@ -24,6 +24,7 @@ object RobotAgent {
     const val STOP_PATH = "/v1/stop"
     const val SETTINGS_PATH = "/v1/settings"
     const val VOICE_TEST_PATH = "/v1/voice/test"
+    const val PAIR_PATH = "/v1/pair"
 
     /** The agent's floor for [AgentStatus.voiceVolume] when an older one doesn't say. */
     const val VOICE_FLOOR = 30
@@ -72,6 +73,7 @@ object RobotAgent {
             version = o.optString("agent", "?"),
             host = o.optStringOrNull("host"),
             lampsUnlocked = o.optBoolean("lampsUnlocked", false),
+            pairingRequired = o.optBoolean("pairingRequired", false),
         )
     }.getOrNull()
 
@@ -122,6 +124,14 @@ object RobotAgent {
     /** The volume the agent settled on (it floors it), from a /v1/settings reply. */
     fun parseVoiceVolume(body: String): Int? = runCatching { JSONObject(body).getInt("voiceVolume") }.getOrNull()
 
+    fun pairCodeJson(code: String): String = JSONObject().put("code", code.filter(Char::isDigit)).toString()
+
+    /** The token in a `/v1/pair` reply, or null. Never logged. */
+    fun parseToken(body: String): String? = runCatching { JSONObject(body).getString("token") }.getOrNull()?.takeIf { it.isNotBlank() }
+
+    /** A `/v1/pair` refusal because the code ran out (or none is on the screen): offer a new one. */
+    fun codeExpired(body: String): Boolean = runCatching { JSONObject(body).optBoolean("expired", false) }.getOrDefault(false)
+
     fun reasonJson(reason: String): String = JSONObject().put("reason", reason).toString()
 
     /** Hard faults now, in words, the ones that would refuse a run. */
@@ -134,7 +144,7 @@ object RobotAgent {
 }
 
 /** GET /v1/info. [host] is the robot's ROS hostname, as the agent read it over the serial line; null until it has. */
-data class AgentInfo(val api: Int, val version: String, val host: String?, val lampsUnlocked: Boolean) {
+data class AgentInfo(val api: Int, val version: String, val host: String?, val lampsUnlocked: Boolean, val pairingRequired: Boolean = false) {
     val fake: Boolean get() = version == RobotAgent.FAKE_VERSION
 }
 
@@ -197,7 +207,28 @@ data class AgentView(
     val searching: Boolean,
     /** The in-app fake of DEMO mode, not one on the network. */
     val inApp: Boolean = false,
-)
+    /** This phone holds a pairing token for it. */
+    val paired: Boolean = false,
+    /** Where pairing is up to (see [DriveController.askPairCode]). */
+    val pairStep: PairStep = PairStep.Idle,
+) {
+    /** It wants a token and this phone has none: UV and settings would be refused. */
+    val needsPairing: Boolean get() = info?.pairingRequired == true && !paired
+}
+
+/** Pairing this phone with the robot's safety app, as the pairing dialog shows it. */
+sealed interface PairStep {
+    data object Idle : PairStep
+    /** Asking the robot to show a code. */
+    data object Asking : PairStep
+    /** The code is on the robot's screen: type it in. */
+    data object CodeShown : PairStep
+    data object Sending : PairStep
+    /** "This code has expired", with Refresh. */
+    data object Expired : PairStep
+    data object Paired : PairStep
+    data class Problem(val text: String) : PairStep
+}
 
 /** A safety app found on the network, at [address] ("ip:port"). */
 data class FoundAgent(val address: String, val info: AgentInfo)

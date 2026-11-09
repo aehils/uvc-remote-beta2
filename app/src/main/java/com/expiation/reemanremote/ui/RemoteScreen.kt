@@ -126,6 +126,7 @@ import com.expiation.reemanremote.Pose
 import com.expiation.reemanremote.R
 import com.expiation.reemanremote.RemoteState
 import com.expiation.reemanremote.AgentView
+import com.expiation.reemanremote.PairStep
 import com.expiation.reemanremote.RobotAgent
 import com.expiation.reemanremote.RobotMode
 import com.expiation.reemanremote.RobotName
@@ -171,6 +172,9 @@ data class RemoteActions(
     val onLowBattery: (Int) -> Unit = {},
     /** The robot's voice, percent; true: then say the test line. */
     val onVoiceVolume: (Int, Boolean) -> Unit = { _, _ -> },
+    val onAskPairCode: () -> Unit = {},
+    val onSendPairCode: (String) -> Unit = {},
+    val onEndPairing: () -> Unit = {},
     val onRunningSpeed: (Double?) -> Unit = {},
     val onDemoEstop: () -> Unit = {},
     val onDemoWifi: () -> Unit = {},
@@ -1762,6 +1766,7 @@ private fun SettingsTab(
     var editingSpeed by rememberSaveable { mutableStateOf(false) }
     var editingBattery by rememberSaveable { mutableStateOf(false) }
     var editingVoice by rememberSaveable { mutableStateOf(false) }
+    var pairing by rememberSaveable { mutableStateOf(false) }
     // Only a safety app answering now, and new enough to have the setting.
     val voice = state.agent?.takeIf { it.reachable }?.status
     Column(
@@ -1774,6 +1779,21 @@ private fun SettingsTab(
         RobotCard(state, actions)
         SettingsGroup {
             SettingsRow(R.drawable.ic_info, "Robot information", onClick = onOpenRobotInfo)
+            // Robots with a safety app: pairing is how this phone may start UV on one that asks for it.
+            state.agent?.let { agent ->
+                GroupDivider()
+                SettingsRow(
+                    R.drawable.ic_pair, "Pair with this robot",
+                    enabled = agent.reachable,
+                    trailing = {
+                        SettingValue(when {
+                            agent.paired -> "Paired"
+                            agent.needsPairing -> "Needed"
+                            else -> "Not paired"
+                        })
+                    },
+                ) { pairing = true; actions.onAskPairCode() }
+            }
             // DEMO has no address: the simulated robot is in the app.
             if (!state.demo) {
                 GroupDivider()
@@ -1857,6 +1877,15 @@ private fun SettingsTab(
                 editingBattery = false
                 actions.onLowBattery(it)
             },
+        )
+    }
+    val agentNow = state.agent
+    if (pairing && agentNow != null) {
+        PairDialog(
+            step = agentNow.pairStep,
+            onRefresh = actions.onAskPairCode,
+            onSend = actions.onSendPairCode,
+            onClose = { pairing = false; actions.onEndPairing() },
         )
     }
     val voiceNow = voice?.voiceVolume
@@ -2102,6 +2131,56 @@ private fun LowBatteryDialog(current: Int, onDismiss: () -> Unit, onSave: (Int) 
         },
         confirmButton = { TextButton(onClick = { onSave(percent) }) { Text("Save") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/**
+ * Pairing with the robot: it shows a code on its screen for 5 minutes; type it in. Wrong codes
+ * can be tried again as often as needed; a code that has run out gets a Refresh for a new one.
+ */
+@Composable
+private fun PairDialog(step: PairStep, onRefresh: () -> Unit, onSend: (String) -> Unit, onClose: () -> Unit) {
+    var code by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(step) {
+        if (step == PairStep.Paired) onClose()
+        if (step == PairStep.Expired) code = ""
+    }
+    val busy = step == PairStep.Asking || step == PairStep.Sending
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("Pair with this robot") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                when (step) {
+                    PairStep.Expired -> {
+                        Text("This code has expired", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                        OutlinedButton(onClick = onRefresh, shape = RoundedCornerShape(10.dp)) { Text("Refresh") }
+                    }
+                    else -> {
+                        Text(
+                            if (step == PairStep.Asking) "Asking the robot for a code…" else "Enter the code shown on the robot's screen.",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        OutlinedTextField(
+                            value = code,
+                            onValueChange = { v -> code = v.filter(Char::isDigit).take(6) },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            enabled = !busy,
+                            placeholder = { Text("6 digits") },
+                            textStyle = MaterialTheme.typography.headlineSmall.copy(fontFamily = FontFamily.Monospace, letterSpacing = 4.sp),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
+                            keyboardActions = KeyboardActions(onDone = { if (code.length == 6) onSend(code) }),
+                        )
+                        if (step is PairStep.Problem) Text(step.text, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (step != PairStep.Expired) TextButton(onClick = { onSend(code) }, enabled = code.length == 6 && !busy) { Text("Pair") }
+        },
+        dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } },
     )
 }
 

@@ -147,13 +147,13 @@ class FakeRobot(
 
     /** Answers one HTTP request. Returns null when a Wi-Fi drop is being simulated. */
     @Synchronized
-    fun handle(method: String, path: String, json: String?): Reply? {
+    fun handle(method: String, path: String, json: String?, token: String? = null): Reply? {
         if (offline) return null
         val now = clock()
         advance(now)
         if (path.startsWith("/v1/")) {
             val a = agent ?: return Reply(404, "", 0)
-            val (code, body) = a.handle(method, path, json.orEmpty(), now / 1_000_000) ?: return null
+            val (code, body) = a.handle(method, path, json.orEmpty(), now / 1_000_000, token) ?: return null
             return Reply(code, body, if (realistic) 10L + rng.nextInt(20) else 0L)
         }
 

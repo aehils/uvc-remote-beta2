@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Pairing with the robot: two chain links. Tinted by the caller. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="1.9"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M10,13.5a4,4 0,0 0,6 0.4l2.6,-2.6a4,4 0,0 0,-5.7 -5.7l-1.2,1.2M14,10.5a4,4 0,0 0,-6 -0.4l-2.6,2.6a4,4 0,0 0,5.7 5.7l1.2,-1.2" />
+</vector>

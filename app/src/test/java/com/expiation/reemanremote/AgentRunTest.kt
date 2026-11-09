@@ -251,4 +251,50 @@ class AgentRunTest {
         c.setVoiceVolume(50, thenTest = true)
         waitFor(c) { logged(c, "Voice test refused: Not while the lamps are running") }
     }
+
+    @Test
+    fun pairingIsTypingTheCodeAndWrongTriesCostNothing() = runTest {
+        val c = ready()
+        val fake = c.demoRobot.agent!!
+        fake.pairingRequired = true
+        c.switchLampsOn(5)
+        waitFor(c) { logged(c, "Pair this phone with the robot first") }
+        assertFalse(lit(c))
+
+        c.askPairCode()
+        waitFor(c) { it.agent?.pairStep == PairStep.CodeShown }
+        val code = fake.shownCode!!
+        val wrong = if (code == "000000") "000001" else "000000"
+        repeat(3) {
+            c.sendPairCode(wrong)
+            waitFor(c) { it.agent?.pairStep is PairStep.Problem }
+            assertEquals("Wrong code: check the robot's screen", (c.state.value.agent!!.pairStep as PairStep.Problem).text)
+        }
+        assertEquals("unlimited tries: the code stands", code, fake.shownCode)
+        c.sendPairCode(code)
+        waitFor(c) { it.agent?.pairStep == PairStep.Paired }
+        assertTrue(c.state.value.agent!!.paired)
+        assertFalse(c.state.value.agent!!.needsPairing)
+        assertFalse("the token is never logged", log(c).contains("demo-token"))
+
+        c.switchLampsOn(5)
+        waitFor(c) { it.uv is Uv.On }
+        assertTrue(lit(c))
+    }
+
+    @Test
+    fun anExpiredCodeSaysSoAndRefreshGivesANewOneAtOnce() = runTest {
+        val c = ready()
+        val fake = c.demoRobot.agent!!
+        c.askPairCode()
+        waitFor(c) { it.agent?.pairStep == PairStep.CodeShown }
+        val code = fake.shownCode!!
+        advanceTimeBy(5 * 60_000L + 1_000)
+        c.sendPairCode(code)
+        waitFor(c) { it.agent?.pairStep == PairStep.Expired }
+        c.askPairCode()
+        waitFor(c) { it.agent?.pairStep == PairStep.CodeShown }
+        c.sendPairCode(fake.shownCode!!)
+        waitFor(c) { it.agent?.pairStep == PairStep.Paired }
+    }
 }

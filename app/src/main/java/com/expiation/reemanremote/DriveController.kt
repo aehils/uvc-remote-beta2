@@ -483,6 +483,9 @@ class DriveController(
      * come on through it: it can't be reached, no UV (see [RemoteState.uvProblem]).
      */
     knownAgents: Map<String, String> = emptyMap(),
+    /** Pairing tokens for robots' safety apps, by robot hostname. Kept by [saveAgentToken]; never in the state or the log. */
+    agentTokens: Map<String, String> = emptyMap(),
+    private val saveAgentToken: (hostname: String, token: String?) -> Unit = { _, _ -> },
 ) {
     private val demoApi = RobotApi.demo(demoRobot)
     private var demo = demo
@@ -626,6 +629,9 @@ class DriveController(
     }
 
     private val knownAgents = knownAgents.toMutableMap()
+    private val agentTokens = agentTokens.toMutableMap()
+    private var demoAgentToken: String? = null
+    private var pairStep: PairStep = PairStep.Idle
     private var agentTarget: AgentTarget? = null
     private var agentInfo: AgentInfo? = null
     private var agentStatus: AgentStatus? = null
@@ -2275,6 +2281,8 @@ class DriveController(
 
     private fun useAgent(t: AgentTarget, info: AgentInfo?) {
         agentTarget = t
+        t.api.token = tokenFor(t)
+        pairStep = PairStep.Idle
         agentInfo = info
         agentStatus = null
         agentReachable = false
@@ -2405,6 +2413,7 @@ class DriveController(
                     log("Safety app accepted: UV lamps on in ${countdownMs / 1000} s. Leave the room.")
                 }
                 r.httpCode in 400..499 -> {
+                    if (r.httpCode == 401) keepToken(t, null) // forgotten by the robot: pair again
                     val reasons = RobotAgent.parseReasons(r.body).joinToString("; ")
                     raise("UV refused by the robot: $reasons", "lamp/on ${r.httpCode} ${r.body}")
                     endDisinfection("refused: $reasons")
@@ -2424,6 +2433,7 @@ class DriveController(
             agentTarget == null || !agentReachable || s == null -> CANT_REACH_AGENT
             (info != null && info.api != RobotAgent.API) || s.api != RobotAgent.API -> AGENT_WRONG_VERSION
             agentRun != null -> null
+            info?.pairingRequired == true && tokenFor(agentTarget!!) == null -> PAIR_FIRST
             s.lamp != AgentLamp.OFF -> if (s.controller == null) "UV is running from the robot's own screen" else "UV is already running on this robot"
             else -> RobotAgent.blocking(s.faults).firstOrNull()
         }
@@ -2439,7 +2449,72 @@ class DriveController(
             reachable = agentReachable,
             searching = agentSearchJob?.isActive == true,
             inApp = t?.inApp == true,
+            paired = t?.let { tokenFor(it) } != null,
+            pairStep = pairStep,
         )
+    }
+
+    private fun tokenFor(t: AgentTarget): String? = if (t.inApp) demoAgentToken else robotName?.let { agentTokens[it] }
+
+    /** Keeps (or with null drops) this phone's token for [t]'s robot, and sends it from now on. */
+    private fun keepToken(t: AgentTarget, token: String?) {
+        t.api.token = token
+        if (t.inApp) { demoAgentToken = token; return }
+        val n = robotName ?: return
+        if (token == null) agentTokens.remove(n) else agentTokens[n] = token
+        saveAgentToken(n, token)
+    }
+
+    /**
+     * Pairing, step 1: the robot puts a code on its screen (5 minutes; asking again keeps it, or
+     * gives a new one once it has run out). Step 2 is [sendPairCode].
+     */
+    fun askPairCode() {
+        val t = agentTarget
+        if (t == null || !agentReachable) { pairStep = PairStep.Problem(AGENT_NOT_ANSWERING); return publish() }
+        pairStep = PairStep.Asking
+        publish()
+        scope.launch {
+            val r = agentLock.withLock { t.api.post(RobotAgent.PAIR_PATH, "{}") }
+            if (agentTarget !== t) return@launch
+            pairStep = when {
+                r.ok -> PairStep.CodeShown
+                r.httpCode in 400..499 -> PairStep.Problem(RobotAgent.parseReasons(r.body).joinToString("; "))
+                else -> PairStep.Problem("$AGENT_NOT_ANSWERING (${r.error})")
+            }
+            if (r.ok && t.inApp) demoRobot.agent?.shownCode?.let { log("DEMO: the robot's screen shows pairing code $it") }
+            publish()
+        }
+    }
+
+    /** Pairing, step 2: the code from the robot's screen, for a token kept for this robot. */
+    fun sendPairCode(code: String) {
+        val t = agentTarget
+        if (t == null || !agentReachable) { pairStep = PairStep.Problem(AGENT_NOT_ANSWERING); return publish() }
+        pairStep = PairStep.Sending
+        publish()
+        scope.launch {
+            val r = agentLock.withLock { t.api.post(RobotAgent.PAIR_PATH, RobotAgent.pairCodeJson(code)) }
+            if (agentTarget !== t) return@launch
+            val token = if (r.ok) RobotAgent.parseToken(r.body) else null
+            pairStep = when {
+                token != null -> {
+                    keepToken(t, token)
+                    log("Paired with the robot's safety app")
+                    PairStep.Paired
+                }
+                RobotAgent.codeExpired(r.body) -> PairStep.Expired
+                r.httpCode in 400..499 -> PairStep.Problem(RobotAgent.parseReasons(r.body).joinToString("; "))
+                else -> PairStep.Problem("$AGENT_NOT_ANSWERING (${r.error})")
+            }
+            publish()
+        }
+    }
+
+    /** The pairing dialog closed. */
+    fun endPairing() {
+        pairStep = PairStep.Idle
+        publish()
     }
 
     // ------------------------------------------------------------------ UV disinfection
@@ -2508,7 +2583,10 @@ class DriveController(
                     agentStatus = agentStatus?.copy(voiceVolume = set)
                     if (!thenTest) log("Voice volume: $set%")
                 }
-                r.httpCode in 400..499 -> log("Voice volume refused: " + RobotAgent.parseReasons(r.body).joinToString("; "))
+                r.httpCode in 400..499 -> {
+                    if (r.httpCode == 401) keepToken(t, null)
+                    log("Voice volume refused: " + RobotAgent.parseReasons(r.body).joinToString("; "))
+                }
                 else -> log("Voice volume: safety app not reached (${r.error})")
             }
             if (set != null && thenTest) {
@@ -3689,6 +3767,8 @@ class DriveController(
         const val AGENT_MIN_COUNTDOWN_MS = 5_000L   // the shortest countdown it accepts: the UV switch's
         const val AGENT_OVERRUN_MS = 15_000L        // lamps seen on this long past their time: the phone ends it
         const val CANT_REACH_AGENT = "Can't reach the robot's safety app, UV unavailable"
+        const val PAIR_FIRST = "Pair this phone with the robot first: Settings, Pair with this robot. UV unavailable"
+        const val AGENT_NOT_ANSWERING = "Can't reach the robot's safety app"
         const val AGENT_WRONG_VERSION = "Update this app: the robot's safety app is a different version. UV unavailable"
         private const val LOST_AGENT = "lost the robot's safety app"
         private const val IN_APP = "in the app"
