@@ -647,6 +647,7 @@ class DriveController(
     private var uvForMs = 0L
 
     private val logLines = ArrayDeque<String>()
+    private var cachedLog: List<String>? = null
     private val clock = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     private val _state = MutableStateFlow(snapshot())
@@ -3449,6 +3450,7 @@ class DriveController(
     }
 
     private fun log(line: String) {
+        cachedLog = null
         logLines.addFirst("${clock.format(Date())}  ${if (demo) "[DEMO] " else ""}$line")
         while (logLines.size > LOG_LINES) logLines.removeLast()
     }
@@ -3490,7 +3492,7 @@ class DriveController(
             demoRobot.isEstopPressed, demoRobot.isOffline, demoRobot.isBlockNextPending,
             demoRobot.isNavigating, demoRobot.isBusy, demoRobot.isUvOn, demoRobot.isAgentDown,
         ) else null,
-        log = logLines.toList(),
+        log = cachedLog ?: logLines.toList().also { cachedLog = it },
         mode = mode,
         currentMap = currentMap,
         mapImage = mapImage,
