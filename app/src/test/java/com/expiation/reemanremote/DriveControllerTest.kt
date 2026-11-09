@@ -649,6 +649,25 @@ class DriveControllerTest {
     }
 
     @Test
+    fun releasingTheEstopNeverResumesATrip() = runTest {
+        val (c, points) = withPoints()
+        c.goTo(points.first { it.name == "Bed 1" })
+        waitFor(c) { c.demoRobot.isNavigating && c.demoRobot.isBusy }
+        advanceTimeBy(1500)
+        c.demoToggleEstop()
+        waitFor(c) { it.estop == EStop.PRESSED }
+        advanceTimeBy(3000)
+        val x = robotX(c)
+        c.demoToggleEstop()
+        waitFor(c) { it.estop == EStop.RELEASED }
+        advanceTimeBy(10_000)
+        assertEquals(log(c), x, robotX(c), 0.01)
+        assertFalse("navigation cancelled", c.demoRobot.isNavigating)
+        assertTrue(log(c), logged(c, "e-stop pressed: trip cancelled"))
+        assertEquals(StepPhase.Idle, c.state.value.phase)
+    }
+
+    @Test
     fun wifiDropDisconnectsAndRecovers() = runTest {
         val c = ready()
         c.demoToggleWifi()

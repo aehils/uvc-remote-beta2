@@ -620,7 +620,9 @@ class FakeRobot(
     fun setEstopPressed(pressed: Boolean) {
         advance(clock())
         estopPressed = pressed
-        if (pressed) halt() // the e-stop cuts the motors
+        // As the real robot (2026-11-09): the motors stop, but a navigation only waits, and drives
+        // on to its point once the e-stop is released. Only /cmd/cancel_goal ends it.
+        if (navGoal != null) pauseNav(if (pressed) 1e6 else 0.0) else if (pressed) halt()
     }
 
     @get:Synchronized @set:Synchronized

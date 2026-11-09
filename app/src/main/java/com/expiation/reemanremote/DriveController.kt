@@ -1029,6 +1029,11 @@ class DriveController(
                         log(if (e == EStop.PRESSED) "E-stop PRESSED" else "E-stop released")
                     }
                     link = Link.Connected(e)
+                    // The e-stop only pauses a trip: on release the robot drove on to its point
+                    // (2026-11-09). So a press is also a STOP: navigation and docking cancelled,
+                    // lamps off. A routine ends by its own e-stop check, with its own reason.
+                    // A held arrow has no goal to resume; trackHold ends it.
+                    if (l.estop == EStop.RELEASED && e == EStop.PRESSED && phase !is StepPhase.Holding) halt("e-stop pressed: trip cancelled", endRun = false)
                 }
                 // chargeFlag is stale on this firmware, so it is never shown as live state; only
                 // reported once a dock finishes, after motion has refreshed it (see dockReport),
