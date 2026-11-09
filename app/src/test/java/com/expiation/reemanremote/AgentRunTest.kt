@@ -234,4 +234,21 @@ class AgentRunTest {
         assertFalse(lit(c))
         assertEquals(AgentLamp.OFF, agentState(c).lamp)
     }
+
+    @Test
+    fun voiceVolumeIsKeptOnTheRobotNeverSilentAndNeverTestedOverAWarning() = runTest {
+        val c = ready()
+        waitFor(c) { it.agent?.status?.voiceVolume == 60 }
+        c.setVoiceVolume(40)
+        waitFor(c) { it.agent?.status?.voiceVolume == 40 }
+        assertEquals("on the robot, not only the phone", 40, agentState(c).voiceVolume)
+        c.setVoiceVolume(0)
+        waitFor(c) { it.agent?.status?.voiceVolume == RobotAgent.VOICE_FLOOR }
+        c.setVoiceVolume(50, thenTest = true)
+        waitFor(c) { logged(c, "Voice test at 50%") }
+        c.switchLampsOn(5)
+        waitFor(c) { it.uv is Uv.On }
+        c.setVoiceVolume(50, thenTest = true)
+        waitFor(c) { logged(c, "Voice test refused: Not while the lamps are running") }
+    }
 }

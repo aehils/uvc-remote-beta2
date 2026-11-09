@@ -2492,6 +2492,37 @@ class DriveController(
         publish()
     }
 
+    /**
+     * The robot's spoken warnings, [percent] loud. Kept on the robot by its safety app, which
+     * floors it ([AgentStatus.voiceFloor]): the phone can make them quieter, never silent. With
+     * [thenTest] the robot then says its test line at that level.
+     */
+    fun setVoiceVolume(percent: Int, thenTest: Boolean = false) {
+        val t = agentTarget
+        if (t == null || !agentReachable) { log("Voice volume: safety app not reached"); publish(); return }
+        scope.launch {
+            val r = agentLock.withLock { t.api.post(RobotAgent.SETTINGS_PATH, RobotAgent.voiceVolumeJson(percent, phoneId)) }
+            val set = if (r.ok) RobotAgent.parseVoiceVolume(r.body) else null
+            when {
+                set != null -> {
+                    agentStatus = agentStatus?.copy(voiceVolume = set)
+                    if (!thenTest) log("Voice volume: $set%")
+                }
+                r.httpCode in 400..499 -> log("Voice volume refused: " + RobotAgent.parseReasons(r.body).joinToString("; "))
+                else -> log("Voice volume: safety app not reached (${r.error})")
+            }
+            if (set != null && thenTest) {
+                val v = agentLock.withLock { t.api.post(RobotAgent.VOICE_TEST_PATH, "{}") }
+                log(when {
+                    v.ok -> "Voice test at $set%"
+                    v.httpCode in 400..499 -> "Voice test refused: " + RobotAgent.parseReasons(v.body).joinToString("; ")
+                    else -> "Voice test: safety app not reached (${v.error})"
+                })
+            }
+            publish()
+        }
+    }
+
     /** Takes effect from the next time the battery is checked. */
     fun setLowBattery(percent: Int) {
         lowBattery = percent.coerceIn(MIN_LOW_BATTERY, MAX_LOW_BATTERY)

@@ -28,6 +28,10 @@ class FakeAgent(
     private var maskUntil = 0L
     private var lastSeenAt: Long? = null
     private val decided = LinkedHashMap<String, Pair<Int, String>>()
+    private var voiceVolume = 60
+
+    /** How many times the voice test was asked for and allowed: the DEMO robot has no voice. */
+    var voiceTests = 0; private set
 
     /** The safety app has stopped answering (DEMO controls). */
     var down = false
@@ -44,6 +48,13 @@ class FakeAgent(
             "POST ${RobotAgent.LAMP_ON_PATH}" -> lampOn(json, now)
             "POST ${RobotAgent.LEASE_PATH}" ->
                 if (lamp != Lamp.Off && str(json, "controller") == controller) { leaseAt = now; 200 to OK } else 409 to NOT_OK
+            "POST ${RobotAgent.SETTINGS_PATH}" -> {
+                num(json, "voiceVolume")?.let { voiceVolume = it.toInt().coerceIn(RobotAgent.VOICE_FLOOR, 100) }
+                200 to """{"ok":true,"reasons":[],"voiceVolume":$voiceVolume}"""
+            }
+            "POST ${RobotAgent.VOICE_TEST_PATH}" ->
+                if (lamp != Lamp.Off) 409 to """{"ok":false,"reasons":["Not while the lamps are running"]}"""
+                else { voiceTests++; 200 to """{"ok":true,"reasons":[]}""" }
             "POST ${RobotAgent.STOP_PATH}", "POST ${RobotAgent.LAMP_OFF_PATH}" -> {
                 off("Stopped from a phone: " + (str(json, "reason") ?: "no reason given"))
                 200 to OK
@@ -136,6 +147,7 @@ class FakeAgent(
             """"sensor":{"mode":"${if (lamp == Lamp.Off) "off" else "on"}","person":$person,"mask":$mask,"lastSeenAgoMs":${lastSeenAt?.let { now - it } ?: "null"},"healthy":true},""" +
             """"robot":{"estop":${estop()},"moving":false,"battery":null,"charging":null},""" +
             """"ros":{"serial":true,"hostname":"${FakeRobot.HOSTNAME}"},"controller":${q(controller)},""" +
+            """"voice":{"volume":$voiceVolume,"floor":${RobotAgent.VOICE_FLOOR}},""" +
             """"faults":[${listOfNotNull("\"ESTOP\"".takeIf { estop() }, "\"PERSON\"".takeIf { person }).joinToString(",")}]}"""
     }
 

@@ -247,6 +247,9 @@ class RobotSession private constructor(private val app: Application) {
         prefs.edit().putInt(KEY_UV_MINUTES, saved.minutes).putInt(KEY_UV_DELAY, saved.delaySeconds).apply()
     }
 
+    /** Kept on the robot, not here: its safety app holds it for every phone. */
+    fun setVoiceVolume(percent: Int, thenTest: Boolean) = controller.setVoiceVolume(percent, thenTest)
+
     fun setLowBattery(percent: Int) {
         controller.setLowBattery(percent)
         prefs.edit().putInt(KEY_LOW_BATTERY, controller.state.value.lowBattery).apply()

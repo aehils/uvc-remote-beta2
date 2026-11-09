@@ -169,6 +169,8 @@ data class RemoteActions(
     val onDismissAlert: () -> Unit = {},
     val onUvSettings: (UvSettings) -> Unit = {},
     val onLowBattery: (Int) -> Unit = {},
+    /** The robot's voice, percent; true: then say the test line. */
+    val onVoiceVolume: (Int, Boolean) -> Unit = { _, _ -> },
     val onRunningSpeed: (Double?) -> Unit = {},
     val onDemoEstop: () -> Unit = {},
     val onDemoWifi: () -> Unit = {},
@@ -1759,6 +1761,9 @@ private fun SettingsTab(
     var editingAddress by rememberSaveable { mutableStateOf(false) }
     var editingSpeed by rememberSaveable { mutableStateOf(false) }
     var editingBattery by rememberSaveable { mutableStateOf(false) }
+    var editingVoice by rememberSaveable { mutableStateOf(false) }
+    // Only a safety app answering now, and new enough to have the setting.
+    val voice = state.agent?.takeIf { it.reachable }?.status
     Column(
         modifier
             .verticalScroll(rememberScrollState())
@@ -1789,6 +1794,15 @@ private fun SettingsTab(
                 R.drawable.ic_battery, "Low battery level",
                 trailing = { SettingValue("${state.lowBattery}%") },
             ) { editingBattery = true }
+            // Robots with a safety app only: it speaks the warnings, and keeps the level.
+            if (state.agent != null) {
+                GroupDivider()
+                SettingsRow(
+                    R.drawable.ic_volume, "Voice volume",
+                    enabled = voice?.voiceVolume != null,
+                    trailing = { SettingValue(voice?.voiceVolume?.let { "$it%" } ?: "—") },
+                ) { editingVoice = true }
+            }
             GroupDivider()
             SettingsRow(R.drawable.ic_tab_activity, "Activity log", onClick = onOpenActivity)
         }
@@ -1843,6 +1857,15 @@ private fun SettingsTab(
                 editingBattery = false
                 actions.onLowBattery(it)
             },
+        )
+    }
+    val voiceNow = voice?.voiceVolume
+    if (editingVoice && voiceNow != null) {
+        VoiceVolumeDialog(
+            current = voiceNow,
+            floor = voice?.voiceFloor ?: RobotAgent.VOICE_FLOOR,
+            onSet = actions.onVoiceVolume,
+            onClose = { editingVoice = false },
         )
     }
     if (editingAddress) {
@@ -2079,6 +2102,55 @@ private fun LowBatteryDialog(current: Int, onDismiss: () -> Unit, onSave: (Int) 
         },
         confirmButton = { TextButton(onClick = { onSave(percent) }) { Text("Save") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/**
+ * How loud the robot speaks its warnings. Play test sets the level on the robot and has it
+ * speak, so it's judged by ear where the robot stands; Cancel puts back the level it had.
+ */
+@Composable
+private fun VoiceVolumeDialog(current: Int, floor: Int, onSet: (Int, Boolean) -> Unit, onClose: () -> Unit) {
+    var percent by rememberSaveable { mutableStateOf(current) }
+    var tested by rememberSaveable { mutableStateOf(false) }
+    val cancel = { if (tested) onSet(current, false); onClose() }
+    AlertDialog(
+        onDismissRequest = cancel,
+        title = { Text("Voice volume") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text(
+                    "How loud the robot speaks its UV warnings. Never under $floor%, so a warning is always heard.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        onClick = { percent = (percent - 10).coerceAtLeast(floor) },
+                        enabled = percent > floor,
+                        shape = RoundedCornerShape(10.dp),
+                    ) { Text("−", fontSize = 20.sp) }
+                    Text(
+                        "$percent%",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontFamily = FontFamily.Monospace,
+                        textAlign = TextAlign.Center,
+                    )
+                    OutlinedButton(
+                        onClick = { percent = (percent + 10).coerceAtMost(100) },
+                        enabled = percent < 100,
+                        shape = RoundedCornerShape(10.dp),
+                    ) { Text("+", fontSize = 20.sp) }
+                }
+                OutlinedButton(
+                    onClick = { tested = true; onSet(percent, true) },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                ) { Text("Play test on the robot") }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSet(percent, false); onClose() }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = cancel) { Text("Cancel") } },
     )
 }
 

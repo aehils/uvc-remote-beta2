@@ -58,6 +58,7 @@ class MainActivity : ComponentActivity() {
             onDismissAlert = c::dismissAlert,
             onUvSettings = session::setUvSettings,
             onLowBattery = session::setLowBattery,
+            onVoiceVolume = session::setVoiceVolume,
             onRunningSpeed = session::setRunningSpeed,
             onDemoEstop = c::demoToggleEstop,
             onDemoWifi = c::demoToggleWifi,

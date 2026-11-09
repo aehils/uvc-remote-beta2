@@ -103,4 +103,15 @@ class RobotAgentTest {
     fun noHostnameNoSearch() = runBlocking {
         assertNull(AgentFinder.find(null, demo = false, last = null, nsd = { error("not asked") }, scan = { error("not asked") }, info = { error("not asked") }))
     }
+
+    @Test
+    fun voiceVolumeIsReadWhenTheAgentHasIt() {
+        val old = """{"api":1,"lamp":{"state":"off"},"faults":[]}"""
+        assertNull(RobotAgent.parseState(old)!!.voiceVolume)
+        val s = RobotAgent.parseState("""{"api":1,"lamp":{"state":"off"},"faults":[],"voice":{"volume":45,"floor":30}}""")!!
+        assertEquals(45, s.voiceVolume)
+        assertEquals(30, s.voiceFloor)
+        assertEquals(30, RobotAgent.parseVoiceVolume("""{"ok":true,"reasons":[],"voiceVolume":30}"""))
+        assertNull(RobotAgent.parseVoiceVolume("""{"ok":false}"""))
+    }
 }

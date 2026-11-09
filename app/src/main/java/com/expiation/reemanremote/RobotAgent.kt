@@ -22,6 +22,11 @@ object RobotAgent {
     const val LAMP_OFF_PATH = "/v1/lamp/off"
     const val LEASE_PATH = "/v1/lease"
     const val STOP_PATH = "/v1/stop"
+    const val SETTINGS_PATH = "/v1/settings"
+    const val VOICE_TEST_PATH = "/v1/voice/test"
+
+    /** The agent's floor for [AgentStatus.voiceVolume] when an older one doesn't say. */
+    const val VOICE_FLOOR = 30
 
     /** What a fake agent calls itself in /v1/info: the only kind DEMO mode will talk to. */
     const val FAKE_VERSION = "fake"
@@ -76,6 +81,7 @@ object RobotAgent {
         val sensor = o.optJSONObject("sensor") ?: JSONObject()
         val robot = o.optJSONObject("robot") ?: JSONObject()
         val faults = o.optJSONArray("faults")
+        val voice = o.optJSONObject("voice") ?: JSONObject()
         AgentStatus(
             api = o.optInt("api", 0),
             lamp = AgentLamp.of(lamp.getString("state")),
@@ -93,6 +99,8 @@ object RobotAgent {
             battery = robot.optIntOrNull("battery"),
             controller = o.optStringOrNull("controller"),
             faults = if (faults == null) emptyList() else (0 until faults.length()).map { faults.getString(it) },
+            voiceVolume = voice.optIntOrNull("volume"),
+            voiceFloor = voice.optIntOrNull("floor"),
         )
     }.getOrNull()
 
@@ -106,6 +114,13 @@ object RobotAgent {
         JSONObject().put("forMs", forMs).put("countdownMs", countdownMs).put("requestId", requestId).put("controller", controller).toString()
 
     fun controllerJson(controller: String): String = JSONObject().put("controller", controller).toString()
+
+    /** POST /v1/settings with only the voice's volume; [controller] so it's allowed during this phone's routine. */
+    fun voiceVolumeJson(percent: Int, controller: String): String =
+        JSONObject().put("voiceVolume", percent).put("controller", controller).toString()
+
+    /** The volume the agent settled on (it floors it), from a /v1/settings reply. */
+    fun parseVoiceVolume(body: String): Int? = runCatching { JSONObject(body).getInt("voiceVolume") }.getOrNull()
 
     fun reasonJson(reason: String): String = JSONObject().put("reason", reason).toString()
 
@@ -161,6 +176,9 @@ data class AgentStatus(
     val battery: Int?,
     val controller: String?,
     val faults: List<String>,
+    /** The spoken warnings' loudness, percent, and the agent's floor under it. Null from an agent without the setting. */
+    val voiceVolume: Int? = null,
+    val voiceFloor: Int? = null,
 )
 
 /**
