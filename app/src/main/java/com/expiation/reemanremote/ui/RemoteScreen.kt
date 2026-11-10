@@ -1990,6 +1990,9 @@ private fun RobotCard(state: RemoteState, actions: RemoteActions) {
             )
         }
         if (!state.demo && !state.connected) RobotSearch(state, actions)
+        if (state.connected) state.agent?.connectionHelp?.let {
+            Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -2405,6 +2408,8 @@ private fun AgentInfoSection(agent: AgentView, demo: Boolean) {
                 else -> "Not answering"
             },
         )
+        agent.connectionHelp?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+        if (!agent.reachable && s != null) Text("Readings below are from the last connection.", style = MaterialTheme.typography.bodySmall)
         InfoRow("Version", agent.info?.let { "${it.version} · API ${it.api}" } ?: "—", mono = true)
         if (!agent.inApp && (!demo || agent.address != null)) InfoRow("Address", agent.address ?: "—", mono = true)
         // "—" until it has answered; no row from an agent that answers without it (before E10).

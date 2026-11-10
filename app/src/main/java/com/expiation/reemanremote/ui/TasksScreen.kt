@@ -133,7 +133,7 @@ internal fun rightNow(state: RemoteState): Now {
                 link is Link.Disconnected && link.lastError != null -> "Not connected"
                 else -> "Connecting …"
             },
-            "Tap to open Settings",
+            "Check power and Wi-Fi. Tap to open Settings.",
         )
         state.estop == EStop.PRESSED -> Now(Tone.DANGER, "E-stop pressed", null)
         uv is Uv.Countdown -> Now(
@@ -183,12 +183,16 @@ internal fun rightNow(state: RemoteState): Now {
         charge?.state == "going" -> Now(Tone.BUSY, "Going to charge", charge.reason?.takeIf { it != "Going to charge" })
         charge?.state == "warning" -> Now(Tone.BUSY, "About to go to charge", charge.reason)
         !state.still -> Now(Tone.BUSY, "Moving", "Not from this phone")
-        // Lost the Robot Controller: keep showing the status while the phone retries; only once it
-        // has kept failing for AGENT_OFFLINE_MS, say so (UV and routines are refused meanwhile anyway).
-        agent != null && agent.offline -> Now(Tone.BUSY, "Can't reach Robot Controller", null, retry = true)
+        // Unknown controller state must not look ready while discovery retries.
+        agent != null && agent.offline -> Now(Tone.OFFLINE, "Can't reach Robot Controller",
+            "Check the robot screen and Wi-Fi, then tap Retry.", retry = true)
+        agent == null || !agent.reachable -> Now(Tone.OFFLINE, "Connecting to Robot Controller",
+            "Retrying automatically. Wait a moment.")
+        state.uvProblem == DriveController.AGENT_WRONG_VERSION -> Now(Tone.BUSY, "App update needed",
+            "Install the latest phone and Robot apps.")
         // At rest. E10's weak head-unit Wi-Fi is often true on site, so it's only a quiet line under these.
         else -> atRest(state, report, battery).copy(
-            note = "Wi-Fi is weak".takeIf { said?.wifi?.weak == true }, // its dBm is in Settings, Robot information
+            note = "Weak Wi-Fi · move closer to the router".takeIf { said?.wifi?.weak == true }, // its dBm is in Settings, Robot information
         )
     }
 }
@@ -198,7 +202,7 @@ private fun atRest(state: RemoteState, report: TaskReport?, battery: Int?): Now 
     val agent = state.agent
     return when {
         agent != null && agent.reachable && agent.needsPairing ->
-            Now(Tone.BUSY, "Pair with this robot", "Needed for UV and routines", pair = true)
+            Now(Tone.BUSY, "Pair with this robot", "Tap Pair now and enter the code on the robot screen.", pair = true)
         report != null -> Now(
             if (report.good) Tone.READY else Tone.BUSY,
             report.title,

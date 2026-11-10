@@ -4,7 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** What reports saved before the Robot Controller was renamed (2026-11-09) still say. */
-private val REASONS_BEFORE_RENAME = setOf("lost the robot's safety app", "Can't reach the robot's safety app, UV unavailable")
+private val REASONS_BEFORE_RENAME = setOf("Can't reach the Robot Controller · UV unavailable", "lost the robot's safety app", "Can't reach the robot's safety app, UV unavailable")
 
 // ---------------------------------------------------------------------- disinfection tasks
 
@@ -245,7 +245,7 @@ data class TaskReport(
                 r.startsWith("e-stop") -> "Release the e-stop when it's safe, then run it again."
                 r == "lost connection" || r.startsWith("ON ") -> "Check the phone is on the robot's Wi-Fi, then run it again."
                 r == "lost the Robot Controller" || r == DriveController.CANT_REACH_AGENT || r in REASONS_BEFORE_RENAME ->
-                    "Check the robot's screen shows the Robot Controller, then run it again."
+                    "Open Robot on the robot's screen, check both Wi-Fi connections, then tap Retry on Tasks before starting again."
                 r.startsWith("Lost the phone") -> "Keep the phone on the robot's Wi-Fi while the lamps are on, then run it again."
                 r.startsWith("refused: ") -> "Sort out what the robot reported, then run it again."
                 r == "the robot moved" -> "Make sure nothing moves the robot while the lamps are on, then run it again."
