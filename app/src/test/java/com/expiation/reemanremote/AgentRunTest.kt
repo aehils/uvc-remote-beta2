@@ -14,7 +14,7 @@ import org.junit.Test
 import java.util.Random
 
 /**
- * UV runs through the robot's safety app, end to end against the DEMO robot and its in-app fake
+ * UV runs through the Robot Controller, end to end against the DEMO robot and its in-app fake
  * agent, in virtual time: the agent's countdown and timer, the lease, fail closed, person seen.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -115,7 +115,7 @@ class AgentRunTest {
         advanceTimeBy(20_000)
         assertNull(c.state.value.uv)
         assertFalse(lit(c))
-        // A route test keeps its lamps off, so it needs no safety app.
+        // A route test keeps its lamps off, so it needs no Robot Controller.
         assertNull(c.state.value.routeTestProblem)
         c.demoToggleAgent()
         waitFor(c, maxMs = 3_000) { it.canDisinfect }

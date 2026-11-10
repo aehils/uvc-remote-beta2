@@ -37,7 +37,7 @@ import kotlin.math.sqrt
  *
  * @param clock monotonic time in nanoseconds
  * @param realistic adds request latency and speed noise; off for deterministic tests
- * @param withAgent the robot has a safety app on its head unit (see [FakeAgent]), answering /v1/
+ * @param withAgent the robot has a Robot Controller on its head unit (see [FakeAgent]), answering /v1/
  */
 class FakeRobot(
     private val clock: () -> Long = System::nanoTime,
@@ -51,7 +51,7 @@ class FakeRobot(
     /** What /reeman/hostname answers (see [RobotName]); tests give fakes different ones. */
     var hostname = HOSTNAME
 
-    /** The robot's safety app, if it has one: it switches the lamps through the same supply as /cmd/external_power_supply. */
+    /** The Robot Controller, if it has one: it switches the lamps through the same supply as /cmd/external_power_supply. */
     val agent: FakeAgent? = if (withAgent) FakeAgent(setLamps = ::setUvSupply, estop = { estopPressed }) else null
 
     /** One planned step: ramp up, cruise, ramp down, like the firmware's own planner. */
@@ -593,13 +593,13 @@ class FakeRobot(
 
     // ------------------------------------------------------------------ demo controls
 
-    /** The safety app stops answering, or answers again (DEMO controls). */
+    /** The Robot Controller stops answering, or answers again (DEMO controls). */
     @get:Synchronized @set:Synchronized
     var isAgentDown: Boolean
         get() = agent?.down == true
         set(value) { agent?.down = value }
 
-    /** Someone moves near the robot: its safety app pauses the lamps. */
+    /** Someone moves near the robot: its Robot Controller pauses the lamps. */
     @Synchronized
     fun personNearRobot() {
         agent?.personSeen(clock() / 1_000_000)

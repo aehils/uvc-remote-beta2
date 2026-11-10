@@ -3,6 +3,9 @@ package com.expiation.reemanremote
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** What reports saved before the Robot Controller was renamed (2026-11-09) still say. */
+private val REASONS_BEFORE_RENAME = setOf("lost the robot's safety app", "Can't reach the robot's safety app, UV unavailable")
+
 // ---------------------------------------------------------------------- disinfection tasks
 
 /** One stop of a task: a saved point, and how long the UV lamps stay on there. */
@@ -162,7 +165,7 @@ enum class StopOutcome { DONE, SKIPPED, NOT_REACHED, INTERRUPTED }
 
 /**
  * What became of one stop in one round. [uvMs] is how long the lamps were on there; [personPauses]
- * how many times the robot's safety app paused them because something moved.
+ * how many times the Robot Controller paused them because something moved.
  */
 data class StopResult(val round: Int, val point: String, val outcome: StopOutcome, val uvMs: Long = 0, val personPauses: Int = 0)
 
@@ -179,7 +182,7 @@ data class TaskRun(
     val uvLeftMs: Long? = null,
     /** UV time this stop has already had before a pause. */
     val uvDoneMs: Long = 0,
-    /** Times the robot's safety app has paused this stop's lamps because something moved. */
+    /** Times the Robot Controller has paused this stop's lamps because something moved. */
     val personPauses: Int = 0,
 ) {
     val stop: TaskStop get() = task.stops[index]
@@ -233,8 +236,8 @@ data class TaskReport(
                 r.startsWith("battery low") -> "Charge the robot, then run it again."
                 r.startsWith("e-stop") -> "Release the e-stop when it's safe, then run it again."
                 r == "lost connection" || r.startsWith("ON ") -> "Check the phone is on the robot's Wi-Fi, then run it again."
-                r == "lost the robot's safety app" || r == DriveController.CANT_REACH_AGENT ->
-                    "Check the robot's screen shows its safety app, then run it again."
+                r == "lost the Robot Controller" || r == DriveController.CANT_REACH_AGENT || r in REASONS_BEFORE_RENAME ->
+                    "Check the robot's screen shows the Robot Controller, then run it again."
                 r.startsWith("Lost the phone") -> "Keep the phone on the robot's Wi-Fi while the lamps are on, then run it again."
                 r.startsWith("refused: ") -> "Sort out what the robot reported, then run it again."
                 r == "the robot moved" -> "Make sure nothing moves the robot while the lamps are on, then run it again."

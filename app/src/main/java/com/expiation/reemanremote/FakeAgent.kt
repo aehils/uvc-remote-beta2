@@ -1,7 +1,7 @@
 package com.expiation.reemanremote
 
 /**
- * DEMO mode's robot safety app, inside [FakeRobot]: enough of the agent's HTTP calls (see
+ * DEMO mode's Robot Controller, inside [FakeRobot]: enough of the agent's HTTP calls (see
  * [RobotAgent]) to show every screen, and nothing more. A countdown, a timer, the phone's lease,
  * the e-stop and a person seen on demand. The real logic, and its tests, are in the agent's own
  * repository; its fake on a laptop is the one to test against.
@@ -41,7 +41,7 @@ class FakeAgent(
     private var codeUntil = 0L
     private val tokens = HashSet<String>()
 
-    /** The safety app has stopped answering (DEMO controls). */
+    /** The Robot Controller has stopped answering (DEMO controls). */
     var down = false
 
     val lampsOn: Boolean get() = lamp is Lamp.On

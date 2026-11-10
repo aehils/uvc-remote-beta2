@@ -216,7 +216,7 @@ data class AgentView(
     val needsPairing: Boolean get() = info?.pairingRequired == true && !paired
 }
 
-/** Pairing this phone with the robot's safety app, as the pairing dialog shows it. */
+/** Pairing this phone with the Robot Controller, as the pairing dialog shows it. */
 sealed interface PairStep {
     data object Idle : PairStep
     /** Asking the robot to show a code. */
@@ -230,14 +230,14 @@ sealed interface PairStep {
     data class Problem(val text: String) : PairStep
 }
 
-/** A safety app found on the network, at [address] ("ip:port"). */
+/** A Robot Controller found on the network, at [address] ("ip:port"). */
 data class FoundAgent(val address: String, val info: AgentInfo)
 
 /** One `_robotagent._tcp` service the phone's NSD resolved. [host] is its TXT record: missing if the agent started before ROS answered. */
 data class NsdHit(val address: String, val host: String?)
 
 /**
- * Finds a robot's safety app: at its last known address first (one quick question), then by NSD
+ * Finds a robot's Robot Controller: at its last known address first (one quick question), then by NSD
  * (`_robotagent._tcp`), then by asking every address on the phone's network. Whatever answers
  * must say, in /v1/info, that it is on this robot ([hostname], the navigation computer's own
  * name), so an agent can never be taken for another robot's. DEMO mode takes only a fake agent

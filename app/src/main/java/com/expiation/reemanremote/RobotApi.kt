@@ -26,7 +26,7 @@ class RobotApi private constructor(host: String, private val fake: FakeRobot?) {
     @Volatile
     var host: String = host
 
-    /** The robot's safety app's pairing token, sent as `Authorization: Bearer`; null: none. */
+    /** The Robot Controller's pairing token, sent as `Authorization: Bearer`; null: none. */
     @Volatile
     var token: String? = null
 

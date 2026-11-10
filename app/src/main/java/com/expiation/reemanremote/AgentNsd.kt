@@ -10,7 +10,7 @@ import java.net.Inet4Address
 import kotlin.coroutines.resume
 
 /**
- * Browses the phone's Wi-Fi for robot safety apps (`_robotagent._tcp`, see [RobotAgent]) with
+ * Browses the phone's Wi-Fi for Robot Controllers (`_robotagent._tcp`, see [RobotAgent]) with
  * Android's NSD, and resolves each to its address and its TXT `host` (the robot it is on).
  * [AgentFinder] decides which, if any, is this robot's.
  */

@@ -193,7 +193,7 @@ sealed interface Uv {
     data class Starting(override val point: String?, val forMs: Long) : Uv
 
     /**
-     * The robot accepted ON at [since]; OFF is sent at [until]. Run by the robot's safety app,
+     * The robot accepted ON at [since]; OFF is sent at [until]. Run by the Robot Controller,
      * both follow its timer: [until] - [since] is the whole lamp time asked for.
      */
     data class On(override val point: String?, val since: Long, val until: Long) : Uv
@@ -215,7 +215,7 @@ data class DemoStatus(
     val robotBusy: Boolean,
     /** The simulated UV lamps (the external supply in [DriveController.UV_SUPPLY]) are on. */
     val uvOn: Boolean,
-    /** The DEMO robot's safety app has stopped answering. */
+    /** The DEMO robot's Robot Controller has stopped answering. */
     val agentDown: Boolean = false,
 )
 
@@ -297,11 +297,11 @@ data class RemoteState(
     val taskRun: TaskRun? = null,
     /** How the last task ended, until dismissed or the next one starts. */
     val taskReport: TaskReport? = null,
-    /** The robot's safety app (see [RobotAgent]); null for a robot never seen with one. */
+    /** The Robot Controller (see [RobotAgent]); null for a robot never seen with one. */
     val agent: AgentView? = null,
-    /** Why the UV lamps can't come on now, from the robot's safety app, or null. */
+    /** Why the UV lamps can't come on now, from the Robot Controller, or null. */
     val uvProblem: String? = null,
-    /** The run in [uv] is timed by the robot's safety app, not by the phone. */
+    /** The run in [uv] is timed by the Robot Controller, not by the phone. */
     val uvByAgent: Boolean = false,
 ) {
     val connected: Boolean get() = link is Link.Connected
@@ -372,7 +372,7 @@ data class RemoteState(
      */
     val canDriveByHand: Boolean get() = canDrive && !docked
 
-    /** Starting UV disinfection takes the same interlock as a trip, and the robot's safety app saying yes. */
+    /** Starting UV disinfection takes the same interlock as a trip, and the Robot Controller saying yes. */
     val canDisinfect: Boolean get() = canNavigate && uvProblem == null
 
     /** The robot is scanning a map (new, or extending the one in use). */
@@ -471,19 +471,19 @@ class DriveController(
      */
     private val search: (suspend (lastHost: String, hostname: String?) -> SearchResult)? = null,
     robotName: String? = null,
-    /** This phone, to the robot's safety app: only the phone that started a lamp run can renew its lease. */
+    /** This phone, to the Robot Controller: only the phone that started a lamp run can renew its lease. */
     private val phoneId: String = "phone",
     /**
-     * Finds the robot's safety app (see [AgentFinder]): the robot's hostname, DEMO or not, and
+     * Finds the Robot Controller (see [AgentFinder]): the robot's hostname, DEMO or not, and
      * the address it last answered at. Null: never search.
      */
     private val agentSearch: (suspend (hostname: String?, demo: Boolean, last: String?) -> FoundAgent?)? = null,
     /**
-     * Robots seen with a safety app (hostname to its last address). The lamps of these only ever
+     * Robots seen with a Robot Controller (hostname to its last address). The lamps of these only ever
      * come on through it: it can't be reached, no UV (see [RemoteState.uvProblem]).
      */
     knownAgents: Map<String, String> = emptyMap(),
-    /** Pairing tokens for robots' safety apps, by robot hostname. Kept by [saveAgentToken]; never in the state or the log. */
+    /** Pairing tokens for robots' Robot Controllers, by robot hostname. Kept by [saveAgentToken]; never in the state or the log. */
     agentTokens: Map<String, String> = emptyMap(),
     private val saveAgentToken: (hostname: String, token: String?) -> Unit = { _, _ -> },
 ) {
@@ -616,7 +616,7 @@ class DriveController(
     private var pendingPoints: List<Waypoint> = emptyList()
     private var pendingWalls: List<Wall> = emptyList()
 
-    // The robot's safety app (see [RobotAgent]): where it is, what it said last, and the lamp run
+    // The Robot Controller (see [RobotAgent]): where it is, what it said last, and the lamp run
     // this phone asked it for. One loop reads it (see [agentLoop]), another renews the lease.
     private class AgentTarget(val api: RobotApi, val address: String, val inApp: Boolean)
 
@@ -819,7 +819,7 @@ class DriveController(
     /** The phone joined, left or changed Wi-Fi: if the robot isn't answering, look for it now. */
     fun networkChanged() {
         if (link is Link.Disconnected) findRobot()
-        // The safety app may be somewhere else on this network: look again soon.
+        // The Robot Controller may be somewhere else on this network: look again soon.
         agentSearchedAt = Long.MIN_VALUE / 2
         demoNetworkSearched = false
     }
@@ -954,7 +954,7 @@ class DriveController(
     // ------------------------------------------------------------------ polling
 
     private suspend fun CoroutineScope.pollLoop() {
-        // The robot's safety app, on its own loop: a slow answer from one never holds up the other.
+        // The Robot Controller, on its own loop: a slow answer from one never holds up the other.
         val agentPoll = launch { agentLoop() }
         var tick = 0
         while (isActive) {
@@ -1895,11 +1895,11 @@ class DriveController(
     private fun sendStop(turnFirst: Boolean, label: String, report: Boolean = true, jog: Boolean = false) {
         val a = api
         val charging = onPile && chargeFlag == CHARGE_DOCKED && abs(vx) <= MOVING_VX && abs(vth) <= MOVING_VTH
-        // The robot's safety app too, whoever started its run. Queued behind any ON on its way.
+        // The Robot Controller too, whoever started its run. Queued behind any ON on its way.
         agentTarget?.let { t ->
             scope.launch {
                 val r = agentLock.withLock { t.api.post(RobotAgent.STOP_PATH, RobotAgent.reasonJson(label)) }
-                if (!r.ok) log("$label: safety app not reached (${r.error})")
+                if (!r.ok) log("$label: Robot Controller not reached (${r.error})")
             }
         }
         scope.launch {
@@ -2184,7 +2184,7 @@ class DriveController(
         if (current === step) phase = StepPhase.Idle
     }
 
-    // ------------------------------------------------------------------ the robot's safety app
+    // ------------------------------------------------------------------ the Robot Controller
 
     /**
      * The robot's lamps only ever come on through its safety app: it has one now, or has been
@@ -2211,7 +2211,7 @@ class DriveController(
     }
 
     /**
-     * Reads the safety app about 5 times a second, and renews this phone's lease on its run every
+     * Reads the Robot Controller about 5 times a second, and renews this phone's lease on its run every
      * [AGENT_LEASE_MS]. Runs as long as [pollLoop], in the background too. A live stream will
      * replace the reading here, and only here.
      */
@@ -2237,7 +2237,7 @@ class DriveController(
         if (run.acceptedAt == null) return
         within.launch {
             val r = t.api.post(RobotAgent.LEASE_PATH, RobotAgent.controllerJson(phoneId))
-            if (agentRun === run && r.httpCode == 409) logDetail("lease refused: the safety app has no run of this phone's")
+            if (agentRun === run && r.httpCode == 409) logDetail("lease refused: the Robot Controller has no run of this phone's")
         }
     }
 
@@ -2290,7 +2290,7 @@ class DriveController(
         agentSetAt = now()
         if (t.inApp) return
         if (!demo) robotName?.let { knownAgents[it] = t.address }
-        log("Safety app found at ${t.address}" + (info?.let { ", version ${it.version}" } ?: ""))
+        log("Robot Controller found at ${t.address}" + (info?.let { ", version ${it.version}" } ?: ""))
     }
 
     private suspend fun readAgent(t: AgentTarget) {
@@ -2301,7 +2301,7 @@ class DriveController(
             if (agentTarget !== t) return
             val info = if (i.ok) RobotAgent.parseInfo(i.body) else null
             if (info != null && !t.inApp && !AgentFinder.accepts(info, robotName, demo)) {
-                log("The safety app at ${t.address} isn't this robot's any more. Looking for it.")
+                log("The Robot Controller at ${t.address} isn't this robot's any more. Looking for it.")
                 agentTarget = null
                 agentReachable = false
                 agentSearchedAt = Long.MIN_VALUE / 2
@@ -2315,7 +2315,7 @@ class DriveController(
         val status = if (r.ok) RobotAgent.parseState(r.body) else null
         val n = now()
         if (status != null) {
-            if (!agentReachable) log(if (agentOkAt == 0L) "Connected to the robot's safety app" else "The robot's safety app answers again")
+            if (!agentReachable) log(if (agentOkAt == 0L) "Connected to the Robot Controller" else "The Robot Controller answers again")
             agentReachable = true
             agentOkAt = n
             agentStatus = status
@@ -2349,7 +2349,7 @@ class DriveController(
         val where = point?.let { " at $it" } ?: ""
         val t = now()
         if (!mine) {
-            val reason = s.lastOffReason ?: "the robot's safety app switched the lamps off"
+            val reason = s.lastOffReason ?: "the Robot Controller switched the lamps off"
             // Its own OFF is its business; telling it again would only write over its reason.
             return endDisinfection(reason, completed = reason == RobotAgent.TIME_UP, agentEnded = true)
         }
@@ -2380,7 +2380,7 @@ class DriveController(
     }
 
     /**
-     * Asks the safety app for a run: [countdownMs] to leave the room, then [forMs] of lamps. Its
+     * Asks the Robot Controller for a run: [countdownMs] to leave the room, then [forMs] of lamps. Its
      * yes means accepted, not lit: from then on the run on screen is what it reports.
      */
     private fun askAgent(point: String?, forMs: Long, countdownMs: Long) {
@@ -2395,7 +2395,7 @@ class DriveController(
         agentRun = run
         uvForMs = forMs
         uv = Uv.Starting(point, forMs)
-        log("UV: asking the robot's safety app for ${uvTimeText(forMs)} of lamps, on in ${countdownMs / 1000} s")
+        log("UV: asking the Robot Controller for ${uvTimeText(forMs)} of lamps, on in ${countdownMs / 1000} s")
         val json = RobotAgent.lampOnJson(forMs, countdownMs, run.requestId, phoneId)
         scope.launch {
             var r = agentLock.withLock { t.api.post(RobotAgent.LAMP_ON_PATH, json) }
@@ -2410,7 +2410,7 @@ class DriveController(
                 r.ok -> {
                     run.acceptedAt = now()
                     uv = Uv.Countdown(point, now() + countdownMs, forMs)
-                    log("Safety app accepted: UV lamps on in ${countdownMs / 1000} s. Leave the room.")
+                    log("Robot Controller accepted: UV lamps on in ${countdownMs / 1000} s. Leave the room.")
                 }
                 r.httpCode in 400..499 -> {
                     if (r.httpCode == 401) keepToken(t, null) // forgotten by the robot: pair again
@@ -2500,7 +2500,7 @@ class DriveController(
             pairStep = when {
                 token != null -> {
                     keepToken(t, token)
-                    log("Paired with the robot's safety app")
+                    log("Paired with the Robot Controller")
                     PairStep.Paired
                 }
                 RobotAgent.codeExpired(r.body) -> PairStep.Expired
@@ -2568,13 +2568,13 @@ class DriveController(
     }
 
     /**
-     * The robot's spoken warnings, [percent] loud. Kept on the robot by its safety app, which
+     * The robot's spoken warnings, [percent] loud. Kept on the robot by its Robot Controller, which
      * floors it ([AgentStatus.voiceFloor]): the phone can make them quieter, never silent. With
      * [thenTest] the robot then says its test line at that level.
      */
     fun setVoiceVolume(percent: Int, thenTest: Boolean = false) {
         val t = agentTarget
-        if (t == null || !agentReachable) { log("Voice volume: safety app not reached"); publish(); return }
+        if (t == null || !agentReachable) { log("Voice volume: Robot Controller not reached"); publish(); return }
         scope.launch {
             val r = agentLock.withLock { t.api.post(RobotAgent.SETTINGS_PATH, RobotAgent.voiceVolumeJson(percent, phoneId)) }
             val set = if (r.ok) RobotAgent.parseVoiceVolume(r.body) else null
@@ -2587,14 +2587,14 @@ class DriveController(
                     if (r.httpCode == 401) keepToken(t, null)
                     log("Voice volume refused: " + RobotAgent.parseReasons(r.body).joinToString("; "))
                 }
-                else -> log("Voice volume: safety app not reached (${r.error})")
+                else -> log("Voice volume: Robot Controller not reached (${r.error})")
             }
             if (set != null && thenTest) {
                 val v = agentLock.withLock { t.api.post(RobotAgent.VOICE_TEST_PATH, "{}") }
                 log(when {
                     v.ok -> "Voice test at $set%"
                     v.httpCode in 400..499 -> "Voice test refused: " + RobotAgent.parseReasons(v.body).joinToString("; ")
-                    else -> "Voice test: safety app not reached (${v.error})"
+                    else -> "Voice test: Robot Controller not reached (${v.error})"
                 })
             }
             publish()
@@ -2723,7 +2723,7 @@ class DriveController(
     }
 
     /**
-     * OFF goes every way: to the robot's safety app if it has one, and to the navigation computer
+     * OFF goes every way: to the Robot Controller if it has one, and to the navigation computer
      * (/cmd/external_power_supply), so one path down still leaves the other. Either accepting it
      * is enough.
      */
@@ -2749,15 +2749,15 @@ class DriveController(
                     log(
                         "UV lamps: " + when {
                             ar == null -> "robot accepted OFF"
-                            robotOk && ar.ok -> "robot and safety app accepted OFF"
-                            robotOk -> "robot accepted OFF (safety app: ${ar.error})"
-                            else -> "safety app accepted OFF (robot: $robotProblem)"
+                            robotOk && ar.ok -> "robot and Robot Controller accepted OFF"
+                            robotOk -> "robot accepted OFF (Robot Controller: ${ar.error})"
+                            else -> "Robot Controller accepted OFF (robot: $robotProblem)"
                         }
                     )
                 }
                 // One line, not one per retry. The banner stays up until OFF is accepted.
                 lampsOffFailures++ == 0 -> log(
-                    "UV lamps: OFF $robotProblem" + (ar?.let { ", safety app ${it.error}" } ?: "") +
+                    "UV lamps: OFF $robotProblem" + (ar?.let { ", Robot Controller ${it.error}" } ?: "") +
                         ". THE LAMPS MAY STILL BE ON. Retrying."
                 )
             }
@@ -3514,7 +3514,7 @@ class DriveController(
 
     fun demoToggleAgent() {
         demoRobot.isAgentDown = !demoRobot.isAgentDown
-        log(if (demoRobot.isAgentDown) "Simulated safety app down" else "Simulated safety app back")
+        log(if (demoRobot.isAgentDown) "Simulated Robot Controller down" else "Simulated Robot Controller back")
         publish()
     }
 
@@ -3757,7 +3757,7 @@ class DriveController(
         const val MAX_UV_DELAY_S = 120
         const val LAMPS_OFF_RETRY_MS = 1_500L
 
-        // ---- The robot's safety app (see RobotAgent).
+        // ---- The Robot Controller (see RobotAgent).
         const val AGENT_POLL_MS = 200L              // its state, about 5 times a second
         const val AGENT_LEASE_MS = 2_000L           // renewed this often; it gives up on the phone after 5 s
         const val AGENT_LOST_MS = 3_000L            // no answer this long: the run ends here too
@@ -3768,9 +3768,9 @@ class DriveController(
         const val AGENT_OVERRUN_MS = 15_000L        // lamps seen on this long past their time: the phone ends it
         const val CANT_REACH_AGENT = "Can't reach the robot's safety app, UV unavailable"
         const val PAIR_FIRST = "Pair this phone with the robot first: Settings, Pair with this robot. UV unavailable"
-        const val AGENT_NOT_ANSWERING = "Can't reach the robot's safety app"
-        const val AGENT_WRONG_VERSION = "Update this app: the robot's safety app is a different version. UV unavailable"
-        private const val LOST_AGENT = "lost the robot's safety app"
+        const val AGENT_NOT_ANSWERING = "Can't reach the Robot Controller"
+        const val AGENT_WRONG_VERSION = "Update this app: the Robot Controller is a different version. UV unavailable"
+        private const val LOST_AGENT = "lost the Robot Controller"
         private const val IN_APP = "in the app"
         // ---- Disinfection tasks (see startTask). The robot's own head-unit app, always running,
         // sends it to charge by itself at its "low_power" setting: 20% on this robot (its prefs,

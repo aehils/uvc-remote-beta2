@@ -1662,12 +1662,12 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
 
             state.agent?.let { agent ->
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                SectionLabel("Safety app")
+                SectionLabel("Robot Controller")
                 Text(
                     if (agent.inApp) "In the app" else "Fake agent at ${agent.address ?: "—"}",
                     style = MaterialTheme.typography.bodyMedium,
                 )
-                DemoToggle("Safety app down", "It stops answering, as if it had crashed. UV is refused.", demo.agentDown, actions.onDemoAgentDown, enabled = agent.inApp)
+                DemoToggle("Robot Controller down", "It stops answering, as if it had crashed. UV is refused.", demo.agentDown, actions.onDemoAgentDown, enabled = agent.inApp)
                 OutlinedButton(
                     actions.onDemoMovement,
                     Modifier.fillMaxWidth(),
@@ -1767,7 +1767,7 @@ private fun SettingsTab(
     var editingBattery by rememberSaveable { mutableStateOf(false) }
     var editingVoice by rememberSaveable { mutableStateOf(false) }
     var pairing by rememberSaveable { mutableStateOf(false) }
-    // Only a safety app answering now, and new enough to have the setting.
+    // Only a Robot Controller answering now, and new enough to have the setting.
     val voice = state.agent?.takeIf { it.reachable }?.status
     Column(
         modifier
@@ -1779,7 +1779,7 @@ private fun SettingsTab(
         RobotCard(state, actions)
         SettingsGroup {
             SettingsRow(R.drawable.ic_info, "Robot information", onClick = onOpenRobotInfo)
-            // Robots with a safety app: pairing is how this phone may start UV on one that asks for it.
+            // Robots with a Robot Controller: pairing is how this phone may start UV on one that asks for it.
             state.agent?.let { agent ->
                 GroupDivider()
                 SettingsRow(
@@ -1814,7 +1814,7 @@ private fun SettingsTab(
                 R.drawable.ic_battery, "Low battery level",
                 trailing = { SettingValue("${state.lowBattery}%") },
             ) { editingBattery = true }
-            // Robots with a safety app only: it speaks the warnings, and keeps the level.
+            // Robots with a Robot Controller only: it speaks the warnings, and keeps the level.
             if (state.agent != null) {
                 GroupDivider()
                 SettingsRow(
@@ -2346,11 +2346,11 @@ private fun RobotInfo(state: RemoteState, modifier: Modifier) {
     }
 }
 
-/** The robot's safety app: is it answering, which version, its lamps and person sensor, what's wrong. */
+/** The Robot Controller: is it answering, which version, its lamps and person sensor, what's wrong. */
 @Composable
 private fun AgentInfoSection(agent: AgentView, demo: Boolean) {
     val s = agent.status
-    InfoSection("Safety app") {
+    InfoSection("Robot Controller") {
         InfoRow(
             "Safety app",
             when {

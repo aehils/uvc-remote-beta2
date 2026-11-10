@@ -7,7 +7,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Reading the robot safety app's replies, and finding the right one on a network. */
+/** Reading the Robot Controller's replies, and finding the right one on a network. */
 class RobotAgentTest {
 
     /** What the agent's `AgentState.toJson()` writes, mid-run. */
