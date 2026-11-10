@@ -22,6 +22,27 @@ class FakeAgentRoutineCheck {
 
     private fun say(line: String) = println("[routine check] $line")
 
+    /** The phone's list, in the phone's own JSON, is what the robot keeps for its screen, with its fingerprint. */
+    @Test
+    fun thePhonesRoutinesReachTheRobotAndItsFingerprintShows() = runBlocking {
+        assumeTrue("AGENT_URL not set", address != null)
+        val api = RobotApi(address!!)
+        val tasks = listOf(
+            DisinfectionTask("check-a", "Ward A", listOf(TaskStop("Bed 1", 2), TaskStop("Bed 2", 1)), delaySeconds = 30, rounds = 2, whenDone = WhenDone.STAY),
+            DisinfectionTask("check-b", "Ward B", listOf(TaskStop("Bed 2", 1))),
+        )
+        val rev = RobotAgent.routinesRev(tasks)
+        val r = api.post(RobotAgent.ROUTINES_REPLACE_PATH, RobotAgent.routinesReplaceJson(tasks, rev))
+        say("replace: ${r.httpCode} ${r.body}")
+        assertTrue(r.body, r.ok)
+        val s = RobotAgent.parseState(api.get(RobotAgent.STATE_PATH).body)!!
+        assertTrue(s.routinesSync)
+        assertEquals(rev, s.routinesRev)
+        val back = DisinfectionTask.listFromJson(org.json.JSONObject(api.get("/v1/routines").body).getJSONArray("routines").toString())
+        assertEquals(tasks.map { it.coerced() }, back)
+        assertTrue(api.post(RobotAgent.ROUTINES_REPLACE_PATH, RobotAgent.routinesReplaceJson(emptyList(), RobotAgent.routinesRev(emptyList()))).ok)
+    }
+
     @Test
     fun aRoutineStartsOnTheRobotIsFollowedAndEndsWithAReport() = runBlocking {
         assumeTrue("AGENT_URL not set", address != null)
@@ -35,7 +56,7 @@ class FakeAgentRoutineCheck {
         // The fake's simulated map, as the phone would send its own.
         val points = listOf(Waypoint("Bed 1", "normal", Pose(3.0, 2.0, 0.0)), Waypoint("Bed 2", "normal", Pose(3.0, 4.0, 0.0)))
         val task = DisinfectionTask.routeTest(points)
-        val r = api.post(RobotAgent.TASK_START_PATH, RobotAgent.taskStartJson(task, points, "charging_pile", "check-1", "phone-check"))
+        val r = api.post(RobotAgent.TASK_START_PATH, RobotAgent.taskStartJson(task, points, "charging_pile", "check-${System.currentTimeMillis()}", "phone-check"))
         say("start: ${r.httpCode} ${r.body}")
         assertTrue(r.body, r.ok)
 

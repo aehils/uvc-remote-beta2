@@ -703,7 +703,7 @@ class DriveControllerTest {
     @Test
     fun demoLogLinesAreTagged() = runTest {
         val c = ready()
-        assertTrue(c.state.value.log.all { "[DEMO]" in it })
+        assertTrue(c.state.value.log.filterNot { it.startsWith("——") }.all { "[DEMO]" in it }) // day headings aren't events
     }
 
     // ------------------------------------------------------------------ UV disinfection

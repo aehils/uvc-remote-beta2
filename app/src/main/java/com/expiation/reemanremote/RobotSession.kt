@@ -89,6 +89,7 @@ class RobotSession private constructor(private val app: Application) {
             search = ::searchWifi, robotName = prefs.getString(KEY_ROBOT_NAME, null),
             phoneId = phoneId(), agentSearch = ::searchAgent, knownAgents = knownAgents(),
             agentTokens = agentTokens(), saveAgentToken = ::saveAgentToken,
+            activityLog = ActivityLog(java.io.File(app.filesDir, ActivityLog.FILE_NAME)),
         )
         val defaults = UvSettings()
         controller.setUvSettings(
@@ -237,6 +238,7 @@ class RobotSession private constructor(private val app: Application) {
     fun askPairCode() = controller.askPairCode()
     fun sendPairCode(code: String) = controller.sendPairCode(code)
     fun endPairing() = controller.endPairing()
+    fun forgetPairing() = controller.forgetPairing()
 
     private fun knownAgents(): Map<String, String> {
         val o = runCatching { JSONObject(prefs.getString(KEY_AGENTS, null) ?: "{}") }.getOrElse { JSONObject() }

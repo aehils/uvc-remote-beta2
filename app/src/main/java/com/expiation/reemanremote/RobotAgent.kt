@@ -29,6 +29,10 @@ object RobotAgent {
     const val TASK_PAUSE_PATH = "/v1/task/pause"
     const val TASK_RESUME_PATH = "/v1/task/resume"
     const val TASK_END_PATH = "/v1/task/end"
+    const val ROUTINES_REPLACE_PATH = "/v1/routines/replace"
+
+    /** What `task.controller` says for a routine started on the robot's own screen. */
+    const val ROBOT_SCREEN = "robot-screen"
 
     /** The agent's floor for [AgentStatus.voiceVolume] when an older one doesn't say. */
     const val VOICE_FLOOR = 30
@@ -56,6 +60,8 @@ object RobotAgent {
         "SENSOR_FAULT" to "A base sensor reports a fault",
         "SENSOR_NO_ANSWER" to "The person sensor didn't switch on",
         "SENSOR_OFF" to "The person sensor is off",
+        "NO_POSE" to "No position from the robot",
+        "MAP_CHANGING" to "A map change is in progress",
         "PERSON" to "Someone moved nearby",
     )
 
@@ -118,6 +124,9 @@ object RobotAgent {
             lastReport = o.optJSONObject("lastReport")?.let { TaskReport.listFromJson("[$it]").firstOrNull() },
             routinesUnlocked = routines?.optBoolean("unlocked", false),
             phoneAwayCarriesOn = routines?.optBoolean("phoneAwayCarriesOn", false) ?: false,
+            // An agent from before the replace call has no "count": nothing is sent to it.
+            routinesSync = routines?.has("count") == true,
+            routinesRev = routines?.optStringOrNull("rev"),
         )
     }.getOrNull()
 
@@ -164,6 +173,18 @@ object RobotAgent {
             .toString()
 
     /** The reasons in a refusal (409), fit to show; the whole body if it has none. */
+    /**
+     * The fingerprint of this phone's routines, sent with them and shown back in the state
+     * (`routines.rev`): when it matches on connect, the robot already has them and nothing is sent.
+     */
+    fun routinesRev(tasks: List<DisinfectionTask>): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(DisinfectionTask.listToJson(tasks).toByteArray())
+            .take(8).joinToString("") { "%02x".format(it) }
+
+    /** POST /v1/routines/replace: this phone's whole list, in place of the last phone's. */
+    fun routinesReplaceJson(tasks: List<DisinfectionTask>, rev: String): String =
+        JSONObject().put("routines", org.json.JSONArray(DisinfectionTask.listToJson(tasks))).put("rev", rev).toString()
+
     fun parseReasons(body: String): List<String> = runCatching {
         val a = JSONObject(body).getJSONArray("reasons")
         (0 until a.length()).map { a.getString(it) }
@@ -280,6 +301,10 @@ data class AgentStatus(
     val routinesUnlocked: Boolean? = null,
     /** R28: a routine carries on when its phone goes away. */
     val phoneAwayCarriesOn: Boolean = false,
+    /** It takes a phone's whole routine list (`POST /v1/routines/replace`), for its own screen to start. */
+    val routinesSync: Boolean = false,
+    /** The fingerprint of the list it has ([RobotAgent.routinesRev]); null: none, or changed since. */
+    val routinesRev: String? = null,
 )
 
 /**
@@ -344,6 +369,8 @@ data class AgentView(
     val searching: Boolean,
     /** Not answering yet, and the phone hasn't given up: "Connecting to Robot Controller". Else, not answering: Retry. */
     val connecting: Boolean = false,
+    /** Retried for [DriveController.AGENT_OFFLINE_MS] and still not answering: only then does Right Now say so. */
+    val offline: Boolean = false,
     /** The in-app fake of DEMO mode, not one on the network. */
     val inApp: Boolean = false,
     /** This phone holds a pairing token for it. */

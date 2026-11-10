@@ -307,6 +307,12 @@ data class RemoteState(
     val taskOnRobot: Boolean = false,
     /** ...and another phone started it (or holds it now): this one follows, and can pause, end or STOP it. */
     val taskElsewhere: Boolean = false,
+    /** ...started on the robot's own screen, not by a phone. */
+    val taskFromRobot: Boolean = false,
+    /** A map is being chosen on the robot's own screen: no trips, driving, map changes or UV until it's over. */
+    val mapChanging: Boolean = false,
+    /** At the stop, waiting until the robot is still before its lamps are asked for (see settle). */
+    val preparing: Boolean = false,
     /** Its phone has gone quiet and the robot carries on without one (R24–R28). */
     val taskPhoneAway: Boolean = false,
     /** [uv] is a lamp run this phone didn't ask for: a routine's on the robot, or another phone's. */
@@ -374,7 +380,7 @@ data class RemoteState(
      * The drive interlock: connected, e-stop known and released, no step running, robot still,
      * and the UV lamps off (no run, and no OFF still owed).
      */
-    val canDrive: Boolean get() = estop == EStop.RELEASED && !busy && still && uv == null && !lampsOffOwed
+    val canDrive: Boolean get() = estop == EStop.RELEASED && !busy && still && uv == null && !lampsOffOwed && !mapChanging
 
     /**
      * Holding [move] down: the drive interlock, or, just after letting go of an arrow (the robot
@@ -455,7 +461,7 @@ data class RemoteState(
      * way (it runs on this map), the robot standing still, the lamps off, and one command at a
      * time. None of them moves the robot.
      */
-    val canChangeMap: Boolean get() = connected && !busy && still && uv == null && !lampsOffOwed && mapStep == null && taskRun == null
+    val canChangeMap: Boolean get() = connected && !busy && still && uv == null && !lampsOffOwed && mapStep == null && taskRun == null && !mapChanging
 
     /**
      * Marking a point, the charging pile or a wall on the map: connected, the robot still, nothing
@@ -512,6 +518,8 @@ class DriveController(
     private val saveAgentToken: (hostname: String, token: String?) -> Unit = { _, _ -> },
     /** How the phone talks to a Robot Controller found at an address ("ip:port"); tests give fakes. */
     private val agentApi: (address: String) -> RobotApi = { RobotApi(it) },
+    /** The Activity log, saved to a file by the app (see [ActivityLog]); in memory only by default. */
+    private val activityLog: ActivityLog = ActivityLog(),
 ) {
     private val demoApi = RobotApi.demo(demoRobot)
     private var demo = demo
@@ -600,6 +608,12 @@ class DriveController(
     private var lowBatteryOwed = false // changed here, not yet taken by the Robot Controller
     private var lowBatterySending = false
     private var lowBatterySentAt = Long.MIN_VALUE / 2
+    // This phone's routines owed to the Robot Controller: on every (re)connection and after each change (see [sendRoutines]).
+    private var routinesOwed = true
+    private var routinesSending = false
+    private var routinesSentAt = Long.MIN_VALUE / 2
+    // The Robot Controller's MAP_CHANGING fault, last seen: when it clears, the map in use is read again at once.
+    private var robotMapChanging = false
     private var runningSpeed: Double? = null
     private var runningSpeedOwed = false
     private var runningSpeedSentAt = Long.MIN_VALUE / 2
@@ -663,6 +677,8 @@ class DriveController(
     private var pairStep: PairStep = PairStep.Idle
     private var agentTarget: AgentTarget? = null
     private var agentInfo: AgentInfo? = null
+    /** When [agentInfo] was last read: it's read again now and then, so pairing switched on at the robot shows here. */
+    private var agentInfoAt = Long.MIN_VALUE / 2
     private var agentStatus: AgentStatus? = null
     private var agentReachable = false
     private var agentOkAt = 0L
@@ -688,12 +704,20 @@ class DriveController(
     // Agent commands go out one at a time, in order, like [lampLock]'s: an OFF must never
     // overtake an ON still on its way. Apart from it, so a silent agent can't hold up the other path.
     private val agentLock = Mutex()
+    // Lamp ONs and routine starts on their way to the Robot Controller (see sendStop, sendLampsOff).
+    private var agentOrderedInFlight = 0
+    // Settling at a stop before its lamps (see settle).
+    private var settleBegan: Long? = null
+    private var settledFrom: Long? = null
+    // When this phone's speed reading first said "moving" in a lamp run's countdown (see tickDisinfection).
+    private var uvMovingSince: Long? = null
     // The lamp time the run in [uv] was asked for: what it has given so far is this less what's left.
     private var uvForMs = 0L
 
-    private val logLines = ArrayDeque<String>()
     private var cachedLog: List<String>? = null
     private val clock = SimpleDateFormat("HH:mm:ss", Locale.US)
+    private val dayFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+    private var loggedDay: String? = null
 
     private val _state = MutableStateFlow(snapshot())
     val state: StateFlow<RemoteState> = _state.asStateFlow()
@@ -1935,12 +1959,16 @@ class DriveController(
     private fun sendStop(turnFirst: Boolean, label: String, report: Boolean = true, jog: Boolean = false) {
         val a = api
         val charging = onPile && chargeFlag == CHARGE_DOCKED && abs(vx) <= MOVING_VX && abs(vth) <= MOVING_VTH
-        // The Robot Controller too, whoever started its run. Queued behind any ON on its way.
+        // The Robot Controller too, whoever started its run: at once, never queued behind a slow
+        // request. An ON or routine start still on its way could land after it, so STOP goes
+        // again once that has had its answer.
         agentTarget?.let { t ->
+            val body = RobotAgent.reasonJson(label)
             scope.launch {
-                val r = agentLock.withLock { t.api.post(RobotAgent.STOP_PATH, RobotAgent.reasonJson(label)) }
+                val r = t.api.post(RobotAgent.STOP_PATH, body)
                 if (!r.ok) log("$label: Robot Controller not reached (${r.error})")
             }
+            if (agentOrderedInFlight > 0) scope.launch { agentLock.withLock { t.api.post(RobotAgent.STOP_PATH, body) } }
         }
         scope.launch {
             // Driving by speed: zero it first. A hard stop, but STOP is for emergencies.
@@ -2273,6 +2301,7 @@ class DriveController(
             agentTarget?.let {
                 readAgent(it)
                 sendLowBattery(it)
+                sendRoutines(it)
             }
             delay((AGENT_POLL_MS - (now() - started)).coerceAtLeast(0))
         }
@@ -2358,7 +2387,8 @@ class DriveController(
     private suspend fun readAgent(t: AgentTarget) {
         val askedAt = now()
         // First contact, or back after a gap: is it still this robot's, and which version?
-        if (agentInfo == null || !agentReachable) {
+        if (agentInfo == null || !agentReachable || askedAt - agentInfoAt >= AGENT_INFO_MS) {
+            agentInfoAt = askedAt
             val i = t.api.get(RobotAgent.INFO_PATH)
             if (agentTarget !== t) return
             val info = if (i.ok) RobotAgent.parseInfo(i.body) else null
@@ -2378,11 +2408,18 @@ class DriveController(
         val status = if (r.ok) RobotAgent.parseState(r.body) else null
         val n = now()
         if (status != null) {
+            if (!agentReachable) routinesOwed = true
             if (!agentReachable) log(if (agentOkAt == 0L) "Connected to the Robot Controller" else "The Robot Controller answers again")
             agentReachable = true
             agentGaveUp = false
             agentOkAt = n
             agentStatus = status
+            val changing = "MAP_CHANGING" in status.faults
+            if (changing != robotMapChanging) {
+                robotMapChanging = changing
+                modeStale = true // a map chosen on the robot's own screen: read the one in use now, not at the next round
+                log(if (changing) "The robot is changing its map" else "The robot's map change is over")
+            }
             onAgentStatus(status, askedAt)
         } else if (!agentReachable || n - agentOkAt >= AGENT_LOST_MS) {
             if (agentReachable) {
@@ -2470,14 +2507,18 @@ class DriveController(
         uv = Uv.Starting(point, forMs)
         log("UV: asking the Robot Controller for ${uvTimeText(forMs)} of lamps, on in ${countdownMs / 1000} s")
         val json = RobotAgent.lampOnJson(forMs, countdownMs, run.requestId, phoneId)
+        agentOrderedInFlight++
         scope.launch {
-            var r = agentLock.withLock { t.api.post(RobotAgent.LAMP_ON_PATH, json) }
-            // No answer: the same request again is safe, the agent repeats its first decision.
-            var tries = 1
-            while (r.httpCode < 0 && tries < AGENT_ON_TRIES && agentRun === run) {
-                r = agentLock.withLock { t.api.post(RobotAgent.LAMP_ON_PATH, json) }
-                tries++
-            }
+            val r = try {
+                var r = agentLock.withLock { t.api.post(RobotAgent.LAMP_ON_PATH, json) }
+                // No answer: the same request again is safe, the agent repeats its first decision.
+                var tries = 1
+                while (r.httpCode < 0 && tries < AGENT_ON_TRIES && agentRun === run) {
+                    r = agentLock.withLock { t.api.post(RobotAgent.LAMP_ON_PATH, json) }
+                    tries++
+                }
+                r
+            } finally { agentOrderedInFlight-- }
             if (agentRun !== run) return@launch // ended meanwhile: the OFF queued behind it has it covered
             when {
                 r.ok -> {
@@ -2516,14 +2557,18 @@ class DriveController(
         val json = RobotAgent.taskStartJson(task, loaded.list, loaded.pile?.name, UUID.randomUUID().toString(), phoneId)
         log("Task \"${task.name}\": asking the robot to run it")
         publish()
+        agentOrderedInFlight++
         scope.launch {
-            var r = agentLock.withLock { t.api.post(RobotAgent.TASK_START_PATH, json) }
-            // No answer: the same request again is safe, the agent repeats its first decision.
-            var tries = 1
-            while (r.httpCode < 0 && tries < AGENT_ON_TRIES && robotTaskAsk === task) {
-                r = agentLock.withLock { t.api.post(RobotAgent.TASK_START_PATH, json) }
-                tries++
-            }
+            val r = try {
+                var r = agentLock.withLock { t.api.post(RobotAgent.TASK_START_PATH, json) }
+                // No answer: the same request again is safe, the agent repeats its first decision.
+                var tries = 1
+                while (r.httpCode < 0 && tries < AGENT_ON_TRIES && robotTaskAsk === task) {
+                    r = agentLock.withLock { t.api.post(RobotAgent.TASK_START_PATH, json) }
+                    tries++
+                }
+                r
+            } finally { agentOrderedInFlight-- }
             if (robotTaskAsk !== task) return@launch
             robotTaskAsk = null
             when {
@@ -2560,7 +2605,11 @@ class DriveController(
     private fun followRobotTask(s: AgentStatus) {
         val task = s.task
         if (task != null) {
-            if (!robotTaskSeen) log("The robot is running \"${task.name}\"" + if (task.controller != phoneId) ", started by another phone" else "")
+            if (!robotTaskSeen) log("The robot is running \"${task.name}\"" + when (task.controller) {
+                phoneId -> ""
+                RobotAgent.ROBOT_SCREEN -> ", started on the robot"
+                else -> ", started by another phone"
+            })
             robotTaskSeen = true
             return
         }
@@ -2629,6 +2678,7 @@ class DriveController(
             reachable = agentReachable,
             searching = agentSearchJob?.isActive == true,
             connecting = !agentReachable && !agentGaveUp,
+            offline = !agentReachable && agentGaveUp && now() - agentWaitFrom >= AGENT_OFFLINE_MS,
             inApp = t?.inApp == true,
             paired = t?.let { tokenFor(it) } != null,
             pairStep = pairStep,
@@ -2640,6 +2690,8 @@ class DriveController(
     /** Keeps (or with null drops) this phone's token for [t]'s robot, and sends it from now on. */
     private fun keepToken(t: AgentTarget, token: String?) {
         t.api.token = token
+        if (token == null) agentInfoAt = Long.MIN_VALUE / 2 // refused for want of a token: is pairing on now?
+        else routinesOwed = true // paired: what a token was refused for goes again
         if (t.inApp) { demoAgentToken = token; return }
         val n = robotName ?: return
         if (token == null) agentTokens.remove(n) else agentTokens[n] = token
@@ -2656,7 +2708,7 @@ class DriveController(
         pairStep = PairStep.Asking
         publish()
         scope.launch {
-            val r = agentLock.withLock { t.api.post(RobotAgent.PAIR_PATH, "{}") }
+            val r = t.api.post(RobotAgent.PAIR_PATH, "{}")
             if (agentTarget !== t) return@launch
             pairStep = when {
                 r.ok -> PairStep.CodeShown
@@ -2675,7 +2727,7 @@ class DriveController(
         pairStep = PairStep.Sending
         publish()
         scope.launch {
-            val r = agentLock.withLock { t.api.post(RobotAgent.PAIR_PATH, RobotAgent.pairCodeJson(code)) }
+            val r = t.api.post(RobotAgent.PAIR_PATH, RobotAgent.pairCodeJson(code))
             if (agentTarget !== t) return@launch
             val token = if (r.ok) RobotAgent.parseToken(r.body) else null
             pairStep = when {
@@ -2695,6 +2747,16 @@ class DriveController(
     /** The pairing dialog closed. */
     fun endPairing() {
         pairStep = PairStep.Idle
+        publish()
+    }
+
+    /** Drops this phone's token for the robot, so it has to pair again. Not during a run: its lease needs the token. */
+    fun forgetPairing() {
+        val t = agentTarget ?: return
+        if (state.value.runUnderWay || agentRun != null) { log("Pairing kept: not while a run is going"); return publish() }
+        keepToken(t, null)
+        pairStep = PairStep.Idle
+        log("Forgot the pairing with this robot: pair again to start UV")
         publish()
     }
 
@@ -2745,7 +2807,7 @@ class DriveController(
         val t = agentTarget
         if (t == null || !agentReachable) { log("Voice volume: Robot Controller not reached"); publish(); return }
         scope.launch {
-            val r = agentLock.withLock { t.api.post(RobotAgent.SETTINGS_PATH, RobotAgent.voiceVolumeJson(percent, phoneId)) }
+            val r = t.api.post(RobotAgent.SETTINGS_PATH, RobotAgent.voiceVolumeJson(percent, phoneId))
             val set = if (r.ok) RobotAgent.parseVoiceVolume(r.body) else null
             when {
                 set != null -> {
@@ -2759,7 +2821,7 @@ class DriveController(
                 else -> log("Voice volume: Robot Controller not reached (${r.error})")
             }
             if (set != null && thenTest) {
-                val v = agentLock.withLock { t.api.post(RobotAgent.VOICE_TEST_PATH, "{}") }
+                val v = t.api.post(RobotAgent.VOICE_TEST_PATH, "{}")
                 log(when {
                     v.ok -> "Voice test at $set%"
                     v.httpCode in 400..499 -> "Voice test refused: " + RobotAgent.parseReasons(v.body).joinToString("; ")
@@ -2782,6 +2844,44 @@ class DriveController(
         publish()
     }
 
+    /**
+     * This phone's saved routines to the Robot Controller, so its own screen can start them: the
+     * whole list, in place of the last phone's. Only when owed (connected again, a routine saved or
+     * deleted, paired), never just because the lists differ, or two phones would take turns
+     * overwriting each other. Nothing goes when the robot already has this list (the same `rev`).
+     */
+    private fun sendRoutines(t: AgentTarget) {
+        val s = agentStatus
+        val at = now()
+        if (!routinesOwed || routinesSending || !agentReachable || s == null || !s.routinesSync || at - routinesSentAt < SETTING_RETRY_MS) return
+        val list = tasks
+        val rev = RobotAgent.routinesRev(list)
+        if (s.routinesRev == rev) {
+            routinesOwed = false
+            logDetail("routines: the robot has this phone's ${list.size} already")
+            return
+        }
+        routinesSending = true
+        routinesSentAt = at
+        scope.launch {
+            val r = t.api.post(RobotAgent.ROUTINES_REPLACE_PATH, RobotAgent.routinesReplaceJson(list, rev))
+            routinesSending = false
+            when {
+                r.ok -> {
+                    if (tasks == list) routinesOwed = false
+                    log("Routines on the robot: ${list.size}")
+                }
+                r.httpCode in 400..499 -> {
+                    if (r.httpCode == 401) keepToken(t, null)
+                    routinesOwed = false
+                    log("Routines refused by the robot: " + RobotAgent.parseReasons(r.body).joinToString("; "))
+                }
+                else -> logDetail("routines not sent yet: ${r.error}")
+            }
+            publish()
+        }
+    }
+
     /** An owed low-battery level to the Robot Controller: one try at a time, again after [SETTING_RETRY_MS] if it didn't answer. */
     private fun sendLowBattery(t: AgentTarget) {
         val at = now()
@@ -2790,7 +2890,7 @@ class DriveController(
         lowBatterySentAt = at
         val level = lowBattery
         scope.launch {
-            val r = agentLock.withLock { t.api.post(RobotAgent.SETTINGS_PATH, RobotAgent.lowBatteryJson(level, phoneId)) }
+            val r = t.api.post(RobotAgent.SETTINGS_PATH, RobotAgent.lowBatteryJson(level, phoneId))
             lowBatterySending = false
             val set = if (r.ok) RobotAgent.parseLowBattery(r.body) else null
             when {
@@ -2848,7 +2948,7 @@ class DriveController(
             lampsOffOwed = true
             lampsOffFailures = 0
             sendLampsOff()
-        } else endDisinfection("switched off from the app")
+        } else endDisinfection(SWITCHED_OFF)
         publish()
     }
 
@@ -2908,8 +3008,12 @@ class DriveController(
         val a = api
         val agent = agentTarget.takeIf { toAgent }
         scope.launch {
+            // At once, never queued behind a slow ON; and again after an ON still on its way.
             val viaAgent = agent?.let { t ->
-                async { agentLock.withLock { t.api.post(RobotAgent.LAMP_OFF_PATH, RobotAgent.reasonJson("lamps off from the phone")) } }
+                if (agentOrderedInFlight > 0) scope.launch {
+                    agentLock.withLock { t.api.post(RobotAgent.LAMP_OFF_PATH, RobotAgent.reasonJson("lamps off from the phone")) }
+                }
+                async { t.api.post(RobotAgent.LAMP_OFF_PATH, RobotAgent.reasonJson("lamps off from the phone")) }
             }
             val r = lampLock.withLock { a.post(UV_PATH, UV_OFF) }
             val ar = viaAgent?.await()
@@ -2945,17 +3049,23 @@ class DriveController(
         val t = now()
         if (run != null) {
             val moving = speedValid && (abs(vx) > MOVING_VX || abs(vth) > MOVING_VTH)
+            // Lamps off (asking, counting down, held for a person): a twitch is the robot settling,
+            // and the Robot Controller won't light while it moves. Only steady motion ends the run.
+            // Lamps on: any motion, at once.
+            val lampsOff = run !is Uv.On
+            val since = if (moving) uvMovingSince ?: t.also { uvMovingSince = it } else null.also { uvMovingSince = null }
             val byAgent = agentRun
             when {
                 link is Link.Disconnected -> endDisinfection("lost connection")
                 (link as? Link.Connected)?.estop == EStop.PRESSED -> endDisinfection("e-stop pressed")
-                moving -> endDisinfection("the robot moved")
+                moving && (!lampsOff || t - since!! >= COUNTDOWN_MOTION_MS) -> endDisinfection("the robot moved")
                 // Every run is the Robot Controller's; one that isn't can't be followed, so off it goes.
                 byAgent == null -> endDisinfection(LOST_AGENT)
                 // The Robot Controller keeps the time; this is only a backstop, in case it doesn't.
                 byAgent.onMs > byAgent.forMs + AGENT_OVERRUN_MS -> endDisinfection("the lamps stayed on past their time")
             }
         }
+        if (run == null) uvMovingSince = null
         if (lampsOffOwed && (link is Link.Connected || agentReachable) && t - lampsOffLastSent >= LAMPS_OFF_RETRY_MS) sendLampsOff()
     }
 
@@ -2976,6 +3086,7 @@ class DriveController(
         if (t.name.isEmpty() || t.stops.isEmpty()) return
         tasks = if (tasks.any { it.id == t.id }) tasks.map { if (it.id == t.id) t else it } else tasks + t
         log("Task \"${t.name}\" saved: ${t.stops.size} point(s), ${t.uvMinutes} min of UV")
+        routinesOwed = true
         publish()
     }
 
@@ -2985,6 +3096,7 @@ class DriveController(
         val t = tasks.firstOrNull { it.id == id } ?: return
         tasks = tasks - t
         log("Task \"${t.name}\" deleted")
+        routinesOwed = true
         publish()
     }
 
@@ -3129,7 +3241,8 @@ class DriveController(
             val to = point.pose
             if (here != null && to != null && dist(here, to) <= ARRIVED_M && snapshot().still && !snapshot().busy) {
                 atPoint = point
-                startStopUv()
+                // Standing on it: no trip, but the same settling as after one (see tickTask).
+                taskRun = checking.copy(stage = TaskStage.Travelling)
             } else {
                 travel(point)
                 val sent = phase != StepPhase.Idle || chargerJob?.isActive == true
@@ -3153,7 +3266,8 @@ class DriveController(
         val stop = run.stop
         val forMs = run.uvLeftMs ?: (stop.minutes * 60_000L)
         uvEnded = null
-        taskRun = run.copy(stage = TaskStage.Disinfecting, retryUntil = null)
+        // retryUntil stays: a stop whose lamps won't start gets one retry window, not a new one per try.
+        taskRun = run.copy(stage = TaskStage.Disinfecting)
         log("Task: at ${stop.point} (${run.number} of ${run.total}). UV lamps on in ${run.task.delaySeconds} s, for ${uvTimeText(forMs)}")
         beginUv(stop.point, forMs, run.task.delaySeconds * 1000L)
     }
@@ -3185,12 +3299,25 @@ class DriveController(
             }
             TaskStage.Travelling -> {
                 // Still on its way, still undocking, or about to set off after undocking.
-                if (phase != StepPhase.Idle || chargerJob?.isActive == true || goAfterUndock != null) return
-                if (atPoint?.name == run.stop.point) startStopUv() else stopFailed("Couldn't get to ${run.stop.point}")
+                if (phase != StepPhase.Idle || chargerJob?.isActive == true || goAfterUndock != null) return settleReset()
+                // A twitch after arriving clears atPoint; where the trip ended still counts.
+                if (atPoint?.name != run.stop.point && !nearStop(run)) {
+                    settleReset()
+                    return stopFailed("Couldn't get to ${run.stop.point}")
+                }
+                if (run.task.lampsOff) return startStopUv()
+                settle(run)
             }
             TaskStage.Disinfecting -> {
                 if (uv != null) return
                 val end = uvEnded
+                // The lamps never came on (refused, no answer, the robot not settled): like a trip
+                // that failed, tried again within the stop's retry time, then left out. Switched off
+                // from the app, or ended once lit: the routine ends.
+                if (end != null && !end.completed && end.onMs == 0L && end.reason != SWITCHED_OFF) {
+                    taskRun = run.copy(stage = TaskStage.Checking)
+                    return stopFailed("UV didn't start at ${run.stop.point}: ${end.reason}")
+                }
                 if (end?.completed != true) return endTask(end?.reason ?: "the lamps went off")
                 taskRun = run.copy(
                     stage = TaskStage.LampsOff,
@@ -3200,6 +3327,46 @@ class DriveController(
             // OFF sent by endDisinfection, and resent until the robot accepts it.
             TaskStage.LampsOff -> if (!lampsOffOwed) nextStop()
         }
+    }
+
+    /**
+     * At the stop, before asking for the lamps: the robot keeps correcting its heading and position
+     * for a while after a trip ends (seen for up to ~20 s on 2026-11-10), and the Robot Controller
+     * refuses the lamps while it moves. So both this phone's speed reading and the Robot Controller
+     * must say still for [SETTLE_MS] in a row. Not settled within [SETTLE_MAX_MS]: tried again as a
+     * failed trip, inside the stop's retry time.
+     */
+    private fun settle(run: TaskRun) {
+        val t = now()
+        val began = settleBegan ?: t.also {
+            settleBegan = it
+            log("Task: at ${run.stop.point}. Preparing task")
+        }
+        val robotMoving = agentReachable && agentStatus?.let { it.moving || "MOVING" in it.faults } == true
+        if (!snapshot().still || robotMoving) {
+            settledFrom = null
+            if (t - began >= SETTLE_MAX_MS) {
+                settleReset()
+                stopFailed("The robot didn't settle at ${run.stop.point}")
+            }
+            return
+        }
+        val from = settledFrom ?: t.also { settledFrom = it }
+        if (t - from < SETTLE_MS) return
+        settleReset()
+        startStopUv()
+    }
+
+    private fun settleReset() {
+        settledFrom = null
+        settleBegan = null
+    }
+
+    /** Where the last trip left the robot is within [ARRIVED_M] of the stop's point. */
+    private fun nearStop(run: TaskRun): Boolean {
+        val to = (points as? Points.Loaded)?.list?.firstOrNull { it.name == run.stop.point }?.pose ?: return false
+        val at = navPose ?: return false
+        return dist(at, to) <= ARRIVED_M
     }
 
     /** A trip failed: try it again soon, until the stop's time is up. Lamps off throughout. */
@@ -3762,8 +3929,14 @@ class DriveController(
 
     private fun log(line: String) {
         cachedLog = null
-        logLines.addFirst("${clock.format(Date())}  ${if (demo) "[DEMO] " else ""}$line")
-        while (logLines.size > LOG_LINES) logLines.removeLast()
+        val at = Date()
+        // Lines carry only the time of day; the saved log runs over days, so each day gets a heading line.
+        val day = dayFormat.format(at)
+        if (day != loggedDay) {
+            loggedDay = day
+            activityLog.add("—— $day ——")
+        }
+        activityLog.add("${clock.format(at)}  ${if (demo) "[DEMO] " else ""}$line")
     }
 
     private fun publish() {
@@ -3811,7 +3984,7 @@ class DriveController(
             demoRobot.isNavigating, demoRobot.isBusy, demoRobot.isUvOn, demoRobot.isAgentDown,
             demoRobot.agent?.weakWifi == true, demoRobot.agent?.chargeWarning == true, demoRobot.agent?.routinesUnlocked == true,
         ) else null,
-        log = cachedLog ?: logLines.toList().also { cachedLog = it },
+        log = cachedLog ?: activityLog.newest(ActivityLog.SHOWN).also { cachedLog = it },
         mode = mode,
         currentMap = currentMap,
         mapImage = mapImage,
@@ -3830,6 +4003,9 @@ class DriveController(
         taskRun = taskRun ?: robotRun,
         taskOnRobot = taskRun == null && robotRun != null,
         taskElsewhere = taskRun == null && robotRun != null && robotTaskAsk == null && agentStatus?.task?.controller != phoneId,
+        taskFromRobot = taskRun == null && robotRun != null && agentStatus?.task?.controller == RobotAgent.ROBOT_SCREEN,
+        mapChanging = agentReachable && robotMapChanging,
+        preparing = taskRun?.stage == TaskStage.Travelling && settleBegan != null,
         taskPhoneAway = taskRun == null && agentStatus?.task?.phoneAway == true,
         taskReport = taskReport,
         agent = agentView(),
@@ -3889,10 +4065,13 @@ class DriveController(
         // ---- "Is the robot still moving?" ----
         const val MOVING_VX = 0.02      // m/s
         const val MOVING_VTH = 0.03     // rad/s
+        const val SETTLE_MS = 3_000L          // still this long at a stop before its lamps are asked for
+        const val SETTLE_MAX_MS = 20_000L     // GUESS: not settled by then, the stop is tried again
+        const val COUNTDOWN_MOTION_MS = 3_000L // steady motion this long ends a run whose lamps are still off
+        const val SWITCHED_OFF = "switched off from the app"
         const val STILL_POLLS_TO_FINISH = 3 // ~0.9 s of stillness = step finished
         const val RAMP_ALLOWANCE_MS = 2500L // accel + decel + ~200 ms latency
 
-        private const val LOG_LINES = 14
         private const val MOVE_STOP = """{"distance":0,"direction":1,"speed":0}"""
         private const val TURN_STOP = """{"direction":1,"angle":0,"speed":0}"""
 
@@ -3975,8 +4154,10 @@ class DriveController(
         const val AGENT_LEASE_MS = 2_000L           // renewed this often; it gives up on the phone after 5 s
         const val AGENT_LOST_MS = 3_000L            // no answer this long: the run ends here too
         const val AGENT_SEARCH_MS = 10_000L         // looked for this often while it doesn't answer
+        const val AGENT_INFO_MS = 10_000L           // /v1/info read again this often (pairing switched on, a new version)
         const val SETTING_RETRY_MS = 5_000L         // a setting it didn't answer is sent again after this
         const val AGENT_CONNECT_MS = 10_000L        // "Connecting" this long without an answer, then Retry
+        const val AGENT_OFFLINE_MS = 30_000L        // Right Now keeps its status this long (about 3 searches) before "Can't reach"
         const val AGENT_ON_TRIES = 3                // ON asked again (same requestId) when it doesn't answer
         const val AGENT_MIN_COUNTDOWN_MS = 5_000L   // the shortest countdown it accepts: the UV switch's
         const val AGENT_OVERRUN_MS = 15_000L        // lamps seen on this long past their time: the phone ends it

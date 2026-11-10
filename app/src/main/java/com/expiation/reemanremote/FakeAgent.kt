@@ -43,6 +43,16 @@ class FakeAgent(
     /** Routines run on the robot (its lock file; DEMO controls). Off: the phone runs them, as before. */
     var routinesUnlocked = false
 
+    /** The routines a phone handed over (`POST /v1/routines/replace`): how many, and their fingerprint. */
+    /** Tests: the next this many lamp ONs are refused as the real one does while the robot settles. */
+    var refuseLampOns = 0
+
+    /** Tests: lamp ON answers this slowly (a weak head-unit link). */
+    var lampOnDelayMs = 0L
+
+    var routinesCount = 0
+    var routinesRev: String? = null
+
     private class Routine(
         val task: DisinfectionTask,
         var controller: String,
@@ -109,6 +119,11 @@ class FakeAgent(
                 if (ok) 200 to OK else 409 to NOT_OK
             }
             "POST ${RobotAgent.TASK_START_PATH}" -> startRoutine(json, now)
+            "POST ${RobotAgent.ROUTINES_REPLACE_PATH}" -> runCatching { org.json.JSONObject(json) }.getOrNull()?.takeIf { it.has("routines") }?.let { o ->
+                routinesCount = o.getJSONArray("routines").length()
+                routinesRev = o.optString("rev").ifBlank { null }
+                200 to """{"ok":true,"count":$routinesCount,"rev":${routinesRev?.let { "\"$it\"" } ?: "null"}}"""
+            } ?: (400 to """{"ok":false,"reasons":["routines is missing or can't be read"]}""")
             "POST ${RobotAgent.TASK_PAUSE_PATH}" -> 200 to """{"ok":true,"paused":${pauseRoutine(now)}}"""
             "POST ${RobotAgent.TASK_RESUME_PATH}" -> resumeRoutine(str(json, "controller"), now)
             "POST ${RobotAgent.TASK_END_PATH}" -> { endRoutine("Task ended from the app", now); 200 to OK }
@@ -173,6 +188,7 @@ class FakeAgent(
         val forMs = num(json, "forMs") ?: 0L
         val cd = num(json, "countdownMs") ?: 15_000L
         val reasons = buildList {
+            if (refuseLampOns > 0) { refuseLampOns--; add("The robot is moving") }
             if (estop()) add("Emergency stop pressed")
             if (forMs !in 1..MAX_MS) add("Longer than 30 minutes")
             if (cd < 5_000) add("Countdown shorter than 5 s")
@@ -257,7 +273,7 @@ class FakeAgent(
             """"charge":{"state":"${if (chargeWarning) "warning" else "ok"}","reason":${q(if (chargeWarning) "Battery low: going to charge" else null)},""" +
             """"lastResult":null,"warningMs":${if (chargeWarning) 30_000 else "null"},"lowBattery":$lowBattery,"unlocked":true},""" +
             """"task":${routineJson(now)},"lastReport":${lastReport ?: "null"},""" +
-            """"routines":{"unlocked":$routinesUnlocked,"phoneAwayCarriesOn":true},""" +
+            """"routines":{"unlocked":$routinesUnlocked,"phoneAwayCarriesOn":true,"count":$routinesCount,"rev":${q(routinesRev)}},""" +
             """"faults":[${listOfNotNull("\"ESTOP\"".takeIf { estop() }, "\"PERSON\"".takeIf { person }).joinToString(",")}]}"""
     }
 

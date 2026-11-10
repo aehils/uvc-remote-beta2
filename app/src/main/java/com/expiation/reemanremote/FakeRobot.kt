@@ -145,6 +145,9 @@ class FakeRobot(
 
     // ------------------------------------------------------------------ requests
 
+    /** Tests: the robot turns a little on the spot (as it settles on a point) until this clock time. */
+    @Volatile var twitchUntil = Long.MIN_VALUE
+
     /** Answers one HTTP request. Returns null when a Wi-Fi drop is being simulated. */
     @Synchronized
     fun handle(method: String, path: String, json: String?, token: String? = null): Reply? {
@@ -154,7 +157,8 @@ class FakeRobot(
         if (path.startsWith("/v1/")) {
             val a = agent ?: return Reply(404, "", 0)
             val (code, body) = a.handle(method, path, json.orEmpty(), now / 1_000_000, token) ?: return null
-            return Reply(code, body, if (realistic) 10L + rng.nextInt(20) else 0L)
+            val slow = if (path == RobotAgent.LAMP_ON_PATH) a.lampOnDelayMs else 0L
+            return Reply(code, body, slow + if (realistic) 10L + rng.nextInt(20) else 0L)
         }
 
         val body = when (method) {
@@ -181,7 +185,7 @@ class FakeRobot(
             val turning = m?.turn == true
             fmt(
                 """{"vx":%.4f,"vth":%.4f}""",
-                (if (turning) 0.0 else v) + jogVx + noise(), (if (turning) v else 0.0) + jogVth + noise(),
+                (if (turning) 0.0 else v) + jogVx + noise(), (if (turning) v else 0.0) + jogVth + noise() + (if (now < twitchUntil) 0.1 else 0.0),
             )
         }
         "/reeman/pose" -> {
