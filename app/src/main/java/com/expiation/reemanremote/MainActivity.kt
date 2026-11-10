@@ -94,6 +94,7 @@ class MainActivity : ComponentActivity() {
             onSaveTask = session::saveTask,
             onDeleteTask = session::deleteTask,
             onStartTask = c::startTask,
+            onSetDefaultTask = session::setDefaultTask,
             onStartRoute = c::startRoute,
             onStartRouteTest = c::startRouteTest,
             onPauseTask = c::pauseTask,

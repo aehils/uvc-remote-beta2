@@ -291,15 +291,15 @@ private fun OneLineHeadline(text: String, color: androidx.compose.ui.graphics.Co
     )
 }
 
-// ---------------------------------------------------------------------- Tasks tab: START DISINFECTION
+// ---------------------------------------------------------------------- Full route and default routine
 
 /**
- * START DISINFECTION, on its own under Right Now: the robot goes round every point on the map in
+ * RUN FULL ROUTE, below New routine: the robot goes round every point on the map in
  * turn (see [DisinfectionTask.route]), then to the charger. It asks first, and the dialog says
  * how many points and for how long. Why it can't start goes under it.
  */
 @Composable
-internal fun StartDisinfection(state: RemoteState, actions: RemoteActions) {
+internal fun RunFullRoute(state: RemoteState, actions: RemoteActions, onStarted: () -> Unit = {}) {
     var confirming by rememberSaveable { mutableStateOf(false) }
     val problem = state.routeProblem
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -311,7 +311,7 @@ internal fun StartDisinfection(state: RemoteState, actions: RemoteActions) {
                 .height(56.dp),
             shape = RoundedCornerShape(14.dp),
         ) {
-            Text("START ROUTINE", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+            Text("RUN FULL ROUTE", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
         }
         problem?.let { TasksNote(it) }
     }
@@ -320,7 +320,7 @@ internal fun StartDisinfection(state: RemoteState, actions: RemoteActions) {
         val route = state.route
         AlertDialog(
             onDismissRequest = { confirming = false },
-            title = { Text("Start disinfection?") },
+            title = { Text("Run full route?") },
             text = {
                 Text(
                     "UV-C light burns skin and eyes. Make sure nobody is in the rooms on the route and the doors are closed.\n\n" +
@@ -334,11 +334,46 @@ internal fun StartDisinfection(state: RemoteState, actions: RemoteActions) {
                 TextButton(onClick = {
                     confirming = false
                     actions.onStartRoute()
+                    onStarted()
                 }) { Text("START", fontWeight = FontWeight.Bold) }
             },
             dismissButton = { TextButton(onClick = { confirming = false }) { Text("Cancel") } },
         )
     }
+}
+
+/** The saved default is explicit: never fall back to a full route when none is selected. */
+@Composable
+internal fun StartDefaultRoutine(state: RemoteState, actions: RemoteActions) {
+    var confirming by rememberSaveable { mutableStateOf<String?>(null) }
+    val task = state.tasks.firstOrNull { it.id == state.defaultTaskId }
+    val problem = task?.let { state.taskProblem(it) } ?: if (task == null) "Choose a default routine in Routines." else null
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Button(onClick = { confirming = task?.id }, enabled = task != null && problem == null,
+            modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(14.dp)) {
+            Text("START DEFAULT ROUTINE", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+        }
+        task?.let { Text(it.name, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        problem?.let { TasksNote(it) }
+    }
+    state.tasks.firstOrNull { it.id == confirming }?.let { selected ->
+        RoutineStartDialog(state, actions, selected, onDismiss = { confirming = null })
+    }
+}
+
+@Composable
+private fun RoutineStartDialog(state: RemoteState, actions: RemoteActions, task: DisinfectionTask,
+    onDismiss: () -> Unit, onStarted: () -> Unit = {}) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Start ${task.name}?") },
+        text = { Text("UV-C light burns skin and eyes. Make sure nobody is in the rooms on the route and the doors are closed.\n\n" +
+            "${taskSummary(task)}. At each point the lamps come on ${task.delaySeconds} s after the robot arrives. " +
+            "STOP or the e-stop ends it and switches them off.") },
+        confirmButton = { TextButton(onClick = { onDismiss(); actions.onStartTask(task.id); onStarted() },
+            enabled = state.taskProblem(task) == null) { Text("START", fontWeight = FontWeight.Bold) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 // ---------------------------------------------------------------------- Tasks tab: routines
@@ -417,6 +452,7 @@ internal fun SavedTasks(state: RemoteState, actions: RemoteActions, onEditTask: 
     ) {
         Text("+  New routine", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
     }
+    RunFullRoute(state, actions, onStarted)
     if (state.tasks.any { it.startMinute != null }) NotificationsOffNote()
     if (state.tasks.isEmpty()) TasksNote("A routine is your own list of points, each with its UV time, run in order.")
     if (state.tasks.isNotEmpty() && state.taskRun == null) (state.taskBlocker ?: state.uvProblem)?.let { TasksNote(it) }
@@ -429,6 +465,8 @@ internal fun SavedTasks(state: RemoteState, actions: RemoteActions, onEditTask: 
             onEdit = { onEditTask(task.id) },
             canDelete = state.taskRun?.task?.id != task.id,
             onDelete = { deleting = task.id },
+            isDefault = state.defaultTaskId == task.id,
+            onSetDefault = { actions.onSetDefaultTask(task.id) },
         )
     }
 
@@ -449,28 +487,8 @@ internal fun SavedTasks(state: RemoteState, actions: RemoteActions, onEditTask: 
         )
     }
 
-    val task = state.tasks.firstOrNull { it.id == confirming }
-    if (task != null) {
-        AlertDialog(
-            onDismissRequest = { confirming = null },
-            title = { Text("Start ${task.name}?") },
-            text = {
-                Text(
-                    "UV-C light burns skin and eyes. Make sure nobody is in the rooms on the route and the doors are closed.\n\n" +
-                        "At each point the lamps come on ${task.delaySeconds} s after the robot arrives. " +
-                        "STOP or the e-stop ends it and switches them off.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirming = null
-                    actions.onStartTask(task.id)
-                    onStarted()
-                }) { Text("START", fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = { TextButton(onClick = { confirming = null }) { Text("Cancel") } },
-        )
+    state.tasks.firstOrNull { it.id == confirming }?.let { task ->
+        RoutineStartDialog(state, actions, task, onDismiss = { confirming = null }, onStarted = onStarted)
     }
 }
 
@@ -514,6 +532,8 @@ private fun TaskRow(
     onEdit: () -> Unit,
     canDelete: Boolean,
     onDelete: () -> Unit,
+    isDefault: Boolean,
+    onSetDefault: () -> Unit,
 ) {
     val status = RemoteTheme.status
     // Words on their own lines across the card, START under them: the name never has to squeeze.
@@ -544,6 +564,9 @@ private fun TaskRow(
                 colors = ButtonDefaults.textButtonColors(contentColor = status.danger)) {
                 Text("Delete")
             }
+        }
+        TextButton(onClick = onSetDefault, enabled = !isDefault) {
+            Text(if (isDefault) "Default routine" else "Set as default", fontWeight = FontWeight.SemiBold)
         }
         Button(
             onClick = onStart,
