@@ -950,6 +950,8 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
                     icon = R.drawable.ic_routines,
                     title = "Routines",
                     onClick = onOpenRoutines,
+                    // A routine needs fixing (a point not on this map): its card in Routines says which.
+                    caution = state.tasks.any { state.taskFault(it) != null },
                 )
                 TaskItem(
                     icon = R.drawable.ic_tab_tasks,
@@ -1052,9 +1054,12 @@ private fun UvSwitch(state: RemoteState, actions: RemoteActions) {
     }
 }
 
-/** One row of the Tasks list: an icon and a title, nothing under it. The whole card opens its page. */
+/**
+ * One row of the Tasks list: an icon and a title, nothing under it. The whole card opens its page.
+ * [caution] puts a triangle before the chevron when something on that page needs fixing.
+ */
 @Composable
-private fun TaskItem(icon: Int, title: String, onClick: () -> Unit) {
+private fun TaskItem(icon: Int, title: String, onClick: () -> Unit, caution: Boolean = false) {
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
@@ -1072,6 +1077,15 @@ private fun TaskItem(icon: Int, title: String, onClick: () -> Unit) {
             )
             Spacer(Modifier.width(16.dp))
             Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            if (caution) {
+                Spacer(Modifier.width(8.dp))
+                Icon(
+                    painterResource(R.drawable.ic_warning),
+                    contentDescription = "Needs fixing",
+                    modifier = Modifier.size(22.dp),
+                    tint = RemoteTheme.status.warn,
+                )
+            }
             Spacer(Modifier.width(8.dp))
             Text("›", fontSize = 28.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
