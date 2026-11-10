@@ -23,9 +23,15 @@ class TasksTest {
     fun aReportReadsPlainly() {
         val task = DisinfectionTask("a", "Ward A", listOf(TaskStop("Bed 1", 5), TaskStop("Bed 2", 5)))
         val r = TaskReport(task, false, "battery low", listOf(StopResult(1, "Bed 1", StopOutcome.DONE)))
-        assertEquals("Ward A ended", r.title)
+        assertEquals("Ward A ended incomplete", r.title)
         assertEquals("1 of 2 points done · battery low", r.detail)
         assertFalse(r.good)
+        // The robot skipped a point where something kept moving (2026-11-10).
+        val k = TaskReport(task, true, null, listOf(StopResult(1, "Bed 1", StopOutcome.SKIPPED), StopResult(1, "Bed 2", StopOutcome.DONE)))
+        assertEquals("Ward A ended incomplete", k.title)
+        assertEquals(listOf("Bed 1"), k.skipped)
+        assertTrue(k.notReached.isEmpty())
+        assertEquals("1 of 2 points done · skipped, kept moving: Bed 1", k.detail)
     }
 
     @Test
