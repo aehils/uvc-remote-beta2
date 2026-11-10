@@ -98,6 +98,7 @@ class RobotSession private constructor(private val app: Application) {
         controller.setLowBattery(prefs.getInt(KEY_LOW_BATTERY, DriveController.DEFAULT_LOW_BATTERY), fromUser = false)
         prefs.getFloat(KEY_RUNNING_SPEED, 0f).takeIf { it > 0f }?.let { controller.setRunningSpeed(it.toDouble()) }
         controller.setTasks(DisinfectionTask.listFromJson(prefs.getString(KEY_TASKS, null)))
+        controller.setDefaultTask(prefs.getString(KEY_DEFAULT_TASK, null))
         RoutineAlarms.schedule(app, controller.state.value.tasks)
         scope.launch {
             while (true) {
@@ -303,6 +304,11 @@ class RobotSession private constructor(private val app: Application) {
         RoutineAlarms.schedule(app, tasks)
     }
 
+    fun setDefaultTask(id: String) {
+        controller.setDefaultTask(id)
+        saveTasks()
+    }
+
     fun deleteTask(id: String) {
         controller.deleteTask(id)
         if (controller.state.value.tasks.any { it.id == id }) return // the task under way stays
@@ -352,7 +358,8 @@ class RobotSession private constructor(private val app: Application) {
     }
 
     private fun saveTasks() {
-        prefs.edit().putString(KEY_TASKS, DisinfectionTask.listToJson(controller.state.value.tasks)).apply()
+        prefs.edit().putString(KEY_TASKS, DisinfectionTask.listToJson(controller.state.value.tasks))
+            .putString(KEY_DEFAULT_TASK, controller.state.value.defaultTaskId).apply()
     }
 
     companion object {
@@ -366,6 +373,7 @@ class RobotSession private constructor(private val app: Application) {
         private const val KEY_DEMO = "demo"
         private const val KEY_UV_MINUTES = "uv_minutes"
         private const val KEY_UV_DELAY = "uv_delay_s"
+        private const val KEY_DEFAULT_TASK = "default_task_id"
         private const val KEY_TASKS = RoutineAlarms.KEY_TASKS
         private const val KEY_ROUTINES_ASKED = "routines_asked" // routine id to the day it was last asked about
         private const val KEY_HISTORY = "routine_history"

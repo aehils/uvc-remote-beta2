@@ -51,6 +51,36 @@ class DriveControllerTest {
         Regex("\"x\":(-?[0-9.]+)").find(c.demoRobot.handle("GET", "/reeman/pose", null)!!.body)!!.groupValues[1].toDouble()
 
     @Test
+    fun defaultRoutineSurvivesEditsAndClearsWhenDeleted() = runTest {
+        val c = controller()
+        val a = DisinfectionTask("a", "Ward A", listOf(TaskStop("Point 1", 1)))
+        val b = a.copy(id = "b", name = "Ward B")
+        c.setTasks(listOf(a, b))
+        assertEquals(null, c.state.value.defaultTaskId)
+        c.setDefaultTask(a.id)
+        c.saveTask(a.copy(name = "Renamed ward"))
+        c.deleteTask(b.id)
+        assertEquals(a.id, c.state.value.defaultTaskId)
+        assertEquals("Renamed ward", c.state.value.tasks.single().name)
+        c.deleteTask(a.id)
+        assertEquals(null, c.state.value.defaultTaskId)
+    }
+
+    @Test
+    fun restoredDefaultMustReferToAnExistingRoutine() = runTest {
+        val c = controller()
+        val a = DisinfectionTask("a", "Ward A", listOf(TaskStop("Point 1", 1)))
+        c.setTasks(listOf(a))
+        c.setDefaultTask(a.id)
+        assertEquals(a.id, c.state.value.defaultTaskId)
+        c.setTasks(emptyList())
+        assertEquals(null, c.state.value.defaultTaskId)
+        c.setTasks(listOf(a))
+        c.setDefaultTask("missing")
+        assertEquals(null, c.state.value.defaultTaskId)
+    }
+
+    @Test
     fun connectsAndReadsStatus() = runTest {
         val c = controller()
         c.resume()

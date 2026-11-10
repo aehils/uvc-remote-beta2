@@ -208,6 +208,7 @@ data class RemoteActions(
     val onAnswerDue: (Boolean) -> Unit = {},
     val onDeleteTask: (String) -> Unit = {},
     val onStartTask: (String) -> Unit = {},
+    val onSetDefaultTask: (String) -> Unit = {},
     val onStartRouteTest: () -> Unit = {},
     val onStartRoute: () -> Unit = {},
     val onPauseTask: () -> Unit = {},
@@ -863,7 +864,7 @@ private fun RowScope.PadNote(state: RemoteState, height: Dp) {
 /**
  * The Tasks tab, laid out to fit without scrolling. Right Now at the top, pinned: what the robot
  * is doing, in words (it replaces the e-stop badge and speed on the Map page). Then START
- * DISINFECTION on its own (or the task under way above it), a row
+ * DEFAULT ROUTINE (or the task under way above it), a row
  * each for Routines and Disinfection Points (their own pages). The UV lamps switch sits directly
  * above GO TO CHARGER (UNDOCK while docked) at the bottom, over the nav bar.
  * The middle controls are centered between Right Now and the UV/charger group.
@@ -871,7 +872,7 @@ private fun RowScope.PadNote(state: RemoteState, height: Dp) {
  */
 @Composable
 private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: () -> Unit, onOpenRoutines: () -> Unit, onOpenReport: () -> Unit, modifier: Modifier) {
-    // START DISINFECTION and the routines go round the points on the robot's map.
+    // Routines are checked against the points on the robot's map.
     LaunchedEffect(state.connected, state.points is Points.NotLoaded) {
         if (state.connected && state.points is Points.NotLoaded) actions.onLoadPoints()
     }
@@ -901,7 +902,7 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
             ) {
                 val run = state.taskRun
                 if (run != null) TaskRunCard(state, run, actions)
-                if (run == null) StartDisinfection(state, actions)
+                if (run == null) StartDefaultRoutine(state, actions)
                 TaskItem(
                     icon = R.drawable.ic_routines,
                     title = "Routines",

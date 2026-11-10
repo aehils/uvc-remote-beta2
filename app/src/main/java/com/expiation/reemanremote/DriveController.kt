@@ -301,6 +301,7 @@ data class RemoteState(
     val robotAlert: String? = null,
     /** The saved disinfection tasks (see [DriveController.saveTask]). */
     val tasks: List<DisinfectionTask> = emptyList(),
+    val defaultTaskId: String? = null,
     /** The task under way, if any (see [DriveController.startTask]): this phone's, or one the robot runs. */
     val taskRun: TaskRun? = null,
     /** [taskRun] is a routine the robot runs itself (Phase 2): it carries on without the phone. */
@@ -632,6 +633,7 @@ class DriveController(
 
     // Disinfection tasks (see [startTask]): the saved ones, the one under way, the last one's report.
     private var tasks: List<DisinfectionTask> = emptyList()
+    private var defaultTaskId: String? = null
     private var taskRun: TaskRun? = null
     private var taskReport: TaskReport? = null
     private var leftApp = false
@@ -3078,6 +3080,12 @@ class DriveController(
     /** The saved tasks, read back when the app starts. */
     fun setTasks(list: List<DisinfectionTask>) {
         tasks = list.map { it.coerced() }
+        if (tasks.none { it.id == defaultTaskId }) defaultTaskId = null
+        publish()
+    }
+
+    fun setDefaultTask(id: String?) {
+        defaultTaskId = id?.takeIf { selected -> tasks.any { it.id == selected } }
         publish()
     }
 
@@ -3099,6 +3107,7 @@ class DriveController(
         if (taskRun?.task?.id == id) return
         val t = tasks.firstOrNull { it.id == id } ?: return
         tasks = tasks - t
+        if (defaultTaskId == id) defaultTaskId = null
         log("Task \"${t.name}\" deleted")
         routinesOwed = true
         publish()
@@ -4011,6 +4020,7 @@ class DriveController(
         docked = onPile,
         robotAlert = robotAlert,
         tasks = tasks,
+        defaultTaskId = defaultTaskId,
         taskRun = taskRun ?: robotRun,
         taskOnRobot = taskRun == null && robotRun != null,
         taskElsewhere = taskRun == null && robotRun != null && robotTaskAsk == null && agentStatus?.task?.controller != phoneId,
