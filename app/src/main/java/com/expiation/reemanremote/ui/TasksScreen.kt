@@ -352,8 +352,8 @@ internal fun StartDefaultRoutine(state: RemoteState, actions: RemoteActions) {
             modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(14.dp)) {
             Text("START DEFAULT ROUTINE", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
         }
-        task?.let { Text(it.name, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        problem?.let { TasksNote(it) }
+        // One line under it: why it can't start, else which routine it is.
+        (problem ?: task?.name)?.let { TasksNote(it) }
     }
     state.tasks.firstOrNull { it.id == confirming }?.let { selected ->
         RoutineStartDialog(state, actions, selected, onDismiss = { confirming = null })
