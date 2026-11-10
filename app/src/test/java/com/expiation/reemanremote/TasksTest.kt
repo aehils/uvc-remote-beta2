@@ -70,4 +70,12 @@ class TasksTest {
         assertTrue(lines[0], lines[0].startsWith("Activity log, UV 3-07, v5.1.20, exported "))
         assertEquals(listOf("", "12:00:02 second", "12:00:01 first"), lines.drop(1))
     }
+
+    @Test
+    fun aRoutineThatRanWithoutThePhoneSaysSoAndKeepsIt() {
+        val t = DisinfectionTask("a", "Ward A", listOf(TaskStop("Bed 1", 5)))
+        val r = TaskReport(t, completed = true, reason = null, results = listOf(StopResult(1, "Bed 1", StopOutcome.DONE, 300_000)), at = 1, phoneAwayMs = 130_000)
+        assertEquals("1 of 1 point done · phone away 2:10", r.detail)
+        assertEquals(130_000L, TaskReport.listFromJson(TaskReport.listToJson(listOf(r))).single().phoneAwayMs)
+    }
 }

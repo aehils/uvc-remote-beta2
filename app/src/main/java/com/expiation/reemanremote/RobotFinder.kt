@@ -3,8 +3,6 @@ package com.expiation.reemanremote
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import org.json.JSONObject
 
 /** A robot that answered on the network: enough to recognise it, or for staff to pick it. */
@@ -45,9 +43,23 @@ object RobotFinder {
 
     /** Asks every host at once, [parallel] at a time; returns the robots in [hosts] order. */
     suspend fun find(hosts: List<String>, parallel: Int = 64, probe: suspend (String) -> FoundRobot?): List<FoundRobot> {
-        val gate = Semaphore(parallel)
+        require(parallel > 0) { "parallel must be positive" }
+        if (hosts.isEmpty()) return emptyList()
         return coroutineScope {
-            hosts.map { h -> async { gate.withPermit { probe(h) } } }.awaitAll().filterNotNull()
+            // A worker pool bounds both active probes and suspended coroutines. Keep results
+            // indexed so callers still receive robots in the original candidate order.
+            val results = arrayOfNulls<FoundRobot>(hosts.size)
+            val next = java.util.concurrent.atomic.AtomicInteger()
+            List(minOf(parallel, hosts.size)) {
+                async {
+                    while (true) {
+                        val i = next.getAndIncrement()
+                        if (i >= hosts.size) break
+                        results[i] = probe(hosts[i])
+                    }
+                }
+            }.awaitAll()
+            results.filterNotNull()
         }
     }
 

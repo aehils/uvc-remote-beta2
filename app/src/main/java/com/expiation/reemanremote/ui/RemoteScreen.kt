@@ -126,6 +126,7 @@ import com.expiation.reemanremote.Pose
 import com.expiation.reemanremote.R
 import com.expiation.reemanremote.RemoteState
 import com.expiation.reemanremote.AgentView
+import com.expiation.reemanremote.PairStep
 import com.expiation.reemanremote.RobotAgent
 import com.expiation.reemanremote.RobotMode
 import com.expiation.reemanremote.RobotName
@@ -163,18 +164,27 @@ data class RemoteActions(
     val onDeletePoint: (String) -> Unit = {},
     val onGoToCharger: () -> Unit = {},
     val onUndock: () -> Unit = {},
-    val onStartDisinfectionNow: () -> Unit = {},
+    /** Look for the Robot Controller again, after it couldn't be reached. */
+    val onRetryAgent: () -> Unit = {},
     val onStopDisinfection: () -> Unit = {},
     val onSwitchLampsOn: (Int) -> Unit = {},
     val onDismissAlert: () -> Unit = {},
     val onUvSettings: (UvSettings) -> Unit = {},
     val onLowBattery: (Int) -> Unit = {},
+    /** The robot's voice, percent; true: then say the test line. */
+    val onVoiceVolume: (Int, Boolean) -> Unit = { _, _ -> },
+    val onAskPairCode: () -> Unit = {},
+    val onSendPairCode: (String) -> Unit = {},
+    val onEndPairing: () -> Unit = {},
     val onRunningSpeed: (Double?) -> Unit = {},
     val onDemoEstop: () -> Unit = {},
     val onDemoWifi: () -> Unit = {},
     val onDemoBlock: () -> Unit = {},
     val onDemoPerson: () -> Unit = {},
     val onDemoAgentDown: () -> Unit = {},
+    val onDemoWeakWifi: () -> Unit = {},
+    val onDemoChargeWarning: () -> Unit = {},
+    val onDemoRoutinesOnRobot: () -> Unit = {},
     val onDemoMovement: () -> Unit = {},
     val onDemoChargeOnItsOwn: () -> Unit = {},
     val onDemoBattery: () -> Unit = {},
@@ -243,7 +253,7 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions, due: DisinfectionTa
                         DemoControlsPage(state, demoStatus, actions, onBack = { page = Page.MAIN })
                     page == Page.POINTS -> PointsPage(state, actions, onBack = { page = Page.MAIN })
                     page == Page.ACTIVITY -> SubPage(
-                        "Activity log", state, actions, onBack = { page = Page.MAIN }, readings = false,
+                        "Activity log", state, actions, onBack = { page = Page.MAIN },
                         barActions = { ActivityLogActions(state) },
                     ) {
                         ActivityLog(state.log, it)
@@ -857,7 +867,7 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
         if (state.connected && state.points is Points.NotLoaded) actions.onLoadPoints()
     }
     Column(modifier) {
-        Box(Modifier.padding(start = 16.dp, end = 16.dp, top = PAGE_TOP, bottom = 4.dp)) { RightNowCard(state, onOpenReport) }
+        Box(Modifier.padding(start = 16.dp, end = 16.dp, top = PAGE_TOP, bottom = 4.dp)) { RightNowCard(state, onOpenReport, actions.onRetryAgent) }
         Column(
             Modifier
                 .weight(1f)
@@ -1204,24 +1214,14 @@ private fun UvRunCard(state: RemoteState, actions: RemoteActions) {
                     fontWeight = FontWeight.SemiBold,
                     color = status.danger,
                 )
-                // START NOW skips the rest of the countdown, for when the room is already clear. The
-                // robot's safety app keeps its countdown whole.
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedButton(
-                        onClick = actions.onStopDisinfection,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(52.dp),
-                        shape = RoundedCornerShape(14.dp),
-                    ) { Text("CANCEL", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
-                    if (!state.uvByAgent) Button(
-                        onClick = actions.onStartDisinfectionNow,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(52.dp),
-                        shape = RoundedCornerShape(14.dp),
-                    ) { Text("START NOW", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
-                }
+                // The Robot Controller keeps its countdown whole: someone may be in the doorway.
+                OutlinedButton(
+                    onClick = actions.onStopDisinfection,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) { Text("CANCEL", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
             }
             is Uv.Starting -> {
                 Text("Switching the lamps on …", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = status.danger)
@@ -1247,7 +1247,7 @@ private fun UvRunCard(state: RemoteState, actions: RemoteActions) {
             is Uv.PersonSeen -> {
                 Text("UV paused · movement detected", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = status.danger)
                 Text(
-                    listOfNotNull(RobotAgent.domes(uv.domes).ifEmpty { null }, "$left of UV left", "a new countdown comes first").joinToString(" · "),
+                    listOfNotNull(RobotAgent.domes(uv.domes).ifEmpty { null }, "$left of UV left", if (uv.warned) "UV starts when nothing moves" else "a spoken warning comes first").joinToString(" · "),
                     style = MaterialTheme.typography.bodyMedium,
                     color = status.danger,
                 )
@@ -1656,12 +1656,15 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
 
             state.agent?.let { agent ->
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                SectionLabel("Safety app")
+                SectionLabel("Robot Controller")
                 Text(
                     if (agent.inApp) "In the app" else "Fake agent at ${agent.address ?: "—"}",
                     style = MaterialTheme.typography.bodyMedium,
                 )
-                DemoToggle("Safety app down", "It stops answering, as if it had crashed. UV is refused.", demo.agentDown, actions.onDemoAgentDown, enabled = agent.inApp)
+                DemoToggle("Robot Controller down", "It stops answering, as if it had crashed. UV is refused.", demo.agentDown, actions.onDemoAgentDown, enabled = agent.inApp)
+                DemoToggle("Weak robot Wi-Fi", "The head unit reports -78 dBm. Right Now warns.", demo.agentWifiWeak, actions.onDemoWeakWifi, enabled = agent.inApp)
+                DemoToggle("About to charge", "The Robot Controller is about to send the robot to its charger.", demo.agentChargeWarning, actions.onDemoChargeWarning, enabled = agent.inApp)
+                DemoToggle("Routines run on the robot", "Started routines run on the Robot Controller, and carry on without the phone.", demo.agentRoutines, actions.onDemoRoutinesOnRobot, enabled = agent.inApp)
                 OutlinedButton(
                     actions.onDemoMovement,
                     Modifier.fillMaxWidth(),
@@ -1759,6 +1762,10 @@ private fun SettingsTab(
     var editingAddress by rememberSaveable { mutableStateOf(false) }
     var editingSpeed by rememberSaveable { mutableStateOf(false) }
     var editingBattery by rememberSaveable { mutableStateOf(false) }
+    var editingVoice by rememberSaveable { mutableStateOf(false) }
+    var pairing by rememberSaveable { mutableStateOf(false) }
+    // Only a Robot Controller answering now, and new enough to have the setting.
+    val voice = state.agent?.takeIf { it.reachable }?.status
     Column(
         modifier
             .verticalScroll(rememberScrollState())
@@ -1769,6 +1776,21 @@ private fun SettingsTab(
         RobotCard(state, actions)
         SettingsGroup {
             SettingsRow(R.drawable.ic_info, "Robot information", onClick = onOpenRobotInfo)
+            // Robots with a Robot Controller: pairing is how this phone may start UV on one that asks for it.
+            state.agent?.let { agent ->
+                GroupDivider()
+                SettingsRow(
+                    R.drawable.ic_pair, "Pair with this robot",
+                    enabled = agent.reachable,
+                    trailing = {
+                        SettingValue(when {
+                            agent.paired -> "Paired"
+                            agent.needsPairing -> "Needed"
+                            else -> "Not paired"
+                        })
+                    },
+                ) { pairing = true; actions.onAskPairCode() }
+            }
             // DEMO has no address: the simulated robot is in the app.
             if (!state.demo) {
                 GroupDivider()
@@ -1789,6 +1811,15 @@ private fun SettingsTab(
                 R.drawable.ic_battery, "Low battery level",
                 trailing = { SettingValue("${state.lowBattery}%") },
             ) { editingBattery = true }
+            // Robots with a Robot Controller only: it speaks the warnings, and keeps the level.
+            if (state.agent != null) {
+                GroupDivider()
+                SettingsRow(
+                    R.drawable.ic_volume, "Voice volume",
+                    enabled = voice?.voiceVolume != null,
+                    trailing = { SettingValue(voice?.voiceVolume?.let { "$it%" } ?: "—") },
+                ) { editingVoice = true }
+            }
             GroupDivider()
             SettingsRow(R.drawable.ic_tab_activity, "Activity log", onClick = onOpenActivity)
         }
@@ -1843,6 +1874,24 @@ private fun SettingsTab(
                 editingBattery = false
                 actions.onLowBattery(it)
             },
+        )
+    }
+    val agentNow = state.agent
+    if (pairing && agentNow != null) {
+        PairDialog(
+            step = agentNow.pairStep,
+            onRefresh = actions.onAskPairCode,
+            onSend = actions.onSendPairCode,
+            onClose = { pairing = false; actions.onEndPairing() },
+        )
+    }
+    val voiceNow = voice?.voiceVolume
+    if (editingVoice && voiceNow != null) {
+        VoiceVolumeDialog(
+            current = voiceNow,
+            floor = voice?.voiceFloor ?: RobotAgent.VOICE_FLOOR,
+            onSet = actions.onVoiceVolume,
+            onClose = { editingVoice = false },
         )
     }
     if (editingAddress) {
@@ -2083,6 +2132,105 @@ private fun LowBatteryDialog(current: Int, onDismiss: () -> Unit, onSave: (Int) 
 }
 
 /**
+ * Pairing with the robot: it shows a code on its screen for 5 minutes; type it in. Wrong codes
+ * can be tried again as often as needed; a code that has run out gets a Refresh for a new one.
+ */
+@Composable
+private fun PairDialog(step: PairStep, onRefresh: () -> Unit, onSend: (String) -> Unit, onClose: () -> Unit) {
+    var code by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(step) {
+        if (step == PairStep.Paired) onClose()
+        if (step == PairStep.Expired) code = ""
+    }
+    val busy = step == PairStep.Asking || step == PairStep.Sending
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("Pair with this robot") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                when (step) {
+                    PairStep.Expired -> {
+                        Text("This code has expired", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                        OutlinedButton(onClick = onRefresh, shape = RoundedCornerShape(10.dp)) { Text("Refresh") }
+                    }
+                    else -> {
+                        Text(
+                            if (step == PairStep.Asking) "Asking the robot for a code…" else "Enter the code shown on the robot's screen.",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        OutlinedTextField(
+                            value = code,
+                            onValueChange = { v -> code = v.filter(Char::isDigit).take(6) },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            enabled = !busy,
+                            placeholder = { Text("6 digits") },
+                            textStyle = MaterialTheme.typography.headlineSmall.copy(fontFamily = FontFamily.Monospace, letterSpacing = 4.sp),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
+                            keyboardActions = KeyboardActions(onDone = { if (code.length == 6) onSend(code) }),
+                        )
+                        if (step is PairStep.Problem) Text(step.text, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (step != PairStep.Expired) TextButton(onClick = { onSend(code) }, enabled = code.length == 6 && !busy) { Text("Pair") }
+        },
+        dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } },
+    )
+}
+
+/**
+ * How loud the robot speaks its warnings. Play test sets the level on the robot and has it
+ * speak, so it's judged by ear where the robot stands; Cancel puts back the level it had.
+ */
+@Composable
+private fun VoiceVolumeDialog(current: Int, floor: Int, onSet: (Int, Boolean) -> Unit, onClose: () -> Unit) {
+    var percent by rememberSaveable { mutableStateOf(current) }
+    var tested by rememberSaveable { mutableStateOf(false) }
+    val cancel = { if (tested) onSet(current, false); onClose() }
+    AlertDialog(
+        onDismissRequest = cancel,
+        title = { Text("Voice volume") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text(
+                    "How loud the robot speaks its UV warnings. Never under $floor%, so a warning is always heard.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        onClick = { percent = (percent - 10).coerceAtLeast(floor) },
+                        enabled = percent > floor,
+                        shape = RoundedCornerShape(10.dp),
+                    ) { Text("−", fontSize = 20.sp) }
+                    Text(
+                        "$percent%",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontFamily = FontFamily.Monospace,
+                        textAlign = TextAlign.Center,
+                    )
+                    OutlinedButton(
+                        onClick = { percent = (percent + 10).coerceAtMost(100) },
+                        enabled = percent < 100,
+                        shape = RoundedCornerShape(10.dp),
+                    ) { Text("+", fontSize = 20.sp) }
+                }
+                OutlinedButton(
+                    onClick = { tested = true; onSet(percent, true) },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                ) { Text("Play test on the robot") }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSet(percent, false); onClose() }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = cancel) { Text("Cancel") } },
+    )
+}
+
+/**
  * The robot's address, typed in: for a network the app can't search (the robot on another,
  * routed network). Staff pick robots by name, so it's a dialog off the Robot group, not a field on the page.
  */
@@ -2108,7 +2256,10 @@ private fun AddressDialog(current: String, onDismiss: () -> Unit, onConnect: (St
     )
 }
 
-/** A page opened from Settings. Like the other pages, it keeps STOP on screen, and [readings] the robot's readings. */
+/**
+ * A page opened from Settings. Like the other pages, it keeps STOP on screen. No readings strip
+ * (e-stop badge, speed): Robot information has the same facts in its own rows.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SubPage(
@@ -2116,7 +2267,6 @@ private fun SubPage(
     state: RemoteState,
     actions: RemoteActions,
     onBack: () -> Unit,
-    readings: Boolean = true,
     barActions: @Composable RowScope.() -> Unit = {},
     content: @Composable (Modifier) -> Unit,
 ) {
@@ -2135,7 +2285,7 @@ private fun SubPage(
                     actions = barActions,
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 )
-                StatusHeader(state, actions.onDismissAlert, readings = readings)
+                StatusHeader(state, actions.onDismissAlert, readings = false)
             }
         },
         bottomBar = { StopBar(actions.onStop) },
@@ -2170,6 +2320,12 @@ private fun RobotInfo(state: RemoteState, modifier: Modifier) {
         InfoSection("Power") {
             InfoRow("Battery", state.battery?.let { "$it%" } ?: "—", mono = true)
             InfoRow("On the charger", if (state.docked) "Yes" else "No")
+            // The Robot Controller sends it to charge (R14): "—" until it has answered, no row from one without it.
+            state.agent?.let { a ->
+                val st = a.status
+                if (st == null) InfoRow("Auto-charge", "—")
+                else st.charge?.let { InfoRow("Auto-charge", RobotAgent.chargeText(it) ?: "Not needed") }
+            }
             InfoRow(
                 "E-stop",
                 when (state.estop) {
@@ -2195,13 +2351,13 @@ private fun RobotInfo(state: RemoteState, modifier: Modifier) {
     }
 }
 
-/** The robot's safety app: is it answering, which version, its lamps and person sensor, what's wrong. */
+/** The Robot Controller: is it answering, which version, its lamps and person sensor, what's wrong. */
 @Composable
 private fun AgentInfoSection(agent: AgentView, demo: Boolean) {
     val s = agent.status
-    InfoSection("Safety app") {
+    InfoSection("Robot Controller") {
         InfoRow(
-            "Safety app",
+            "Status",
             when {
                 agent.reachable -> if (agent.inApp) "DEMO, in the app" else "Connected"
                 agent.searching -> "Looking for it"
@@ -2211,6 +2367,8 @@ private fun AgentInfoSection(agent: AgentView, demo: Boolean) {
         )
         InfoRow("Version", agent.info?.let { "${it.version} · API ${it.api}" } ?: "—", mono = true)
         if (!agent.inApp && (!demo || agent.address != null)) InfoRow("Address", agent.address ?: "—", mono = true)
+        // "—" until it has answered; no row from an agent that answers without it (before E10).
+        if (s == null) InfoRow("Head unit Wi-Fi", "—") else s.wifi?.let { InfoRow("Head unit Wi-Fi", RobotAgent.wifiText(it), mono = true) }
         InfoRow("Lamps", s?.let { if (it.unlocked) "Unlocked" else "Locked" } ?: "—")
         InfoRow(
             "Person sensor",

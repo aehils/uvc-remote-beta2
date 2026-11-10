@@ -3,6 +3,9 @@ package com.expiation.reemanremote
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** What reports saved before the Robot Controller was renamed (2026-11-09) still say. */
+private val REASONS_BEFORE_RENAME = setOf("lost the robot's safety app", "Can't reach the robot's safety app, UV unavailable")
+
 // ---------------------------------------------------------------------- disinfection tasks
 
 /** One stop of a task: a saved point, and how long the UV lamps stay on there. */
@@ -162,7 +165,7 @@ enum class StopOutcome { DONE, SKIPPED, NOT_REACHED, INTERRUPTED }
 
 /**
  * What became of one stop in one round. [uvMs] is how long the lamps were on there; [personPauses]
- * how many times the robot's safety app paused them because something moved.
+ * how many times the Robot Controller paused them because something moved.
  */
 data class StopResult(val round: Int, val point: String, val outcome: StopOutcome, val uvMs: Long = 0, val personPauses: Int = 0)
 
@@ -179,7 +182,7 @@ data class TaskRun(
     val uvLeftMs: Long? = null,
     /** UV time this stop has already had before a pause. */
     val uvDoneMs: Long = 0,
-    /** Times the robot's safety app has paused this stop's lamps because something moved. */
+    /** Times the Robot Controller has paused this stop's lamps because something moved. */
     val personPauses: Int = 0,
 ) {
     val stop: TaskStop get() = task.stops[index]
@@ -197,8 +200,10 @@ data class TaskReport(
     /** Why it ended, when it didn't finish ("STOP pressed", "battery low (14%)"). */
     val reason: String?,
     val results: List<StopResult>,
-    /** When it ended, on the phone's clock. */
+    /** When it ended, on the phone's clock (the robot's, for a routine the robot ran). */
     val at: Long = 0,
+    /** A routine run by the robot: how long it went on with no phone in touch (R26). */
+    val phoneAwayMs: Long = 0,
 ) {
     val done: Int get() = results.count { it.outcome == StopOutcome.DONE }
     val total: Int get() = task.stops.size * task.rounds
@@ -219,11 +224,12 @@ data class TaskReport(
     val notReached: List<String>
         get() = results.filter { it.outcome == StopOutcome.NOT_REACHED || it.outcome == StopOutcome.SKIPPED }.map { it.point }.distinct()
 
-    /** "2 of 3 points done · not reached: Bed 2 · battery low (14%)" */
+    /** "2 of 3 points done · not reached: Bed 2 · battery low (14%) · phone away 2:10" */
     val detail: String
         get() = "$done of $total point${if (total == 1) "" else "s"} ${if (task.lampsOff) "reached" else "done"}" +
             (if (notReached.isEmpty()) "" else " · not reached: ${notReached.joinToString()}") +
-            (reason?.let { " · " + if (it.startsWith("ON ")) "the lamps didn't come on" else it } ?: "")
+            (reason?.let { " · " + if (it.startsWith("ON ")) "the lamps didn't come on" else it } ?: "") +
+            (if (phoneAwayMs >= 1_000) " · phone away ${DriveController.clockText(phoneAwayMs)}" else "")
 
     /** What to do about how it went, for whoever is holding the phone; null when there's nothing to do. */
     val nextStep: String?
@@ -233,8 +239,8 @@ data class TaskReport(
                 r.startsWith("battery low") -> "Charge the robot, then run it again."
                 r.startsWith("e-stop") -> "Release the e-stop when it's safe, then run it again."
                 r == "lost connection" || r.startsWith("ON ") -> "Check the phone is on the robot's Wi-Fi, then run it again."
-                r == "lost the robot's safety app" || r == DriveController.CANT_REACH_AGENT ->
-                    "Check the robot's screen shows its safety app, then run it again."
+                r == "lost the Robot Controller" || r == DriveController.CANT_REACH_AGENT || r in REASONS_BEFORE_RENAME ->
+                    "Check the robot's screen shows the Robot Controller, then run it again."
                 r.startsWith("Lost the phone") -> "Keep the phone on the robot's Wi-Fi while the lamps are on, then run it again."
                 r.startsWith("refused: ") -> "Sort out what the robot reported, then run it again."
                 r == "the robot moved" -> "Make sure nothing moves the robot while the lamps are on, then run it again."
@@ -259,6 +265,7 @@ data class TaskReport(
                         .put("completed", r.completed)
                         .put("reason", r.reason ?: JSONObject.NULL)
                         .put("at", r.at)
+                        .put("phone_away_ms", r.phoneAwayMs)
                         .put("results", JSONArray().apply {
                             r.results.forEach {
                                 put(
@@ -291,6 +298,7 @@ data class TaskReport(
                             )
                         },
                         at = o.getLong("at"),
+                        phoneAwayMs = o.optLong("phone_away_ms", 0),
                     )
                 }.getOrNull()
             }

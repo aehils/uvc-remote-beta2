@@ -103,7 +103,11 @@ class FakeAgentCheck {
         Runtime.getRuntime().exec(arrayOf("kill", pid.toString())).waitFor()
         val refused = until(c2, 8_000, "UV refused") { it.uvProblem != null }
         say("fake agent stopped: after $refused ms the phone says \"${c2.state.value.uvProblem}\"")
-        assertEquals(DriveController.CANT_REACH_AGENT, c2.state.value.uvProblem)
+        // "Connecting" first (E1), then, once it gives up, Retry.
+        assertEquals(DriveController.CONNECTING_AGENT, c2.state.value.uvProblem)
+        withContext(thread) { c2.startDisinfection(); c2.switchLampsOn(5) }
+        val gaveUp = until(c2, DriveController.AGENT_CONNECT_MS + 15_000, "can't reach it") { it.uvProblem == DriveController.CANT_REACH_AGENT }
+        say("then after $gaveUp ms more: \"${c2.state.value.uvProblem}\"")
         withContext(thread) { c2.startDisinfection(); c2.switchLampsOn(5) }
         delay(2_000)
         withContext(thread) {

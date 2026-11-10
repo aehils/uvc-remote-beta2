@@ -37,7 +37,7 @@ import kotlin.math.sqrt
  *
  * @param clock monotonic time in nanoseconds
  * @param realistic adds request latency and speed noise; off for deterministic tests
- * @param withAgent the robot has a safety app on its head unit (see [FakeAgent]), answering /v1/
+ * @param withAgent the robot has a Robot Controller on its head unit (see [FakeAgent]), answering /v1/
  */
 class FakeRobot(
     private val clock: () -> Long = System::nanoTime,
@@ -51,7 +51,7 @@ class FakeRobot(
     /** What /reeman/hostname answers (see [RobotName]); tests give fakes different ones. */
     var hostname = HOSTNAME
 
-    /** The robot's safety app, if it has one: it switches the lamps through the same supply as /cmd/external_power_supply. */
+    /** The Robot Controller, if it has one: it switches the lamps through the same supply as /cmd/external_power_supply. */
     val agent: FakeAgent? = if (withAgent) FakeAgent(setLamps = ::setUvSupply, estop = { estopPressed }) else null
 
     /** One planned step: ramp up, cruise, ramp down, like the firmware's own planner. */
@@ -147,13 +147,13 @@ class FakeRobot(
 
     /** Answers one HTTP request. Returns null when a Wi-Fi drop is being simulated. */
     @Synchronized
-    fun handle(method: String, path: String, json: String?): Reply? {
+    fun handle(method: String, path: String, json: String?, token: String? = null): Reply? {
         if (offline) return null
         val now = clock()
         advance(now)
         if (path.startsWith("/v1/")) {
             val a = agent ?: return Reply(404, "", 0)
-            val (code, body) = a.handle(method, path, json.orEmpty(), now / 1_000_000) ?: return null
+            val (code, body) = a.handle(method, path, json.orEmpty(), now / 1_000_000, token) ?: return null
             return Reply(code, body, if (realistic) 10L + rng.nextInt(20) else 0L)
         }
 
@@ -593,13 +593,13 @@ class FakeRobot(
 
     // ------------------------------------------------------------------ demo controls
 
-    /** The safety app stops answering, or answers again (DEMO controls). */
+    /** The Robot Controller stops answering, or answers again (DEMO controls). */
     @get:Synchronized @set:Synchronized
     var isAgentDown: Boolean
         get() = agent?.down == true
         set(value) { agent?.down = value }
 
-    /** Someone moves near the robot: its safety app pauses the lamps. */
+    /** Someone moves near the robot: its Robot Controller pauses the lamps. */
     @Synchronized
     fun personNearRobot() {
         agent?.personSeen(clock() / 1_000_000)
@@ -620,7 +620,9 @@ class FakeRobot(
     fun setEstopPressed(pressed: Boolean) {
         advance(clock())
         estopPressed = pressed
-        if (pressed) halt() // the e-stop cuts the motors
+        // As the real robot (2026-11-09): the motors stop, but a navigation only waits, and drives
+        // on to its point once the e-stop is released. Only /cmd/cancel_goal ends it.
+        if (navGoal != null) pauseNav(if (pressed) 1e6 else 0.0) else if (pressed) halt()
     }
 
     @get:Synchronized @set:Synchronized

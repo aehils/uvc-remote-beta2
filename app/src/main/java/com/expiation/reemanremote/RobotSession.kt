@@ -88,12 +88,13 @@ class RobotSession private constructor(private val app: Application) {
             scope, RobotApi(host), FakeRobot(withAgent = true), demo,
             search = ::searchWifi, robotName = prefs.getString(KEY_ROBOT_NAME, null),
             phoneId = phoneId(), agentSearch = ::searchAgent, knownAgents = knownAgents(),
+            agentTokens = agentTokens(), saveAgentToken = ::saveAgentToken,
         )
         val defaults = UvSettings()
         controller.setUvSettings(
             UvSettings(prefs.getInt(KEY_UV_MINUTES, defaults.minutes), prefs.getInt(KEY_UV_DELAY, defaults.delaySeconds))
         )
-        controller.setLowBattery(prefs.getInt(KEY_LOW_BATTERY, DriveController.DEFAULT_LOW_BATTERY))
+        controller.setLowBattery(prefs.getInt(KEY_LOW_BATTERY, DriveController.DEFAULT_LOW_BATTERY), fromUser = false)
         prefs.getFloat(KEY_RUNNING_SPEED, 0f).takeIf { it > 0f }?.let { controller.setRunningSpeed(it.toDouble()) }
         controller.setTasks(DisinfectionTask.listFromJson(prefs.getString(KEY_TASKS, null)))
         RoutineAlarms.schedule(app, controller.state.value.tasks)
@@ -121,7 +122,7 @@ class RobotSession private constructor(private val app: Application) {
                     .apply()
             }
         }
-        // Each robot seen with a safety app, and where it answered last: its lamps only ever come
+        // Each robot seen with a Robot Controller, and where it answered last: its lamps only ever come
         // on through it from now on (fail closed), even after a restart.
         scope.launch {
             controller.state.map { s -> s.robotName?.takeIf { !s.demo }?.let { n -> s.agent?.address?.let { n to it } } }
@@ -203,7 +204,7 @@ class RobotSession private constructor(private val app: Application) {
     }
 
     /**
-     * Looks for a robot's safety app on the phone's Wi-Fi (see [AgentFinder]): at [last], then by
+     * Looks for a robot's Robot Controller on the phone's Wi-Fi (see [AgentFinder]): at [last], then by
      * NSD, then at every address on the network.
      */
     private suspend fun searchAgent(hostname: String?, demo: Boolean, last: String?): FoundAgent? {
@@ -221,12 +222,28 @@ class RobotSession private constructor(private val app: Application) {
         )
     }
 
+    /** Pairing tokens by robot hostname, in this app's own storage (no backup: see the manifest). */
+    private fun agentTokens(): Map<String, String> {
+        val o = runCatching { JSONObject(prefs.getString(KEY_AGENT_TOKENS, null) ?: "{}") }.getOrElse { JSONObject() }
+        return o.keys().asSequence().associateWith { o.optString(it) }.filterValues { it.isNotBlank() }
+    }
+
+    private fun saveAgentToken(hostname: String, token: String?) {
+        val all = agentTokens().toMutableMap()
+        if (token == null) all.remove(hostname) else all[hostname] = token
+        prefs.edit().putString(KEY_AGENT_TOKENS, JSONObject(all as Map<*, *>).toString()).apply()
+    }
+
+    fun askPairCode() = controller.askPairCode()
+    fun sendPairCode(code: String) = controller.sendPairCode(code)
+    fun endPairing() = controller.endPairing()
+
     private fun knownAgents(): Map<String, String> {
         val o = runCatching { JSONObject(prefs.getString(KEY_AGENTS, null) ?: "{}") }.getOrElse { JSONObject() }
         return o.keys().asSequence().associateWith { o.optString(it) }
     }
 
-    /** This phone's name to the robot's safety app, made up once. */
+    /** This phone's name to the Robot Controller, made up once. */
     private fun phoneId(): String = prefs.getString(KEY_PHONE_ID, null)
         ?: ("phone-" + java.util.UUID.randomUUID().toString().take(8)).also { prefs.edit().putString(KEY_PHONE_ID, it).apply() }
 
@@ -246,6 +263,9 @@ class RobotSession private constructor(private val app: Application) {
         val saved = controller.state.value.uvSettings
         prefs.edit().putInt(KEY_UV_MINUTES, saved.minutes).putInt(KEY_UV_DELAY, saved.delaySeconds).apply()
     }
+
+    /** Kept on the robot, not here: its Robot Controller holds it for every phone. */
+    fun setVoiceVolume(percent: Int, thenTest: Boolean) = controller.setVoiceVolume(percent, thenTest)
 
     fun setLowBattery(percent: Int) {
         controller.setLowBattery(percent)
@@ -346,7 +366,8 @@ class RobotSession private constructor(private val app: Application) {
         private const val KEY_ROBOT_NAME = "robot_name" // the robot's hostname: how it is recognised at a new address
         private const val KEY_PAST_HOSTS = "past_hosts" // addresses it has answered at, most recent first
         private const val MAX_PAST_HOSTS = 6
-        private const val KEY_AGENTS = "robot_agents" // robot hostname to its safety app's last address
+        private const val KEY_AGENTS = "robot_agents" // robot hostname to its Robot Controller's last address
+        private const val KEY_AGENT_TOKENS = "robot_agent_tokens" // robot hostname to this phone's pairing token
         private const val KEY_PHONE_ID = "phone_id"
 
         private fun isEmulator() = Build.FINGERPRINT.startsWith("generic") || "emulator" in Build.FINGERPRINT ||
