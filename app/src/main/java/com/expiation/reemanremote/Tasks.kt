@@ -222,7 +222,7 @@ data class TaskReport(
     val notReached: List<String>
         get() = results.filter { it.outcome == StopOutcome.NOT_REACHED || it.outcome == StopOutcome.SKIPPED }.map { it.point }.distinct()
 
-    /** "2 of 3 points done · not reached: Bed 2 · battery low (14%)" */
+    /** "2 of 3 points done · not reached: Bed 2 · battery low (14%) · phone away 2:10" */
     val detail: String
         get() = "$done of $total point${if (total == 1) "" else "s"} ${if (task.lampsOff) "reached" else "done"}" +
             (if (notReached.isEmpty()) "" else " · not reached: ${notReached.joinToString()}") +

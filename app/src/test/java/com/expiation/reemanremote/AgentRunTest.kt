@@ -1,6 +1,8 @@
 package com.expiation.reemanremote
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import com.expiation.reemanremote.ui.rightNow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
@@ -107,7 +109,9 @@ class AgentRunTest {
         waitFor(c) { it.points is Points.Loaded }
         c.demoToggleAgent()
         waitFor(c, maxMs = 6_000) { !it.canDisinfect }
-        assertEquals(DriveController.CANT_REACH_AGENT, c.state.value.uvProblem)
+        assertEquals(DriveController.CONNECTING_AGENT, c.state.value.uvProblem)
+        // Each read waits out its timeout, so giving up can take a little longer than the connecting time.
+        waitFor(c, maxMs = DriveController.AGENT_CONNECT_MS + 5_000) { it.uvProblem == DriveController.CANT_REACH_AGENT }
         assertEquals(DriveController.CANT_REACH_AGENT, c.state.value.routeProblem)
         // Neither way in lights them, and nothing goes straight to the robot instead.
         c.startDisinfection()
@@ -121,19 +125,126 @@ class AgentRunTest {
         waitFor(c, maxMs = 3_000) { it.canDisinfect }
     }
 
-    @Test
-    fun aRobotSeenWithAnAgentRefusesUvWithoutOne() = runTest {
-        // Live, never connected: still remembered as a robot with a safety app.
+    // ---- E1: never light without the agent, on any robot, the first run after an install included.
+
+    /**
+     * Live (not DEMO) against [robot] as the navigation computer. The Robot Controller is found by
+     * [search] and reached at its address through [agents]; any other address doesn't answer.
+     */
+    private fun TestScope.live(
+        robot: FakeRobot,
+        agents: Map<String, FakeRobot> = emptyMap(),
+        known: Map<String, String> = emptyMap(),
+        search: suspend (String?, Boolean, String?) -> FoundAgent?,
+    ): DriveController {
         val c = DriveController(
-            backgroundScope, RobotApi("192.0.2.1"), FakeRobot(), demo = false, now = { testScheduler.currentTime },
-            robotName = "wbot11u-250101-003-007", knownAgents = mapOf("wbot11u-250101-003-007" to "192.0.2.50:8765"),
+            backgroundScope, RobotApi.demo(robot), FakeRobot(), demo = false, now = { testScheduler.currentTime },
+            phoneId = "phone-test", agentSearch = search, knownAgents = known,
+            agentApi = { a -> RobotApi.demo(agents[a] ?: FakeRobot().apply { isOffline = true }) },
         )
-        assertEquals(DriveController.CANT_REACH_AGENT, c.state.value.uvProblem)
-        assertEquals("192.0.2.50:8765", c.state.value.agent?.address)
-        // A robot never seen with one: as before.
-        val other = DriveController(backgroundScope, RobotApi("192.0.2.1"), FakeRobot(), demo = false, now = { testScheduler.currentTime }, robotName = "x-250101-003-008")
-        assertNull(other.state.value.uvProblem)
-        assertNull(other.state.value.agent)
+        c.setUvSettings(UvSettings(minutes = 1, delaySeconds = 15))
+        c.resume()
+        return c
+    }
+
+    private fun clock(scope: TestScope): () -> Long = { scope.testScheduler.currentTime * 1_000_000 }
+    private fun infoOf(robot: FakeRobot) = RobotAgent.parseInfo(robot.handle("GET", RobotAgent.INFO_PATH, null)!!.body)!!
+
+    /** Runs [ms] on, failing at once if [robot]'s lamps ever come on. */
+    private fun TestScope.neverLit(robot: FakeRobot, ms: Long) {
+        val until = currentTime + ms
+        while (currentTime < until) {
+            assertFalse("lamps lit", robot.isUvOn)
+            advanceTimeBy(50)
+        }
+    }
+
+    @Test
+    fun aFreshInstallWithNoSafetyAppNeverLightsAndOffersRetry() = runTest {
+        val robot = FakeRobot(clock(this), Random(1), realistic = true) // no Robot Controller on it
+        var searches = 0
+        val c = live(robot) { _, _, _ -> searches++; delay(2_000); null }
+        waitFor(c, maxMs = 5_000) { it.connected && it.agent != null }
+        // Searching: "Connecting", and no way to start UV.
+        assertTrue(c.state.value.agent!!.connecting)
+        assertEquals(DriveController.CONNECTING_AGENT, c.state.value.uvProblem)
+        assertEquals(DriveController.CONNECTING_AGENT, rightNow(c.state.value).headline)
+        c.startDisinfection()
+        c.switchLampsOn(5)
+        assertNull(c.state.value.uv)
+        // The search comes back empty: can't reach it, Retry.
+        waitFor(c) { it.uvProblem == DriveController.CANT_REACH_AGENT }
+        assertFalse(c.state.value.canDisinfect)
+        assertTrue(rightNow(c.state.value).retry)
+        c.startDisinfection()
+        c.switchLampsOn(5)
+        neverLit(robot, 30_000)
+        assertNull(c.state.value.uv)
+        assertFalse("no ON from the phone", logged(c, "UV lamps ON"))
+        // Retry: connecting again, and a new search at once.
+        val before = searches
+        c.retryAgent()
+        assertTrue(c.state.value.agent!!.connecting)
+        advanceTimeBy(500)
+        assertEquals(before + 1, searches)
+    }
+
+    @Test
+    fun aSlowSearchShowsConnectingUntilTheSafetyAppIsFound() = runTest {
+        val robot = FakeRobot(clock(this), Random(1), realistic = true, withAgent = true)
+        val at = "192.0.2.60:8765" // TEST-NET: only ever reached through the fake
+        val c = live(robot, agents = mapOf(at to robot)) { _, _, _ -> delay(30_000); FoundAgent(at, infoOf(robot)) }
+        waitFor(c, maxMs = 5_000) { it.connected && it.agent != null }
+        // Longer than the connecting time on its own: a search under way keeps it "Connecting".
+        advanceTimeBy(DriveController.AGENT_CONNECT_MS + 5_000)
+        assertTrue(c.state.value.agent!!.connecting)
+        assertEquals(DriveController.CONNECTING_AGENT, c.state.value.uvProblem)
+        c.startDisinfection()
+        neverLit(robot, 2_000)
+        assertNull(c.state.value.uv)
+        waitFor(c, maxMs = 30_000) { it.canDisinfect }
+        assertEquals(at, c.state.value.agent!!.address)
+        c.startDisinfection()
+        waitFor(c) { it.uv is Uv.Countdown && it.uvByAgent }
+        assertEquals("phone-test", RobotAgent.parseState(robot.handle("GET", RobotAgent.STATE_PATH, null)!!.body)!!.controller)
+    }
+
+    @Test
+    fun aSafetyAppAtANewAddressIsFoundAndUsed() = runTest {
+        val robot = FakeRobot(clock(this), Random(1), realistic = true, withAgent = true)
+        val old = "192.0.2.60:8765"
+        val moved = "192.0.2.77:8765"
+        var askedLast: String? = null
+        val c = live(robot, agents = mapOf(moved to robot), known = mapOf(FakeRobot.HOSTNAME to old)) { _, _, last ->
+            askedLast = last
+            delay(1_000)
+            FoundAgent(moved, infoOf(robot))
+        }
+        waitFor(c, maxMs = 10_000) { it.canDisinfect }
+        assertEquals("the search tried the old address first", old, askedLast)
+        assertEquals(moved, c.state.value.agent!!.address)
+        c.switchLampsOn(1)
+        waitFor(c) { it.uv is Uv.On }
+        assertTrue(robot.isUvOn)
+    }
+
+    @Test
+    fun losingTheSafetyAppMidRunStillGetsOffToTheRobot() = runTest {
+        val c = ready()
+        c.switchLampsOn(5)
+        waitFor(c) { it.uv is Uv.On }
+        assertTrue(lit(c))
+        c.demoToggleAgent() // it stops answering, lamps on
+        waitFor(c, maxMs = 6_000) { it.uv == null && !it.lampsOffOwed }
+        assertFalse("OFF reached the navigation computer", lit(c))
+        assertTrue(log(c), logged(c, "lost the Robot Controller"))
+        assertTrue(log(c), logged(c, "robot accepted OFF (Robot Controller"))
+        // Still down: lamps switched on some other way (the robot's own app) go off on STOP.
+        c.demoRobot.handle("POST", DriveController.UV_PATH, """{"type":"24v","operation":"1"}""")
+        assertTrue(lit(c))
+        c.stop()
+        advanceTimeBy(3_000)
+        assertFalse(lit(c))
     }
 
     @Test
@@ -147,17 +258,6 @@ class AgentRunTest {
         assertNull(c.state.value.uv)
         assertFalse(lit(c))
         assertEquals(AgentLamp.OFF, agentState(c).lamp)
-    }
-
-    @Test
-    fun startNowLeavesTheAgentsCountdownAlone() = runTest {
-        val c = ready()
-        c.startDisinfection()
-        waitFor(c) { it.uv is Uv.Countdown && it.uvByAgent }
-        c.startDisinfectionNow()
-        advanceTimeBy(5_000)
-        assertTrue(c.state.value.uv is Uv.Countdown)
-        assertFalse(lit(c))
     }
 
     @Test

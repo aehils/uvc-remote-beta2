@@ -20,8 +20,9 @@ import java.util.Random
 class DriveControllerTest {
 
     private fun TestScope.controller(demo: Boolean = true): DriveController {
-        // Realistic latency and speed noise, seeded so runs repeat exactly.
-        val fake = FakeRobot({ testScheduler.currentTime * 1_000_000 }, Random(1), realistic = true)
+        // Realistic latency and speed noise, seeded so runs repeat exactly. Every robot's lamps come
+        // on through its Robot Controller, so the DEMO robot has one.
+        val fake = FakeRobot({ testScheduler.currentTime * 1_000_000 }, Random(1), realistic = true, withAgent = true)
         // The live address is TEST-NET; these tests never switch to it.
         return DriveController(backgroundScope, RobotApi("192.0.2.1"), fake, demo, now = { testScheduler.currentTime })
     }
@@ -709,12 +710,10 @@ class DriveControllerTest {
 
     private fun uvOn(c: DriveController) = c.demoRobot.isUvOn
 
-    /** Ready, with the lamps on (countdown skipped). */
+    /** Ready, with the lamps on (the UV switch: the Robot Controller's shortest countdown). */
     private fun TestScope.lampsOn(minutes: Int = 5): DriveController {
         val c = ready()
-        c.setUvSettings(UvSettings(minutes))
-        c.startDisinfection()
-        c.startDisinfectionNow()
+        c.switchLampsOn(minutes)
         waitFor(c) { it.uv is Uv.On }
         assertTrue(uvOn(c))
         return c
@@ -725,7 +724,7 @@ class DriveControllerTest {
         val c = ready()
         c.setUvSettings(UvSettings(minutes = 1, delaySeconds = 15))
         c.startDisinfection()
-        assertTrue(c.state.value.uv is Uv.Countdown)
+        assertTrue(c.state.value.uv is Uv.Starting) // asking the Robot Controller
         assertFalse(c.state.value.canDrive)
 
         advanceTimeBy(14_000)
@@ -755,39 +754,17 @@ class DriveControllerTest {
         advanceTimeBy(20_000)
         assertFalse(uvOn(c))
         assertEquals(null, c.state.value.uv)
-        assertFalse("nothing sent", logged(c, DriveController.UV_PATH))
+        assertFalse("no ON from the phone", logged(c, "UV lamps ON"))
         assertTrue(log(c), logged(c, "cancelled before the lamps came on"))
     }
 
     @Test
-    fun startNowSkipsTheCountdown() = runTest {
-        val c = ready()
-        c.startDisinfectionNow() // no countdown running: does nothing
-        assertEquals(null, c.state.value.uv)
-
-        c.setUvSettings(UvSettings(minutes = 1, delaySeconds = 60))
-        c.startDisinfection()
-        advanceTimeBy(2_000)
-        assertFalse(uvOn(c))
-        c.startDisinfectionNow()
-        val took = waitFor(c) { it.uv is Uv.On }
-        assertTrue("took $took ms", took < 1_000)
-        assertTrue(uvOn(c))
-        assertTrue(log(c), logged(c, "countdown skipped"))
-
-        val ran = waitFor(c, maxMs = 70_000) { it.uv == null } // the full time, from START NOW
-        assertTrue("ran $ran ms", ran in 59_000..61_000)
-        waitFor(c) { !it.lampsOffOwed }
-        assertFalse(uvOn(c))
-    }
-
-    @Test
-    fun theUvSwitchTurnsTheLampsOnAtOnceAndOffAgain() = runTest {
+    fun theUvSwitchTurnsTheLampsOnAfterTheShortestCountdownAndOffAgain() = runTest {
         val c = ready()
         c.setUvSettings(UvSettings(minutes = 1, delaySeconds = 60)) // the switch ignores both
         c.switchLampsOn(10)
         val took = waitFor(c) { it.uv is Uv.On }
-        assertTrue("took $took ms", took < 1_000)
+        assertTrue("took $took ms", took in DriveController.AGENT_MIN_COUNTDOWN_MS..DriveController.AGENT_MIN_COUNTDOWN_MS + 2_000)
         assertTrue(uvOn(c))
         assertFalse(c.state.value.canDrive)
         val run = c.state.value.uv as Uv.On
@@ -834,9 +811,8 @@ class DriveControllerTest {
     fun stopWhileOnIsInFlightStillEndsWithTheLampsOff() = runTest {
         val c = ready()
         c.startDisinfection()
-        c.startDisinfectionNow()
         assertTrue(c.state.value.uv is Uv.Starting)
-        c.stop() // before the robot has answered the ON
+        c.stop() // before the Robot Controller has answered the ON
         advanceTimeBy(2_000)
         assertFalse("OFF must not overtake ON", uvOn(c))
         assertEquals(null, c.state.value.uv)
@@ -875,7 +851,8 @@ class DriveControllerTest {
         val c = lampsOn()
         c.demoToggleWifi()
         waitFor(c) { it.uv == null }
-        assertTrue(log(c), logged(c, "lost connection"))
+        // The Robot Controller goes quiet first (3 s), the robot's link after.
+        assertTrue(log(c), logged(c, "lost the Robot Controller") || logged(c, "lost connection"))
         assertTrue("owed while unreachable", c.state.value.lampsOffOwed)
         assertTrue("the robot never heard OFF", uvOn(c))
         advanceTimeBy(5_000)
@@ -885,7 +862,7 @@ class DriveControllerTest {
         c.demoToggleWifi()
         waitFor(c) { !it.lampsOffOwed }
         assertFalse(uvOn(c))
-        assertTrue(log(c), logged(c, "robot accepted OFF"))
+        assertTrue(log(c), logged(c, "accepted OFF"))
     }
 
     @Test
@@ -904,12 +881,10 @@ class DriveControllerTest {
         waitFor(c, maxMs = 60_000) { it.phase == StepPhase.Idle }
         assertEquals(log(c), points[0], c.state.value.atPoint)
 
-        c.setUvSettings(UvSettings(minutes = 1))
-        c.startDisinfection()
-        c.startDisinfectionNow()
+        c.switchLampsOn(1)
         assertEquals("Bed 1", c.state.value.uv?.point)
         waitFor(c) { it.uv is Uv.On }
-        assertTrue(log(c), logged(c, "UV lamps ON for 1 min at Bed 1"))
+        assertTrue(log(c), logged(c, "UV lamps ON at Bed 1 for 1 min"))
     }
 
     // ------------------------------------------------------------------ hold-to-drive
@@ -1597,7 +1572,11 @@ class DriveControllerTest {
         assertEquals("Bed 1", c.state.value.taskRun!!.stop.point)
 
         c.resumeTask()
-        val on = c.state.value.uv as Uv.Countdown // the whole countdown again, at the same point
+        // The whole countdown again, at the same point, for the time left.
+        assertTrue(c.state.value.uv is Uv.Starting)
+        runTask(c) { it.uv is Uv.Countdown }
+        val on = c.state.value.uv as Uv.Countdown
+        assertEquals("Bed 1", on.point)
         assertEquals(90_000.0, on.forMs.toDouble(), 1_000.0)
         runTask(c) { it.uv is Uv.On }
         runTask(c, maxMs = 300_000) { it.taskRun == null }
@@ -1642,7 +1621,8 @@ class DriveControllerTest {
         val c = withTask(TaskStop("Bed 1", 1), TaskStop("Bed 2", 1), whenDone = WhenDone.START)
         c.startTask("t")
         runTask(c, maxMs = 400_000) { it.taskRun == null }
-        assertEquals("Bed 2", c.state.value.atPoint?.name)
+        // Finished at Bed 2 (the trip back may already be under way: the Robot Controller's OFF is quick).
+        assertEquals(log(c), "Bed 2", c.state.value.taskReport!!.results.last().point)
         runTask(c) { it.atPoint?.name == "Bed 1" && it.phase == StepPhase.Idle }
         assertEquals(1.6, robotPose(c, "x"), 0.05)
         assertFalse(uvOn(c))

@@ -99,8 +99,8 @@ import com.expiation.reemanremote.WhenDone
 /** How Right Now is coloured: the card's fill and the colour of its label and headline. */
 internal enum class Tone { READY, BUSY, DANGER, OFFLINE }
 
-/** [report]: this is how the last routine went, and tapping the card opens its history. */
-internal data class Now(val tone: Tone, val headline: String, val detail: String?, val report: Boolean = false)
+/** [report]: this is how the last routine went, and tapping the card opens its history. [retry]: a Retry button, to look for the Robot Controller again. */
+internal data class Now(val tone: Tone, val headline: String, val detail: String?, val report: Boolean = false, val retry: Boolean = false)
 
 /**
  * What the robot is doing, in a few words, most urgent first: not connected, the e-stop, the UV
@@ -116,6 +116,7 @@ internal fun rightNow(state: RemoteState): Now {
     val battery = state.battery
     val link = state.link
     val report = state.taskReport
+    val agent = state.agent
     return when {
         !state.connected -> Now(
             Tone.OFFLINE,
@@ -158,6 +159,10 @@ internal fun rightNow(state: RemoteState): Now {
         goal != null -> Now(Tone.BUSY, "On the way to ${goal.name}", null)
         step != null -> Now(Tone.BUSY, "Moving", step.label)
         !state.still -> Now(Tone.BUSY, "Moving", "Not on a command from this app.")
+        // No UV without the Robot Controller: say so before anything that invites a start.
+        agent != null && !agent.reachable ->
+            if (agent.connecting) Now(Tone.BUSY, DriveController.CONNECTING_AGENT, null)
+            else Now(Tone.BUSY, "Can't reach the Robot Controller", "UV unavailable.", retry = true)
         report != null -> Now(
             if (report.good) Tone.READY else Tone.BUSY,
             report.title,
@@ -178,7 +183,7 @@ internal fun rightNow(state: RemoteState): Now {
  * the e-stop and the UV lamps; orange words while it isn't connected, and then it opens Settings.
  */
 @Composable
-internal fun RightNowCard(state: RemoteState, onOpenReport: () -> Unit) {
+internal fun RightNowCard(state: RemoteState, onOpenReport: () -> Unit, onRetryAgent: () -> Unit = {}) {
     val status = RemoteTheme.status
     val now = rightNow(state)
     val (fill, accent) = when (now.tone) {
@@ -224,6 +229,9 @@ internal fun RightNowCard(state: RemoteState, onOpenReport: () -> Unit) {
             now.detail?.let {
                 Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
             }
+        }
+        if (now.retry) {
+            OutlinedButton(onRetryAgent, shape = RoundedCornerShape(10.dp)) { Text("Retry") }
         }
     }
 }
@@ -532,15 +540,8 @@ internal fun TaskRunCard(state: RemoteState, run: TaskRun, actions: RemoteAction
         val stage = run.stage
         when {
             stage == TaskStage.Disinfecting -> when (val uv = state.uv) {
-                // Skips the rest of the countdown, for when the room is already clear. The robot's
-                // safety app keeps its countdown whole.
-                is Uv.Countdown -> if (!state.uvByAgent) Button(
-                    onClick = actions.onStartDisinfectionNow,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp),
-                    shape = RoundedCornerShape(14.dp),
-                ) { Text("START NOW", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
+                // The Robot Controller keeps its countdown whole: nothing to press here.
+                is Uv.Countdown -> {}
                 is Uv.On -> {
                     val total = (uv.until - uv.since).coerceAtLeast(1)
                     LinearProgressIndicator(

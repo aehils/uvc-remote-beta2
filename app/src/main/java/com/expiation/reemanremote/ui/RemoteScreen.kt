@@ -164,7 +164,8 @@ data class RemoteActions(
     val onDeletePoint: (String) -> Unit = {},
     val onGoToCharger: () -> Unit = {},
     val onUndock: () -> Unit = {},
-    val onStartDisinfectionNow: () -> Unit = {},
+    /** Look for the Robot Controller again, after it couldn't be reached. */
+    val onRetryAgent: () -> Unit = {},
     val onStopDisinfection: () -> Unit = {},
     val onSwitchLampsOn: (Int) -> Unit = {},
     val onDismissAlert: () -> Unit = {},
@@ -863,7 +864,7 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
         if (state.connected && state.points is Points.NotLoaded) actions.onLoadPoints()
     }
     Column(modifier) {
-        Box(Modifier.padding(start = 16.dp, end = 16.dp, top = PAGE_TOP, bottom = 4.dp)) { RightNowCard(state, onOpenReport) }
+        Box(Modifier.padding(start = 16.dp, end = 16.dp, top = PAGE_TOP, bottom = 4.dp)) { RightNowCard(state, onOpenReport, actions.onRetryAgent) }
         Column(
             Modifier
                 .weight(1f)
@@ -1210,24 +1211,14 @@ private fun UvRunCard(state: RemoteState, actions: RemoteActions) {
                     fontWeight = FontWeight.SemiBold,
                     color = status.danger,
                 )
-                // START NOW skips the rest of the countdown, for when the room is already clear. The
-                // robot's safety app keeps its countdown whole.
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedButton(
-                        onClick = actions.onStopDisinfection,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(52.dp),
-                        shape = RoundedCornerShape(14.dp),
-                    ) { Text("CANCEL", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
-                    if (!state.uvByAgent) Button(
-                        onClick = actions.onStartDisinfectionNow,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(52.dp),
-                        shape = RoundedCornerShape(14.dp),
-                    ) { Text("START NOW", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
-                }
+                // The Robot Controller keeps its countdown whole: someone may be in the doorway.
+                OutlinedButton(
+                    onClick = actions.onStopDisinfection,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) { Text("CANCEL", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp) }
             }
             is Uv.Starting -> {
                 Text("Switching the lamps on …", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = status.danger)
@@ -2352,7 +2343,7 @@ private fun AgentInfoSection(agent: AgentView, demo: Boolean) {
     val s = agent.status
     InfoSection("Robot Controller") {
         InfoRow(
-            "Safety app",
+            "Status",
             when {
                 agent.reachable -> if (agent.inApp) "DEMO, in the app" else "Connected"
                 agent.searching -> "Looking for it"

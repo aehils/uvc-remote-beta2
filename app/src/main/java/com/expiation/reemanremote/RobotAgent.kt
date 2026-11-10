@@ -3,7 +3,7 @@ package com.expiation.reemanremote
 import org.json.JSONObject
 
 /**
- * The Robot Agent: our own safety app on the robot's head unit. Once a robot has one, it alone
+ * The Robot Agent, called the Robot Controller on screen: our own app on the robot's head unit. Once a robot has one, it alone
  * switches the UV lamps on: the phone asks, the agent decides, runs the countdown and the timer,
  * watches the person sensor, and switches the lamps off if this phone stops renewing its lease.
  *
@@ -192,8 +192,8 @@ data class AgentStatus(
 )
 
 /**
- * The robot's safety app as the screens see it (see [RemoteState.agent]). Null there for a robot
- * that has never been seen with one: the phone switches the lamps itself, as before.
+ * The Robot Controller as the screens see it (see [RemoteState.agent]). Null there only before
+ * the phone knows which robot it's on: every robot's lamps come on through its Robot Controller alone.
  */
 data class AgentView(
     /** Where it answers, "192.168.0.50:8765"; null while not found. */
@@ -205,6 +205,8 @@ data class AgentView(
     val reachable: Boolean,
     /** The app is looking for it. */
     val searching: Boolean,
+    /** Not answering yet, and the phone hasn't given up: "Connecting to Robot Controller". Else, not answering: Retry. */
+    val connecting: Boolean = false,
     /** The in-app fake of DEMO mode, not one on the network. */
     val inApp: Boolean = false,
     /** This phone holds a pairing token for it. */

@@ -52,7 +52,7 @@ class MainActivity : ComponentActivity() {
             onDeletePoint = c::deletePoint,
             onGoToCharger = c::goToCharger,
             onUndock = c::undock,
-            onStartDisinfectionNow = c::startDisinfectionNow,
+            onRetryAgent = c::retryAgent,
             onStopDisinfection = c::stopDisinfection,
             onSwitchLampsOn = c::switchLampsOn,
             onDismissAlert = c::dismissAlert,
