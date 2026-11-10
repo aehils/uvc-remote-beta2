@@ -160,7 +160,7 @@ sealed interface TaskStage {
     data object Docking : TaskStage
 }
 
-/** SKIPPED is only in reports saved by earlier builds: a stop now ends as NOT_REACHED by itself. */
+/** SKIPPED: reached, but movement kept the UV off there for 10 minutes, so the robot's routine went on without it (2026-11-10). */
 enum class StopOutcome { DONE, SKIPPED, NOT_REACHED, INTERRUPTED }
 
 /**
@@ -214,7 +214,7 @@ data class TaskReport(
     /** "Ward A finished" */
     val title: String
         get() = when {
-            !task.lampsOff -> "${task.name} ${if (completed) "finished" else "ended"}"
+            !task.lampsOff -> "${task.name} ${if (good) "finished" else "ended incomplete"}"
             good -> "Route test passed"
             completed -> "Route test found a problem"
             else -> "Route test ended"
@@ -222,12 +222,17 @@ data class TaskReport(
 
     /** The points the robot never got to, each once however many rounds missed it. */
     val notReached: List<String>
-        get() = results.filter { it.outcome == StopOutcome.NOT_REACHED || it.outcome == StopOutcome.SKIPPED }.map { it.point }.distinct()
+        get() = results.filter { it.outcome == StopOutcome.NOT_REACHED }.map { it.point }.distinct()
+
+    /** Reached, but skipped because movement kept the UV off too long. */
+    val skipped: List<String>
+        get() = results.filter { it.outcome == StopOutcome.SKIPPED }.map { it.point }.distinct()
 
     /** "2 of 3 points done · not reached: Bed 2 · battery low (14%) · phone away 2:10" */
     val detail: String
         get() = "$done of $total point${if (total == 1) "" else "s"} ${if (task.lampsOff) "reached" else "done"}" +
             (if (notReached.isEmpty()) "" else " · not reached: ${notReached.joinToString()}") +
+            (if (skipped.isEmpty()) "" else " · skipped, kept moving: ${skipped.joinToString()}") +
             (reason?.let { " · " + if (it.startsWith("ON ")) "the lamps didn't come on" else it } ?: "") +
             (if (phoneAwayMs >= 1_000) " · phone away ${DriveController.clockText(phoneAwayMs)}" else "")
 
@@ -248,6 +253,7 @@ data class TaskReport(
                 r == NO_PILE -> "Dock the robot by hand, then mark the charging pile on the Map page."
                 r == NOT_DOCKED -> "Drive it in front of its charger and press GO TO CHARGER. If its screen asks, press Confirm."
                 notReached.isNotEmpty() -> "Clear the way to ${notReached.joinToString()}, then run it again."
+                skipped.isNotEmpty() -> "Something kept moving at ${skipped.joinToString()}. Check the room, then run it again."
                 else -> null
             }
         }

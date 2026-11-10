@@ -214,6 +214,7 @@ data class RemoteActions(
     val onResumeTask: () -> Unit = {},
     val onEndTask: () -> Unit = {},
     val onDismissTaskReport: () -> Unit = {},
+    val onDismissIncomplete: () -> Unit = {},
 )
 
 @Composable
@@ -305,6 +306,14 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions, due: DisinfectionTa
                             page = Page.HISTORY
                         },
                     )
+                }
+                state.routineIncomplete?.let { r ->
+                    RoutineIncompleteDialog(r, onOk = actions.onDismissIncomplete, onSeeReport = {
+                        actions.onDismissIncomplete()
+                        actions.onDismissTaskReport()
+                        historyBack = Page.MAIN
+                        page = Page.HISTORY
+                    })
                 }
                 due?.let { task ->
                     RoutineDueDialog(state, task, onAnswer = { start ->
@@ -2591,4 +2600,23 @@ private fun PreviewTaskRunning() = RemoteTheme(dark = false) {
 private fun PreviewTaskEditor() = RemoteTheme(dark = true) {
     val state = previewState(demo = false, moving = false).copy(tasks = listOf(PREVIEW_TASK))
     TaskEditorPage(state, RemoteActions(), PREVIEW_TASK.copy(stops = PREVIEW_TASK.stops + TaskStop("Bed 9", 5)), onBack = {})
+}
+
+/** A routine ended without every point disinfected: which were skipped, which weren't reached, and why. */
+@Composable
+private fun RoutineIncompleteDialog(r: TaskReport, onOk: () -> Unit, onSeeReport: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onOk,
+        title = { Text("Routine ended incomplete") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("${r.task.name}: ${r.done} of ${r.total} points done", style = MaterialTheme.typography.bodyLarge)
+                if (r.skipped.isNotEmpty()) Text("Skipped, something kept moving: ${r.skipped.joinToString()}", style = MaterialTheme.typography.bodyMedium)
+                if (r.notReached.isNotEmpty()) Text("Not reached: ${r.notReached.joinToString()}", style = MaterialTheme.typography.bodyMedium)
+                r.reason?.let { Text("Ended: $it", style = MaterialTheme.typography.bodyMedium) }
+            }
+        },
+        confirmButton = { TextButton(onClick = onOk) { Text("OK") } },
+        dismissButton = { TextButton(onClick = onSeeReport) { Text("See report") } },
+    )
 }

@@ -319,6 +319,8 @@ data class RemoteState(
     val uvElsewhere: Boolean = false,
     /** How the last task ended, until dismissed or the next one starts. */
     val taskReport: TaskReport? = null,
+    /** A routine just ended incomplete: shown as a pop-up until dismissed. */
+    val routineIncomplete: TaskReport? = null,
     /** The Robot Controller (see [RobotAgent]); null for a robot never seen with one. */
     val agent: AgentView? = null,
     /** Why the UV lamps can't come on now, from the Robot Controller, or null. */
@@ -2617,6 +2619,7 @@ class DriveController(
         robotTaskSeen = false
         val report = s.lastReport ?: return
         taskReport = report
+        noteIncomplete(report)
         log("Task \"${report.task.name}\" on the robot ${if (report.completed) "finished" else "ended"}: ${report.detail}")
     }
 
@@ -3212,6 +3215,11 @@ class DriveController(
         if (taskRun != null || snapshot().taskOnRobot) halt("Task ended from the app")
     }
 
+    /** A routine that ended incomplete: a pop-up says so, with the points skipped or not reached, until it's dismissed. */
+    private var incompleteReport: TaskReport? = null
+    private fun noteIncomplete(report: TaskReport) { if (!report.good && !report.task.lampsOff) incompleteReport = report }
+    fun dismissIncomplete() { incompleteReport = null; publish() }
+
     fun dismissTaskReport() {
         taskReport = null
         publish()
@@ -3427,6 +3435,7 @@ class DriveController(
         taskJob?.cancel()
         val report = TaskReport(run.task, completed = true, reason = reason, results = run.results, at = System.currentTimeMillis())
         taskReport = report
+        noteIncomplete(report)
         log("Task \"${run.task.name}\" finished: ${report.done} of ${report.total} stop(s) " + (if (run.task.lampsOff) "reached" else "disinfected") + (reason?.let { ", $it" } ?: ""))
         when (run.task.whenDone) {
             WhenDone.CHARGER -> charge()
@@ -3469,6 +3478,7 @@ class DriveController(
         logDetail("task ended at ${run.stage::class.simpleName}: $reason")
         val report = TaskReport(run.task, completed = false, reason = reason, results = run.results + listOfNotNull(here), at = System.currentTimeMillis())
         taskReport = report
+        noteIncomplete(report)
         log("Task \"${run.task.name}\" ended: $reason. ${report.done} of ${report.total} stop(s) disinfected")
     }
 
@@ -4008,6 +4018,7 @@ class DriveController(
         preparing = taskRun?.stage == TaskStage.Travelling && settleBegan != null,
         taskPhoneAway = taskRun == null && agentStatus?.task?.phoneAway == true,
         taskReport = taskReport,
+        routineIncomplete = incompleteReport,
         agent = agentView(),
         uvProblem = agentProblem(),
         uvByAgent = agentRun != null,

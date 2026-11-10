@@ -100,6 +100,7 @@ class MainActivity : ComponentActivity() {
             onResumeTask = c::resumeTask,
             onEndTask = c::endTaskNow,
             onDismissTaskReport = c::dismissTaskReport,
+            onDismissIncomplete = c::dismissIncomplete,
             onAnswerDue = session::answerDue,
         )
         setContent {
