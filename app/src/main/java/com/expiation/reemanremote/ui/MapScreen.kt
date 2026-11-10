@@ -924,12 +924,8 @@ internal fun MapsPage(
             Column {
                 TopAppBar(
                     expandedHeight = PAGE_BAR_HEIGHT,
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
-                        }
-                    },
-                    title = { Text("Maps", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
+                    navigationIcon = { PageNav(onBack) },
+                    title = { PageTitle("Maps") },
                     actions = {
                         TextButton(onClick = actions.onLoadMaps, enabled = state.connected && maps != Maps.Loading) { Text("Refresh") }
                     },
