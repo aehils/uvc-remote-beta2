@@ -540,8 +540,9 @@ private fun TaskRow(
             IconButton(onClick = onEdit) {
                 Icon(painterResource(R.drawable.ic_tune), contentDescription = "Edit ${task.name}", modifier = Modifier.size(22.dp))
             }
-            IconButton(onClick = onDelete, enabled = canDelete) {
-                Icon(painterResource(R.drawable.ic_delete), contentDescription = "Delete ${task.name}", modifier = Modifier.size(22.dp))
+            TextButton(onClick = onDelete, enabled = canDelete,
+                colors = ButtonDefaults.textButtonColors(contentColor = status.danger)) {
+                Text("Delete")
             }
         }
         Button(

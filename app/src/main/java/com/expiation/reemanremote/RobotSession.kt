@@ -158,7 +158,16 @@ class RobotSession private constructor(private val app: Application) {
         var wasTask = false
         var lastReport = controller.state.value.taskReport?.at
         var lastProblem: String? = null
+        var savedRoutines = controller.state.value.tasks
         controller.state.collect { s ->
+            if (s.tasks != savedRoutines) {
+                val removed = savedRoutines.map { it.id }.toSet() - s.tasks.map { it.id }.toSet()
+                removed.forEach { RoutineAlarms.cancel(app, it) }
+                if (_dueRoutine.value?.id in removed) _dueRoutine.value = null
+                savedRoutines = s.tasks
+                saveTasks()
+                RoutineAlarms.schedule(app, s.tasks)
+            }
             val report = s.taskReport
             if (report != null && report.at != lastReport) {
                 lastReport = report.at
