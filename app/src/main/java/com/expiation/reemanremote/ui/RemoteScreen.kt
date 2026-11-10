@@ -412,7 +412,8 @@ private fun MainPage(
                     module = DockItem(R.drawable.ic_tab_map, "Map", "Open the map and drive the robot") { onMapOpenChange(true) },
                     start = listOf(tabItem(Tab.TASKS)),
                     end = listOf(tabItem(Tab.SETTINGS)),
-                    stop = stop.takeIf { tab != Tab.SETTINGS || state.busy || !state.still },
+                    // STOP stays on every tab: dropping it on Settings reshaped the bar under the thumb.
+                    stop = stop,
                 )
             }
         },
