@@ -16,6 +16,11 @@ class RobotAgentTest {
         """"robot":{"estop":false,"moving":false,"battery":62,"charging":false},"ros":{"serial":true,"hostname":"wbot11u-250101-003-007"},""" +
         """"controller":"phone-1","faults":[]}"""
 
+    @Test fun readsRobotRoutineDeletions() {
+        val state = RobotAgent.parseState("""{"api":1,"lamp":{"state":"off"},"faults":[],"routines":{"deletedIds":["removed-id"]}}""")!!
+        assertEquals(setOf("removed-id"), state.deletedRoutineIds)
+    }
+
     @Test
     fun readsTheLiveState() {
         val s = RobotAgent.parseState(running)!!

@@ -127,6 +127,7 @@ object RobotAgent {
             // An agent from before the replace call has no "count": nothing is sent to it.
             routinesSync = routines?.has("count") == true,
             routinesRev = routines?.optStringOrNull("rev"),
+            deletedRoutineIds = routines?.optJSONArray("deletedIds")?.let { a -> (0 until a.length()).mapNotNull { a.optString(it).takeIf { id -> id.isNotBlank() } }.toSet() } ?: emptySet(),
         )
     }.getOrNull()
 
@@ -305,6 +306,7 @@ data class AgentStatus(
     val routinesSync: Boolean = false,
     /** The fingerprint of the list it has ([RobotAgent.routinesRev]); null: none, or changed since. */
     val routinesRev: String? = null,
+    val deletedRoutineIds: Set<String> = emptySet(),
 )
 
 /**

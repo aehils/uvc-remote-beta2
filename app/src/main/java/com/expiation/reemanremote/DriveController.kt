@@ -2416,6 +2416,7 @@ class DriveController(
             agentGaveUp = false
             agentOkAt = n
             agentStatus = status
+            status.deletedRoutineIds.forEach { id -> if (tasks.any { it.id == id }) deleteTask(id) }
             val changing = "MAP_CHANGING" in status.faults
             if (changing != robotMapChanging) {
                 robotMapChanging = changing
