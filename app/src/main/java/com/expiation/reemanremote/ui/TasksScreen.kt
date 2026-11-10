@@ -99,8 +99,14 @@ import com.expiation.reemanremote.WhenDone
 /** How Right Now is coloured: the card's fill and the colour of its label and headline. */
 internal enum class Tone { READY, BUSY, DANGER, OFFLINE }
 
-/** [report]: this is how the last routine went, and tapping the card opens its history. [retry]: a Retry button, to look for the Robot Controller again. */
-internal data class Now(val tone: Tone, val headline: String, val detail: String?, val report: Boolean = false, val retry: Boolean = false)
+/**
+ * [report]: this is how the last routine went, and tapping the card opens its history. [retry]: a Retry button, to look for the Robot Controller again.
+ * [pair]: a button that pairs this phone with the robot. [note]: a quiet extra line under [detail] that never changes the card's colour.
+ */
+internal data class Now(
+    val tone: Tone, val headline: String, val detail: String?, val report: Boolean = false, val retry: Boolean = false,
+    val pair: Boolean = false, val note: String? = null,
+)
 
 /**
  * What the robot is doing, in a few words, most urgent first: not connected, the e-stop, the UV
@@ -127,15 +133,15 @@ internal fun rightNow(state: RemoteState): Now {
                 link is Link.Disconnected && link.lastError != null -> "Not connected"
                 else -> "Connecting …"
             },
-            "Tap to find the robot in Settings.",
+            "Tap to open Settings",
         )
-        state.estop == EStop.PRESSED -> Now(Tone.DANGER, "E-stop pressed", "Release the e-stop on the robot to drive or disinfect.")
+        state.estop == EStop.PRESSED -> Now(Tone.DANGER, "E-stop pressed", null)
         uv is Uv.Countdown -> Now(
             Tone.DANGER,
             "UV lamps on in $left",
-            (uv.point?.let { "At $it. " } ?: "") + "Leave the room and close the door.",
+            (uv.point?.let { "At $it · " } ?: "") + "Leave the room",
         )
-        uv is Uv.Starting -> Now(Tone.DANGER, "UV lamps switching on", "Stay out of the room.")
+        uv is Uv.Starting -> Now(Tone.DANGER, "UV lamps switching on", "Stay out")
         uv is Uv.On -> Now(
             Tone.DANGER, uv.point?.let { "Disinfecting $it" } ?: "Disinfecting",
             "UV lamps on · $left left" + if (state.uvElsewhere && run == null) " · another phone's run" else "",
@@ -147,52 +153,63 @@ internal fun rightNow(state: RemoteState): Now {
             // The robot's own sign, word for word (spec R9): no new full countdown either way.
             listOfNotNull(RobotAgent.domes(uv.domes).ifEmpty { null }, if (uv.warned) "UV starts when nothing moves" else "A spoken warning comes first").joinToString(" · "),
         )
-        state.lampsOffOwed -> Now(Tone.DANGER, "UV lamps may still be on", "Stay out of the room. Check the phone is on the robot's Wi-Fi: the app keeps sending OFF.")
+        state.lampsOffOwed -> Now(Tone.DANGER, "UV lamps may still be on", "Stay out · still sending OFF")
         run != null -> {
             // A routine the robot runs: say so when it isn't simply this phone's.
             val where = "${run.task.name} · point ${run.number} of ${run.total}" + when {
                 state.taskPhoneAway -> " · running with no phone"
-                state.taskElsewhere -> " · started on another phone"
+                state.taskElsewhere -> if (state.taskFromRobot) " · started on the robot" else " · started on another phone"
                 else -> ""
             }
             when (val stage = run.stage) {
-                is TaskStage.Retrying -> Now(Tone.BUSY, "Trying to reach ${run.stop.point}", "Check nothing is blocking the way.")
+                is TaskStage.Retrying -> Now(Tone.BUSY, "Trying to reach ${run.stop.point}", "Check the way is clear")
                 TaskStage.Paused -> Now(Tone.BUSY, "Paused", where)
                 TaskStage.Docking -> Now(Tone.BUSY, "Trying the charger", where)
-                TaskStage.Travelling -> Now(Tone.BUSY, if (state.undocking) "Leaving the charger" else "On the way to ${run.stop.point}", where)
+                TaskStage.Travelling -> Now(Tone.BUSY, when {
+                    state.undocking -> "Leaving the charger"
+                    state.preparing -> "Preparing task"
+                    else -> "On the way to ${run.stop.point}"
+                }, where)
                 TaskStage.LampsOff, TaskStage.Disinfecting -> Now(Tone.BUSY, "Switching the lamps off", where)
                 else -> Now(Tone.BUSY, "Getting ready", where)
             }
         }
-        state.mapping -> Now(Tone.BUSY, "Mapping", "Drive it round on the Map page, then save the map.")
+        state.mapping -> Now(Tone.BUSY, "Mapping", "Save it on the Map page")
         state.undocking -> Now(Tone.BUSY, "Leaving the charger", null)
-        step?.label?.startsWith("Go to charger") == true -> Now(Tone.BUSY, "Going to the charger", "It docks by itself when it gets there.")
+        step?.label?.startsWith("Go to charger") == true -> Now(Tone.BUSY, "Going to the charger", null)
         goal != null -> Now(Tone.BUSY, "On the way to ${goal.name}", null)
         step != null -> Now(Tone.BUSY, "Moving", step.label)
         // R14: the Robot Controller sends it to charge by itself, after a warning.
-        charge?.state == "going" -> Now(Tone.BUSY, "Going to charge", charge.reason?.takeIf { it != "Going to charge" } ?: "Sent by the robot.")
+        charge?.state == "going" -> Now(Tone.BUSY, "Going to charge", charge.reason?.takeIf { it != "Going to charge" })
         charge?.state == "warning" -> Now(Tone.BUSY, "About to go to charge", charge.reason)
-        !state.still -> Now(Tone.BUSY, "Moving", "Not on a command from this app.")
-        // No UV without the Robot Controller: say so before anything that invites a start.
-        agent != null && !agent.reachable ->
-            if (agent.connecting) Now(Tone.BUSY, DriveController.CONNECTING_AGENT, null)
-            else Now(Tone.BUSY, "Can't reach the Robot Controller", "UV unavailable.", retry = true)
-        // E10: a weak head unit drops off the network while the navigation computer stays on.
-        said?.wifi?.weak == true -> Now(
-            Tone.BUSY, "Robot's Wi-Fi is weak",
-            (said.wifi.rssi?.let { "Head unit at $it dBm. " } ?: "") + "It may drop off here.",
+        !state.still -> Now(Tone.BUSY, "Moving", "Not from this phone")
+        // Lost the Robot Controller: keep showing the status while the phone retries; only once it
+        // has kept failing for AGENT_OFFLINE_MS, say so (UV and routines are refused meanwhile anyway).
+        agent != null && agent.offline -> Now(Tone.BUSY, "Can't reach Robot Controller", null, retry = true)
+        // At rest. E10's weak head-unit Wi-Fi is often true on site, so it's only a quiet line under these.
+        else -> atRest(state, report, battery).copy(
+            note = "Wi-Fi is weak".takeIf { said?.wifi?.weak == true }, // its dBm is in Settings, Robot information
         )
+    }
+}
+
+/** Right Now with nothing going on: pairing first (nothing starts without it), then the last routine, the dock, the battery, ready. */
+private fun atRest(state: RemoteState, report: TaskReport?, battery: Int?): Now {
+    val agent = state.agent
+    return when {
+        agent != null && agent.reachable && agent.needsPairing ->
+            Now(Tone.BUSY, "Pair with this robot", "Needed for UV and routines", pair = true)
         report != null -> Now(
             if (report.good) Tone.READY else Tone.BUSY,
             report.title,
             report.nextStep ?: "${report.detail} · ${RoutineSchedule.timeText(RoutineSchedule.minuteOfDay(report.at))}",
             report = true,
         )
-        state.docked -> Now(Tone.READY, "Charging at the dock", "Ready. Start a disinfection, or undock to drive.")
+        state.docked -> Now(Tone.READY, "Charging at the dock", null)
         battery != null && battery < state.taskMinBattery -> Now(
-            Tone.BUSY, "Battery low", "Send it to the charger: a disinfection needs ${state.taskMinBattery}%.",
+            Tone.BUSY, "Battery low", "UV needs ${state.taskMinBattery}%",
         )
-        else -> Now(Tone.READY, state.atPoint?.let { "Ready at ${it.name}" } ?: "Ready", "Start a disinfection or a routine below.")
+        else -> Now(Tone.READY, state.atPoint?.let { "Ready at ${it.name}" } ?: "Ready", null)
     }
 }
 
@@ -202,7 +219,7 @@ internal fun rightNow(state: RemoteState): Now {
  * the e-stop and the UV lamps; orange words while it isn't connected, and then it opens Settings.
  */
 @Composable
-internal fun RightNowCard(state: RemoteState, onOpenReport: () -> Unit, onRetryAgent: () -> Unit = {}) {
+internal fun RightNowCard(state: RemoteState, onOpenReport: () -> Unit, onRetryAgent: () -> Unit = {}, onPair: () -> Unit = {}) {
     val status = RemoteTheme.status
     val now = rightNow(state)
     val (fill, accent) = when (now.tone) {
@@ -237,22 +254,41 @@ internal fun RightNowCard(state: RemoteState, onOpenReport: () -> Unit, onRetryA
             Box(Modifier.alpha(if (state.connected) 1f else 0.45f)) { BatteryIcon(state.battery) }
         }
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                now.headline,
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = accent,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
+            // One line always: a long headline shrinks to fit rather than wrap.
+            OneLineHeadline(now.headline, accent)
+            // A short second line only when it's needed, never more than two lines.
             now.detail?.let {
-                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            now.note?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
             }
         }
         if (now.retry) {
             OutlinedButton(onRetryAgent, shape = RoundedCornerShape(10.dp)) { Text("Retry") }
         }
+        if (now.pair) {
+            Button(onPair, shape = RoundedCornerShape(10.dp)) { Text("Pair now") }
+        }
     }
+}
+
+/** Right Now's headline on one line: steps the size down until it fits (Compose here has no auto-size). */
+@Composable
+private fun OneLineHeadline(text: String, color: androidx.compose.ui.graphics.Color) {
+    val base = MaterialTheme.typography.headlineSmall
+    var scale by remember(text) { mutableStateOf(1f) }
+    Text(
+        text,
+        style = base.copy(fontSize = base.fontSize * scale, lineHeight = base.lineHeight * scale),
+        fontWeight = FontWeight.Bold,
+        color = color,
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Clip,
+        onTextLayout = { if (it.hasVisualOverflow && scale > 0.6f) scale -= 0.06f },
+    )
 }
 
 // ---------------------------------------------------------------------- Tasks tab: START DISINFECTION
@@ -275,7 +311,7 @@ internal fun StartDisinfection(state: RemoteState, actions: RemoteActions) {
                 .height(56.dp),
             shape = RoundedCornerShape(14.dp),
         ) {
-            Text("START DISINFECTION", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+            Text("START ROUTINE", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
         }
         problem?.let { TasksNote(it) }
     }

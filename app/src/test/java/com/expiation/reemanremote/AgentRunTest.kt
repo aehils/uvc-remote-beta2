@@ -1,6 +1,7 @@
 package com.expiation.reemanremote
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import com.expiation.reemanremote.ui.Tone
 import com.expiation.reemanremote.ui.rightNow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.TestScope
@@ -9,6 +10,7 @@ import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -168,17 +170,24 @@ class AgentRunTest {
         // Searching: "Connecting", and no way to start UV.
         assertTrue(c.state.value.agent!!.connecting)
         assertEquals(DriveController.CONNECTING_AGENT, c.state.value.uvProblem)
-        assertEquals(DriveController.CONNECTING_AGENT, rightNow(c.state.value).headline)
+        // Right Now keeps the robot's own status while the phone looks.
+        assertFalse(rightNow(c.state.value).retry)
+        assertNotEquals("Can't reach Robot Controller", rightNow(c.state.value).headline)
         c.startDisinfection()
         c.switchLampsOn(5)
         assertNull(c.state.value.uv)
-        // The search comes back empty: can't reach it, Retry.
+        // The search comes back empty: UV refused at once, but Right Now waits a few retries before saying so.
         waitFor(c) { it.uvProblem == DriveController.CANT_REACH_AGENT }
         assertFalse(c.state.value.canDisinfect)
-        assertTrue(rightNow(c.state.value).retry)
+        assertFalse("not after one failed search", rightNow(c.state.value).retry)
         c.startDisinfection()
         c.switchLampsOn(5)
         neverLit(robot, 30_000)
+        rightNow(c.state.value).let { now ->
+            assertEquals("Can't reach Robot Controller", now.headline)
+            assertNull("no \"UV unavailable\" line", now.detail)
+            assertTrue(now.retry)
+        }
         assertNull(c.state.value.uv)
         assertFalse("no ON from the phone", logged(c, "UV lamps ON"))
         // Retry: connecting again, and a new search at once.
@@ -330,9 +339,11 @@ class AgentRunTest {
         assertTrue(rightNow(c.state.value).headline.startsWith("Ready"))
         c.demoToggleWeakWifi()
         waitFor(c, maxMs = 1_000) { it.agent?.status?.wifi?.weak == true }
+        // A quiet line under Ready: the card stays green and keeps its own headline.
         val now = rightNow(c.state.value)
-        assertEquals("Robot's Wi-Fi is weak", now.headline)
-        assertEquals("Head unit at -78 dBm. It may drop off here.", now.detail)
+        assertTrue(now.headline.startsWith("Ready"))
+        assertEquals(Tone.READY, now.tone)
+        assertEquals("Wi-Fi is weak", now.note)
         assertEquals("-78 dBm · 5 GHz · weak", RobotAgent.wifiText(c.state.value.agent!!.status!!.wifi!!))
         c.demoToggleWeakWifi()
         waitFor(c, maxMs = 1_000) { it.agent?.status?.wifi?.weak == false }
@@ -562,6 +573,12 @@ class AgentRunTest {
         c.switchLampsOn(5)
         waitFor(c) { logged(c, "Pair this phone with the robot first") }
         assertFalse(lit(c))
+        // Right Now says so up front, with a button, before anyone tries a start.
+        waitFor(c) { it.agent?.needsPairing == true }
+        rightNow(c.state.value).let { now ->
+            assertEquals("Pair with this robot", now.headline)
+            assertTrue(now.pair)
+        }
 
         c.askPairCode()
         waitFor(c) { it.agent?.pairStep == PairStep.CodeShown }
@@ -578,10 +595,20 @@ class AgentRunTest {
         assertTrue(c.state.value.agent!!.paired)
         assertFalse(c.state.value.agent!!.needsPairing)
         assertFalse("the token is never logged", log(c).contains("demo-token"))
+        assertFalse("paired: the prompt goes", rightNow(c.state.value).pair)
 
         c.switchLampsOn(5)
         waitFor(c) { it.uv is Uv.On }
         assertTrue(lit(c))
+
+        // Forget: refused while lit (the lease needs the token), then the prompt comes back.
+        c.forgetPairing()
+        assertTrue(c.state.value.agent!!.paired)
+        c.stop()
+        waitFor(c) { !it.runUnderWay }
+        c.forgetPairing()
+        assertFalse(c.state.value.agent!!.paired)
+        assertTrue(rightNow(c.state.value).pair)
     }
 
     @Test

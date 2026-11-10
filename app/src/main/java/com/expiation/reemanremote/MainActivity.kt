@@ -9,6 +9,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.expiation.reemanremote.ui.RemoteActions
 import com.expiation.reemanremote.ui.RemoteScreen
@@ -62,6 +64,7 @@ class MainActivity : ComponentActivity() {
             onAskPairCode = session::askPairCode,
             onSendPairCode = session::sendPairCode,
             onEndPairing = session::endPairing,
+            onForgetPairing = session::forgetPairing,
             onRunningSpeed = session::setRunningSpeed,
             onDemoEstop = c::demoToggleEstop,
             onDemoWifi = c::demoToggleWifi,
@@ -104,6 +107,14 @@ class MainActivity : ComponentActivity() {
             val due by session.dueRoutine.collectAsStateWithLifecycle()
             val history by session.history.collectAsStateWithLifecycle()
             RemoteTheme {
+                // Android's home-bar strip in the page's own colour, not white.
+                val page = androidx.compose.material3.MaterialTheme.colorScheme.background
+                androidx.compose.runtime.SideEffect {
+                    window.navigationBarColor = page.toArgb()
+                    if (Build.VERSION.SDK_INT >= 29) window.isNavigationBarContrastEnforced = false
+                    androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+                        .isAppearanceLightNavigationBars = page.luminance() > 0.5f
+                }
                 RemoteScreen(state, actions, due, history)
             }
         }

@@ -9,6 +9,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -176,6 +177,7 @@ data class RemoteActions(
     val onAskPairCode: () -> Unit = {},
     val onSendPairCode: (String) -> Unit = {},
     val onEndPairing: () -> Unit = {},
+    val onForgetPairing: () -> Unit = {},
     val onRunningSpeed: (Double?) -> Unit = {},
     val onDemoEstop: () -> Unit = {},
     val onDemoWifi: () -> Unit = {},
@@ -867,7 +869,20 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
         if (state.connected && state.points is Points.NotLoaded) actions.onLoadPoints()
     }
     Column(modifier) {
-        Box(Modifier.padding(start = 16.dp, end = 16.dp, top = PAGE_TOP, bottom = 4.dp)) { RightNowCard(state, onOpenReport, actions.onRetryAgent) }
+        // Right Now's "Pair now" opens the same code dialog as Settings, Pair with this robot.
+        var pairing by rememberSaveable { mutableStateOf(false) }
+        val agentNow = state.agent
+        if (pairing && agentNow != null) {
+            PairDialog(
+                step = agentNow.pairStep,
+                onRefresh = actions.onAskPairCode,
+                onSend = actions.onSendPairCode,
+                onClose = { pairing = false; actions.onEndPairing() },
+            )
+        }
+        Box(Modifier.padding(start = 16.dp, end = 16.dp, top = PAGE_TOP, bottom = 4.dp)) {
+            RightNowCard(state, onOpenReport, actions.onRetryAgent, onPair = { pairing = true; actions.onAskPairCode() })
+        }
         Column(
             Modifier
                 .weight(1f)
@@ -1412,6 +1427,8 @@ private fun ChargerButton(label: String, enabled: Boolean, onClick: () -> Unit) 
             .fillMaxWidth()
             .height(56.dp),
         shape = RoundedCornerShape(14.dp),
+        // A darker edge: the tonal fill alone barely stands off the page behind it.
+        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = if (enabled) 1f else 0.5f)),
     ) {
         Icon(painterResource(R.drawable.ic_dock), contentDescription = null, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(8.dp))
@@ -1764,6 +1781,7 @@ private fun SettingsTab(
     var editingBattery by rememberSaveable { mutableStateOf(false) }
     var editingVoice by rememberSaveable { mutableStateOf(false) }
     var pairing by rememberSaveable { mutableStateOf(false) }
+    var forgetting by rememberSaveable { mutableStateOf(false) }
     // Only a Robot Controller answering now, and new enough to have the setting.
     val voice = state.agent?.takeIf { it.reachable }?.status
     Column(
@@ -1789,7 +1807,7 @@ private fun SettingsTab(
                             else -> "Not paired"
                         })
                     },
-                ) { pairing = true; actions.onAskPairCode() }
+                ) { if (agent.paired) forgetting = true else { pairing = true; actions.onAskPairCode() } }
             }
             // DEMO has no address: the simulated robot is in the app.
             if (!state.demo) {
@@ -1883,6 +1901,15 @@ private fun SettingsTab(
             onRefresh = actions.onAskPairCode,
             onSend = actions.onSendPairCode,
             onClose = { pairing = false; actions.onEndPairing() },
+        )
+    }
+    if (forgetting) {
+        AlertDialog(
+            onDismissRequest = { forgetting = false },
+            title = { Text("Forget this pairing?") },
+            text = { Text("This phone won't start UV or routines, or change robot settings, until it pairs again. STOP still works.") },
+            confirmButton = { TextButton(onClick = { forgetting = false; actions.onForgetPairing() }) { Text("Forget") } },
+            dismissButton = { TextButton(onClick = { forgetting = false }) { Text("Cancel") } },
         )
     }
     val voiceNow = voice?.voiceVolume
@@ -2415,7 +2442,12 @@ private fun RowScope.ActivityLogActions(state: RemoteState) {
             copied = false
         }
     }
-    fun text() = activityLogText(robotLabel(state), state.version, state.log, System.currentTimeMillis())
+    // Everything saved, not just the lines on screen.
+    fun text() = activityLogText(
+        robotLabel(state), state.version,
+        com.expiation.reemanremote.ActivityLog.readNewestFirst(java.io.File(context.filesDir, com.expiation.reemanremote.ActivityLog.FILE_NAME)).ifEmpty { state.log },
+        System.currentTimeMillis(),
+    )
     TextButton(
         onClick = {
             clipboard.setText(AnnotatedString(text()))
