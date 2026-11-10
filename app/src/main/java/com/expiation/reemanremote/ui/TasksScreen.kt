@@ -102,11 +102,11 @@ internal enum class Tone { READY, BUSY, DANGER, OFFLINE }
 
 /**
  * [report]: this is how the last routine went, and tapping the card opens its history. [retry]: a Retry button, to look for the Robot Controller again.
- * [pair]: a button that pairs this phone with the robot. [note]: a quiet extra line under [detail] that never changes the card's colour.
+ * [pair]: a button that pairs this phone with the robot. [weakWifi]: WEAK WI-FI beside the RIGHT NOW label, no line of its own.
  */
 internal data class Now(
     val tone: Tone, val headline: String, val detail: String?, val report: Boolean = false, val retry: Boolean = false,
-    val pair: Boolean = false, val note: String? = null,
+    val pair: Boolean = false, val weakWifi: Boolean = false,
 )
 
 /**
@@ -191,9 +191,9 @@ internal fun rightNow(state: RemoteState): Now {
             "Retrying automatically. Wait a moment.")
         state.uvProblem == DriveController.AGENT_WRONG_VERSION -> Now(Tone.BUSY, "App update needed",
             "Install the latest phone and Robot apps.")
-        // At rest. E10's weak head-unit Wi-Fi is often true on site, so it's only a quiet line under these.
+        // At rest. E10's weak head-unit Wi-Fi is often true on site, so it's only a tag by the label.
         else -> atRest(state, report, battery).copy(
-            note = "Weak Wi-Fi · move closer to the router".takeIf { said?.wifi?.weak == true }, // its dBm is in Settings, Robot information
+            weakWifi = said?.wifi?.weak == true, // its dBm is in Settings, Robot information
         )
     }
 }
@@ -249,12 +249,23 @@ internal fun RightNowCard(state: RemoteState, onOpenReport: () -> Unit, onRetryA
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "RIGHT NOW",
-                modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 1.5.sp,
                 color = accent,
             )
+            // Beside the label, its size: never a line of its own.
+            if (now.weakWifi) {
+                Text(
+                    "  ·  WEAK WI-FI",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.5.sp,
+                    color = status.warn,
+                    maxLines = 1,
+                )
+            }
+            Spacer(Modifier.weight(1f))
             // Stale while not connected, so it fades.
             Box(Modifier.alpha(if (state.connected) 1f else 0.45f)) { BatteryIcon(state.battery) }
         }
@@ -265,9 +276,6 @@ internal fun RightNowCard(state: RemoteState, onOpenReport: () -> Unit, onRetryA
             now.detail?.let {
                 Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 2, overflow = TextOverflow.Ellipsis)
-            }
-            now.note?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
             }
         }
         if (now.retry) {
@@ -341,19 +349,18 @@ private fun RunFullRoute(state: RemoteState, actions: RemoteActions, modifier: M
     }
 }
 
-/** The saved default is explicit: never fall back to a full route when none is selected. */
+/**
+ * The saved default is explicit: never fall back to a full route when none is selected.
+ * Nothing goes under it: Right Now says when the robot can't start, and a routine's own fault
+ * is on its card in Routines (the Routines row carries a caution triangle for it).
+ */
 @Composable
 internal fun StartDefaultRoutine(state: RemoteState, actions: RemoteActions) {
     var confirming by rememberSaveable { mutableStateOf<String?>(null) }
     val task = state.tasks.firstOrNull { it.id == state.defaultTaskId }
-    val problem = task?.let { state.taskProblem(it) } ?: if (task == null) "Choose a default routine in Routines." else null
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Button(onClick = { confirming = task?.id }, enabled = task != null && problem == null,
-            modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(14.dp)) {
-            Text("START DEFAULT ROUTINE", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-        }
-        // One line under it: why it can't start, else which routine it is.
-        (problem ?: task?.name)?.let { TasksNote(it) }
+    Button(onClick = { confirming = task?.id }, enabled = task != null && state.taskProblem(task) == null,
+        modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(14.dp)) {
+        Text("START DEFAULT ROUTINE", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
     }
     state.tasks.firstOrNull { it.id == confirming }?.let { selected ->
         RoutineStartDialog(state, actions, selected, onDismiss = { confirming = null })

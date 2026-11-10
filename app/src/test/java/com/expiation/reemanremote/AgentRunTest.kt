@@ -359,13 +359,14 @@ class AgentRunTest {
         waitFor(c) { it.agent?.status?.wifi != null }
         assertFalse(c.state.value.agent!!.status!!.wifi!!.weak)
         assertTrue(rightNow(c.state.value).headline.startsWith("Ready"))
+        assertFalse(rightNow(c.state.value).weakWifi)
         c.demoToggleWeakWifi()
         waitFor(c, maxMs = 1_000) { it.agent?.status?.wifi?.weak == true }
-        // A quiet line under Ready: the card stays green and keeps its own headline.
+        // A tag by the RIGHT NOW label: the card stays green and keeps its own headline.
         val now = rightNow(c.state.value)
         assertTrue(now.headline.startsWith("Ready"))
         assertEquals(Tone.READY, now.tone)
-        assertEquals("Weak Wi-Fi · move closer to the router", now.note)
+        assertTrue(now.weakWifi)
         assertEquals("-78 dBm · 5 GHz · weak", RobotAgent.wifiText(c.state.value.agent!!.status!!.wifi!!))
         c.demoToggleWeakWifi()
         waitFor(c, maxMs = 1_000) { it.agent?.status?.wifi?.weak == false }
