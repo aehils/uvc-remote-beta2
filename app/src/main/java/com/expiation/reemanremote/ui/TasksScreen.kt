@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -298,26 +299,20 @@ private fun OneLineHeadline(text: String, color: androidx.compose.ui.graphics.Co
 // ---------------------------------------------------------------------- Full route and default routine
 
 /**
- * RUN FULL ROUTE, below New routine: the robot goes round every point on the map in
+ * Run full route, beside New routine: the robot goes round every point on the map in
  * turn (see [DisinfectionTask.route]), then to the charger. It asks first, and the dialog says
- * how many points and for how long. Why it can't start goes under it.
+ * how many points and for how long. Why it can't start is [SavedTasks]'s one note under the row.
  */
 @Composable
-internal fun RunFullRoute(state: RemoteState, actions: RemoteActions, onStarted: () -> Unit = {}) {
+private fun RunFullRoute(state: RemoteState, actions: RemoteActions, modifier: Modifier, onStarted: () -> Unit) {
     var confirming by rememberSaveable { mutableStateOf(false) }
-    val problem = state.routeProblem
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Button(
-            onClick = { confirming = true },
-            enabled = problem == null,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp),
-            shape = RoundedCornerShape(14.dp),
-        ) {
-            Text("RUN FULL ROUTE", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-        }
-        problem?.let { TasksNote(it) }
+    Button(
+        onClick = { confirming = true },
+        enabled = state.routeProblem == null,
+        modifier = modifier,
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Text("Run full route", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
     }
 
     if (confirming) {
@@ -447,19 +442,24 @@ internal fun RoutinesPage(state: RemoteState, actions: RemoteActions, onEditTask
 internal fun SavedTasks(state: RemoteState, actions: RemoteActions, onEditTask: (String) -> Unit, onStarted: () -> Unit = {}) {
     var confirming by rememberSaveable { mutableStateOf<String?>(null) }
     var deleting by rememberSaveable { mutableStateOf<String?>(null) }
-    OutlinedButton(
-        onClick = { onEditTask("") },
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(52.dp),
-        shape = RoundedCornerShape(14.dp),
-    ) {
-        Text("+  New routine", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(
+                onClick = { onEditTask("") },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(52.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) {
+                Text("+  New routine", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+            }
+            RunFullRoute(state, actions, Modifier.weight(1f).height(52.dp), onStarted)
+        }
+        // One note for the row and the list: the full route's reason covers every routine's too.
+        state.routeProblem?.let { TasksNote(it) }
     }
-    RunFullRoute(state, actions, onStarted)
     if (state.tasks.any { it.startMinute != null }) NotificationsOffNote()
     if (state.tasks.isEmpty()) TasksNote("A routine is your own list of points, each with its UV time, run in order.")
-    if (state.tasks.isNotEmpty() && state.taskRun == null) (state.taskBlocker ?: state.uvProblem)?.let { TasksNote(it) }
     state.tasks.forEach { task ->
         TaskRow(
             task = task,
@@ -569,19 +569,58 @@ private fun TaskRow(
                 Text("Delete")
             }
         }
-        TextButton(onClick = onSetDefault, enabled = !isDefault) {
-            Text(if (isDefault) "Default routine" else "Set as default", fontWeight = FontWeight.SemiBold)
+        // Default beside START, the same width on every card so the START buttons line up.
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            val slot = Modifier
+                .width(DEFAULT_SLOT_WIDTH)
+                .height(48.dp)
+            if (isDefault) DefaultTag(slot) else OutlinedButton(
+                onClick = onSetDefault,
+                modifier = slot,
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 8.dp),
+            ) {
+                Text("Set default", fontWeight = FontWeight.SemiBold, maxLines = 1)
+            }
+            Button(
+                onClick = onStart,
+                enabled = canStart,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text("START", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+            }
         }
-        Button(
-            onClick = onStart,
-            enabled = canStart,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp),
-            shape = RoundedCornerShape(12.dp),
-        ) {
-            Text("START", fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-        }
+    }
+}
+
+private val DEFAULT_SLOT_WIDTH = 124.dp
+
+/** The default routine's mark, where the others have Set default: a state, so not a button. */
+@Composable
+private fun DefaultTag(modifier: Modifier) {
+    Row(
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.secondaryContainer),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            painterResource(R.drawable.ic_check),
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            "Default",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+        )
     }
 }
 
