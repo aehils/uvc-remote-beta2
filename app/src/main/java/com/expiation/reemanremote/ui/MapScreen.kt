@@ -935,7 +935,7 @@ internal fun MapsPage(
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 )
-                StatusHeader(state, actions.onDismissAlert)
+                StatusHeader(state, actions.onDismissAlert, readings = false)
             }
         },
         bottomBar = { StopBar(actions.onStop) },

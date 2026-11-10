@@ -334,7 +334,7 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions, due: DisinfectionTa
 /** Opens Settings, where the connection is: for the connection line under the readings, and Right Now. */
 internal val LocalOpenSettings = staticCompositionLocalOf<(() -> Unit)?> { null }
 
-/** Pages over the main (tabbed) page. Each keeps STOP and the robot's readings on screen. */
+/** Pages over the main (tabbed) page. Each keeps STOP on screen. */
 /** Where every page's first thing starts, under the top of the app: Right Now's card, and the rest to match. */
 internal val PAGE_TOP = 16.dp
 
@@ -355,7 +355,7 @@ private enum class Tab(val label: String, val icon: Int, val selectedIcon: Int) 
 }
 
 /**
- * Layout, top to bottom: DEMO strip (from [RemoteScreen]), title bar, the robot's readings (pinned, on every tab),
+ * Layout, top to bottom: DEMO strip (from [RemoteScreen]), title bar, the robot's readings (on the Map page only),
  * the current tab or the Map page, and the dock with STOP in its centre so STOP is on every tab too.
  *
  * The dock's left button opens the Map page. There it becomes the way out, and either side of
@@ -447,11 +447,8 @@ private fun robotLabel(state: RemoteState): String =
     state.robotName?.let(RobotName::short) ?: if (state.connected) "Robot" else "No robot"
 
 /**
- * At the top of every page (under the title bar, where a page has one), pinned so it never
- * scrolls away: the robot's readings, the line under them that says whether the robot is
- * connected, and the runaway and UV banners. Without [readings] (the tabs: Tasks has Right Now,
- * Settings its robot card), only the banners; without [uvBanner] (Tasks, where Right Now says
- * it), no UV banner.
+ * Pinned alerts and UV banners. Only the Map page enables [readings], which adds the robot
+ * readings and connection line. Without [uvBanner] (Tasks, where Right Now says it), no UV banner.
  */
 @Composable
 internal fun StatusHeader(
@@ -459,7 +456,7 @@ internal fun StatusHeader(
     onDismissAlert: () -> Unit,
     onOpenMaps: (() -> Unit)? = null,
     onStartMapping: (Boolean) -> Unit = {},
-    readings: Boolean = true,
+    readings: Boolean = false,
     readingsTop: Dp = 6.dp,
     uvBanner: Boolean = true,
 ) {
@@ -865,11 +862,12 @@ private fun RowScope.PadNote(state: RemoteState, height: Dp) {
 
 /**
  * The Tasks tab, laid out to fit without scrolling. Right Now at the top, pinned: what the robot
- * is doing, in words (it replaces the e-stop badge and speed the other pages carry). Then START
+ * is doing, in words (it replaces the e-stop badge and speed on the Map page). Then START
  * DISINFECTION on its own (or the task under way above it), a row
- * each for Routines and Disinfection Points (their own pages), and the UV lamps switch, set apart
- * in its own colour. GO TO CHARGER (UNDOCK while docked) sits at the bottom, over the nav bar.
- * The middle still scrolls, for a small screen or a task card.
+ * each for Routines and Disinfection Points (their own pages). The UV lamps switch sits directly
+ * above GO TO CHARGER (UNDOCK while docked) at the bottom, over the nav bar.
+ * The middle controls sit at the bottom, leaving room for Right Now to grow above them.
+ * They still scroll on a small screen or with a task card.
  */
 @Composable
 private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: () -> Unit, onOpenRoutines: () -> Unit, onOpenReport: () -> Unit, modifier: Modifier) {
@@ -892,30 +890,36 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
         Box(Modifier.padding(start = 16.dp, end = 16.dp, top = PAGE_TOP, bottom = 4.dp)) {
             RightNowCard(state, onOpenReport, actions.onRetryAgent, onPair = { pairing = true; actions.onAskPairCode() })
         }
+        // Anchor the controls above the UV/charger group. Changes to Right Now consume
+        // the space above them instead of pushing the controls down; short screens still scroll.
+        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                val run = state.taskRun
+                if (run != null) TaskRunCard(state, run, actions)
+                if (run == null) StartDisinfection(state, actions)
+                TaskItem(
+                    icon = R.drawable.ic_routines,
+                    title = "Routines",
+                    onClick = onOpenRoutines,
+                )
+                TaskItem(
+                    icon = R.drawable.ic_tab_tasks,
+                    title = "Disinfection Points",
+                    onClick = onOpenPoints,
+                )
+            }
+        }
         Column(
-            Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+            Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            val run = state.taskRun
-            if (run != null) TaskRunCard(state, run, actions)
-            if (run == null) StartDisinfection(state, actions)
-            TaskItem(
-                icon = R.drawable.ic_routines,
-                title = "Routines",
-                onClick = onOpenRoutines,
-            )
-            TaskItem(
-                icon = R.drawable.ic_tab_tasks,
-                title = "Disinfection Points",
-                onClick = onOpenPoints,
-            )
             UvSwitch(state, actions)
-        }
-        Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             if (state.docked) ChargerButton("UNDOCK", state.canDrive, actions.onUndock)
             else ChargerButton("GO TO CHARGER", state.canNavigate, actions.onGoToCharger)
         }
@@ -1630,7 +1634,7 @@ private fun RowScope.PadButton(move: Move, icon: Int, label: String, enabled: Bo
 
 /**
  * DEMO controls: simulate robot events that are hard to set up on the real robot.
- * A page of its own, but STOP and the robot readings stay on screen so each event's effect is visible.
+ * A page of its own, with STOP and alert banners kept on screen.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1649,7 +1653,7 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
                     title = { Text("DEMO controls", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 )
-                StatusHeader(state, actions.onDismissAlert)
+                StatusHeader(state, actions.onDismissAlert, readings = false)
             }
         },
         bottomBar = { StopBar(actions.onStop) },
