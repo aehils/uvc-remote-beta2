@@ -184,6 +184,7 @@ data class RemoteActions(
     val onDemoAgentDown: () -> Unit = {},
     val onDemoWeakWifi: () -> Unit = {},
     val onDemoChargeWarning: () -> Unit = {},
+    val onDemoRoutinesOnRobot: () -> Unit = {},
     val onDemoMovement: () -> Unit = {},
     val onDemoChargeOnItsOwn: () -> Unit = {},
     val onDemoBattery: () -> Unit = {},
@@ -1663,6 +1664,7 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
                 DemoToggle("Robot Controller down", "It stops answering, as if it had crashed. UV is refused.", demo.agentDown, actions.onDemoAgentDown, enabled = agent.inApp)
                 DemoToggle("Weak robot Wi-Fi", "The head unit reports -78 dBm. Right Now warns.", demo.agentWifiWeak, actions.onDemoWeakWifi, enabled = agent.inApp)
                 DemoToggle("About to charge", "The Robot Controller is about to send the robot to its charger.", demo.agentChargeWarning, actions.onDemoChargeWarning, enabled = agent.inApp)
+                DemoToggle("Routines run on the robot", "Started routines run on the Robot Controller, and carry on without the phone.", demo.agentRoutines, actions.onDemoRoutinesOnRobot, enabled = agent.inApp)
                 OutlinedButton(
                     actions.onDemoMovement,
                     Modifier.fillMaxWidth(),

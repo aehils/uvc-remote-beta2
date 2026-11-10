@@ -200,8 +200,10 @@ data class TaskReport(
     /** Why it ended, when it didn't finish ("STOP pressed", "battery low (14%)"). */
     val reason: String?,
     val results: List<StopResult>,
-    /** When it ended, on the phone's clock. */
+    /** When it ended, on the phone's clock (the robot's, for a routine the robot ran). */
     val at: Long = 0,
+    /** A routine run by the robot: how long it went on with no phone in touch (R26). */
+    val phoneAwayMs: Long = 0,
 ) {
     val done: Int get() = results.count { it.outcome == StopOutcome.DONE }
     val total: Int get() = task.stops.size * task.rounds
@@ -226,7 +228,8 @@ data class TaskReport(
     val detail: String
         get() = "$done of $total point${if (total == 1) "" else "s"} ${if (task.lampsOff) "reached" else "done"}" +
             (if (notReached.isEmpty()) "" else " · not reached: ${notReached.joinToString()}") +
-            (reason?.let { " · " + if (it.startsWith("ON ")) "the lamps didn't come on" else it } ?: "")
+            (reason?.let { " · " + if (it.startsWith("ON ")) "the lamps didn't come on" else it } ?: "") +
+            (if (phoneAwayMs >= 1_000) " · phone away ${DriveController.clockText(phoneAwayMs)}" else "")
 
     /** What to do about how it went, for whoever is holding the phone; null when there's nothing to do. */
     val nextStep: String?
@@ -262,6 +265,7 @@ data class TaskReport(
                         .put("completed", r.completed)
                         .put("reason", r.reason ?: JSONObject.NULL)
                         .put("at", r.at)
+                        .put("phone_away_ms", r.phoneAwayMs)
                         .put("results", JSONArray().apply {
                             r.results.forEach {
                                 put(
@@ -294,6 +298,7 @@ data class TaskReport(
                             )
                         },
                         at = o.getLong("at"),
+                        phoneAwayMs = o.optLong("phone_away_ms", 0),
                     )
                 }.getOrNull()
             }

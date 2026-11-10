@@ -136,7 +136,10 @@ internal fun rightNow(state: RemoteState): Now {
             (uv.point?.let { "At $it. " } ?: "") + "Leave the room and close the door.",
         )
         uv is Uv.Starting -> Now(Tone.DANGER, "UV lamps switching on", "Stay out of the room.")
-        uv is Uv.On -> Now(Tone.DANGER, uv.point?.let { "Disinfecting $it" } ?: "Disinfecting", "UV lamps on · $left left")
+        uv is Uv.On -> Now(
+            Tone.DANGER, uv.point?.let { "Disinfecting $it" } ?: "Disinfecting",
+            "UV lamps on · $left left" + if (state.uvElsewhere && run == null) " · another phone's run" else "",
+        )
         // Lamps off, but they come back by themselves: still a reason to stay out.
         uv is Uv.PersonSeen -> Now(
             Tone.DANGER,
@@ -146,7 +149,12 @@ internal fun rightNow(state: RemoteState): Now {
         )
         state.lampsOffOwed -> Now(Tone.DANGER, "UV lamps may still be on", "Stay out of the room. Check the phone is on the robot's Wi-Fi: the app keeps sending OFF.")
         run != null -> {
-            val where = "${run.task.name} · point ${run.number} of ${run.total}"
+            // A routine the robot runs: say so when it isn't simply this phone's.
+            val where = "${run.task.name} · point ${run.number} of ${run.total}" + when {
+                state.taskPhoneAway -> " · running with no phone"
+                state.taskElsewhere -> " · started on another phone"
+                else -> ""
+            }
             when (val stage = run.stage) {
                 is TaskStage.Retrying -> Now(Tone.BUSY, "Trying to reach ${run.stop.point}", "Check nothing is blocking the way.")
                 TaskStage.Paused -> Now(Tone.BUSY, "Paused", where)

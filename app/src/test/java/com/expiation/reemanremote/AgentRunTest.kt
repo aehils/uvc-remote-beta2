@@ -371,6 +371,100 @@ class AgentRunTest {
         assertEquals("Battery low: going to charge", now.detail)
     }
 
+    // ---- 4d: routines run on the robot (Phase 2), whichever phone started them.
+
+    private fun firstPoints(c: DriveController, n: Int) = (c.state.value.points as Points.Loaded).list.take(n).map { it.name }
+
+    @Test
+    fun aRoutineRunsOnTheRobotAndItsReportComesBack() = runTest {
+        val c = ready()
+        c.loadPoints()
+        waitFor(c) { it.points is Points.Loaded }
+        val (a, b) = firstPoints(c, 2)
+        c.demoToggleRoutinesOnRobot()
+        waitFor(c, maxMs = 1_000) { it.agent?.status?.routinesUnlocked == true }
+        c.saveTask(DisinfectionTask("", "Ward", listOf(TaskStop(a, 1), TaskStop(b, 1)), delaySeconds = 15, whenDone = WhenDone.STAY))
+        c.startTask(c.state.value.tasks.single().id)
+        waitFor(c) { it.taskOnRobot && it.taskRun?.stage == TaskStage.Travelling }
+        assertFalse(c.state.value.taskElsewhere)
+        assertEquals(a, c.state.value.taskRun!!.stop.point)
+        assertFalse("GO is locked while the robot runs it", c.state.value.canNavigate)
+        // The robot's countdown and lamps show here, though this phone asked for no lamp run.
+        waitFor(c) { it.uv is Uv.Countdown && it.uvElsewhere }
+        waitFor(c, maxMs = 20_000) { it.uv is Uv.On }
+        assertTrue(lit(c))
+        assertEquals("the phone's lease keeps it here", false, agentState(c).task!!.phoneAway)
+        waitFor(c, maxMs = 200_000) { it.taskRun == null }
+        val r = c.state.value.taskReport!!
+        assertTrue(log(c), r.good)
+        assertEquals(listOf(a, b), r.results.map { it.point })
+        assertEquals(0L, r.phoneAwayMs)
+        assertFalse(lit(c))
+    }
+
+    @Test
+    fun aRoutineOnTheRobotCarriesOnWithoutThePhoneAndTheReportSaysSo() = runTest {
+        val c = ready()
+        c.loadPoints()
+        waitFor(c) { it.points is Points.Loaded }
+        val (a) = firstPoints(c, 1)
+        c.demoToggleRoutinesOnRobot()
+        waitFor(c, maxMs = 1_000) { it.agent?.status?.routinesUnlocked == true }
+        c.saveTask(DisinfectionTask("", "Ward", listOf(TaskStop(a, 1)), delaySeconds = 15, whenDone = WhenDone.STAY))
+        c.startTask(c.state.value.tasks.single().id)
+        waitFor(c, maxMs = 30_000) { it.uv is Uv.On }
+        c.demoToggleWifi() // the phone goes quiet for 20 s
+        advanceTimeBy(20_000)
+        c.demoToggleWifi()
+        waitFor(c, maxMs = 120_000) { it.taskReport != null }
+        val r = c.state.value.taskReport!!
+        assertTrue(log(c), r.good)
+        assertTrue("away ${r.phoneAwayMs}", r.phoneAwayMs in 10_000..25_000)
+        assertTrue(r.detail, "phone away" in r.detail)
+        assertFalse(log(c), logged(c, "Lost the phone"))
+    }
+
+    @Test
+    fun anotherPhonesRoutineShowsHereAndStopEndsIt() = runTest {
+        val c = ready()
+        c.loadPoints()
+        waitFor(c) { it.points is Points.Loaded }
+        val names = firstPoints(c, 2)
+        c.demoToggleRoutinesOnRobot()
+        waitFor(c, maxMs = 1_000) { it.agent?.status?.routinesUnlocked == true }
+        val theirs = DisinfectionTask("other-1", "Theatre 2", names.map { TaskStop(it, 1) }, delaySeconds = 15)
+        val points = (c.state.value.points as Points.Loaded).list
+        val started = c.demoRobot.handle("POST", RobotAgent.TASK_START_PATH, RobotAgent.taskStartJson(theirs, points, null, "req-other", "phone-other"))!!
+        assertEquals(200, started.code)
+        waitFor(c, maxMs = 1_000) { it.taskOnRobot }
+        val s = c.state.value
+        assertTrue(s.taskElsewhere)
+        assertEquals("Theatre 2", s.taskRun!!.task.name)
+        assertEquals(names[0], s.taskRun!!.stop.point)
+        assertTrue(rightNow(s).detail!!, "started on another phone" in rightNow(s).detail!!)
+        assertFalse("no new UV here meanwhile", s.canDisinfect)
+        assertTrue(logged(c, "started by another phone"))
+        waitFor(c, maxMs = 30_000) { it.uv is Uv.Countdown }
+        c.endTaskNow()
+        waitFor(c, maxMs = 3_000) { it.taskRun == null }
+        assertFalse(lit(c))
+        val r = c.state.value.taskReport!!
+        assertFalse(r.completed)
+        assertEquals("Theatre 2", r.task.name)
+    }
+
+    @Test
+    fun withRoutinesLockedOnTheRobotThePhoneRunsThemAsBefore() = runTest {
+        val c = ready()
+        c.loadPoints()
+        waitFor(c) { it.points is Points.Loaded }
+        c.saveTask(DisinfectionTask("", "Ward", listOf(TaskStop(firstPoints(c, 1).single(), 1)), delaySeconds = 15, whenDone = WhenDone.STAY))
+        c.startTask(c.state.value.tasks.single().id)
+        assertNotNull(c.state.value.taskRun)
+        assertFalse(c.state.value.taskOnRobot)
+        assertNull(agentState(c).task)
+    }
+
     @Test
     fun aTaskReportCountsMovementAtEachStop() = runTest {
         val c = ready()

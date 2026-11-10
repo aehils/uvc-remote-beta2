@@ -70,6 +70,7 @@ class MainActivity : ComponentActivity() {
             onDemoAgentDown = c::demoToggleAgent,
             onDemoWeakWifi = c::demoToggleWeakWifi,
             onDemoChargeWarning = c::demoToggleChargeWarning,
+            onDemoRoutinesOnRobot = c::demoToggleRoutinesOnRobot,
             onDemoMovement = c::demoMovementNearRobot,
             onDemoChargeOnItsOwn = c::demoChargeOnItsOwn,
             onDemoBattery = c::demoDrainBattery,

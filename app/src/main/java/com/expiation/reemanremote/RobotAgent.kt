@@ -25,6 +25,10 @@ object RobotAgent {
     const val SETTINGS_PATH = "/v1/settings"
     const val VOICE_TEST_PATH = "/v1/voice/test"
     const val PAIR_PATH = "/v1/pair"
+    const val TASK_START_PATH = "/v1/task/start"
+    const val TASK_PAUSE_PATH = "/v1/task/pause"
+    const val TASK_RESUME_PATH = "/v1/task/resume"
+    const val TASK_END_PATH = "/v1/task/end"
 
     /** The agent's floor for [AgentStatus.voiceVolume] when an older one doesn't say. */
     const val VOICE_FLOOR = 30
@@ -87,6 +91,8 @@ object RobotAgent {
         // An agent from before E10 has no "weak" in "wifi" (or no "wifi"): nothing to show.
         val wifi = o.optJSONObject("wifi")?.takeIf { it.has("weak") }
         val charge = o.optJSONObject("charge")
+        val task = o.optJSONObject("task")
+        val routines = o.optJSONObject("routines")
         AgentStatus(
             api = o.optInt("api", 0),
             lamp = AgentLamp.of(lamp.getString("state")),
@@ -108,8 +114,54 @@ object RobotAgent {
             voiceFloor = voice.optIntOrNull("floor"),
             wifi = wifi?.let { HeadWifi(it.optIntOrNull("rssi"), it.optIntOrNull("mhz"), it.optBoolean("weak", false)) },
             charge = charge?.optStringOrNull("state")?.let { AgentCharge(it, charge.optStringOrNull("reason"), charge.optIntOrNull("lowBattery")) },
+            task = task?.let(::parseTask),
+            lastReport = o.optJSONObject("lastReport")?.let { TaskReport.listFromJson("[$it]").firstOrNull() },
+            routinesUnlocked = routines?.optBoolean("unlocked", false),
+            phoneAwayCarriesOn = routines?.optBoolean("phoneAwayCarriesOn", false) ?: false,
         )
     }.getOrNull()
+
+    /** `task` in /v1/state: the routine the robot is running. Null if it can't be read. */
+    private fun parseTask(o: JSONObject): AgentTask? = runCatching {
+        val results = o.optJSONArray("results")
+        AgentTask(
+            id = o.optString("id", ""),
+            name = o.optString("name", "Routine"),
+            stage = o.getString("stage"),
+            problem = o.optStringOrNull("problem"),
+            round = o.optInt("round", 1),
+            rounds = o.optInt("rounds", 1),
+            stop = o.optString("stop", ""),
+            number = o.optInt("number", 1),
+            total = o.optInt("total", 1),
+            uvLeftMs = o.optLongOrNull("uvLeftMs"),
+            lampsOff = o.optBoolean("lampsOff", false),
+            controller = o.optStringOrNull("controller"),
+            phoneAway = o.optBoolean("phoneAway", false),
+            phoneAwayMs = o.optLong("phoneAwayMs", 0),
+            results = if (results == null) emptyList() else (0 until results.length()).mapNotNull { i ->
+                runCatching {
+                    val r = results.getJSONObject(i)
+                    StopResult(r.getInt("round"), r.getString("point"), StopOutcome.valueOf(r.getString("outcome")), r.optLong("uv_ms", 0), r.optInt("person_pauses", 0))
+                }.getOrNull()
+            },
+        )
+    }.getOrNull()
+
+    /**
+     * POST /v1/task/start: [task] run on the robot, by the map's [points] (the robot can't read the
+     * map) and its [pile] (null: none), as this phone ([controller]).
+     */
+    fun taskStartJson(task: DisinfectionTask, points: List<Waypoint>, pile: String?, requestId: String, controller: String): String =
+        JSONObject()
+            .put("task", DisinfectionTask.toJson(task))
+            .put("points", org.json.JSONArray().apply {
+                points.forEach { p -> put(JSONObject().put("name", p.name).put("x", p.pose?.x ?: JSONObject.NULL).put("y", p.pose?.y ?: JSONObject.NULL)) }
+            })
+            .put("pile", pile ?: JSONObject.NULL)
+            .put("requestId", requestId)
+            .put("controller", controller)
+            .toString()
 
     /** The reasons in a refusal (409), fit to show; the whole body if it has none. */
     fun parseReasons(body: String): List<String> = runCatching {
@@ -220,11 +272,51 @@ data class AgentStatus(
     val wifi: HeadWifi? = null,
     /** The robot's auto-charge (R14); null from an agent without it. */
     val charge: AgentCharge? = null,
+    /** The routine the robot is running (Phase 2), whichever phone started it; null when none. */
+    val task: AgentTask? = null,
+    /** How the robot's last routine went; null when none has ended, or from an agent without routines. */
+    val lastReport: TaskReport? = null,
+    /** Routines may run on this robot (its lock file); null from an agent without routines. */
+    val routinesUnlocked: Boolean? = null,
+    /** R28: a routine carries on when its phone goes away. */
+    val phoneAwayCarriesOn: Boolean = false,
 )
 
 /**
- * `wifi` in /v1/state: the head unit's signal. [rssi] in dBm, null when unknown; [weak] as the agent judges it.
+ * `task` in /v1/state: a routine run by the robot itself. [stage] is the agent's word (`checking`,
+ * `travelling`, `disinfecting`, `lamps_off`, `retrying`, `paused`, `docking`); [stop] the point it's
+ * at or going to, [number] of [total] across all rounds. [controller]: the phone holding its lease;
+ * [phoneAway]: that phone has gone quiet and the routine carries on without it.
  */
+data class AgentTask(
+    val id: String,
+    val name: String,
+    val stage: String,
+    val problem: String?,
+    val round: Int,
+    val rounds: Int,
+    val stop: String,
+    val number: Int,
+    val total: Int,
+    val uvLeftMs: Long?,
+    val lampsOff: Boolean,
+    val controller: String?,
+    val phoneAway: Boolean,
+    val phoneAwayMs: Long,
+    val results: List<StopResult>,
+) {
+    val taskStage: TaskStage get() = when (stage) {
+        "travelling" -> TaskStage.Travelling
+        "disinfecting" -> TaskStage.Disinfecting
+        "lamps_off" -> TaskStage.LampsOff
+        "retrying" -> TaskStage.Retrying(problem ?: "Can't reach $stop", 0)
+        "paused" -> TaskStage.Paused
+        "docking" -> TaskStage.Docking
+        else -> TaskStage.Checking
+    }
+}
+
+/** `wifi` in /v1/state: the head unit's signal. [rssi] in dBm, null when unknown; [weak] as the agent judges it. */
 data class HeadWifi(val rssi: Int?, val mhz: Int?, val weak: Boolean)
 
 /**
