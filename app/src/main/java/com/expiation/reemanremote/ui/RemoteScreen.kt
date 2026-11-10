@@ -334,7 +334,7 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions, due: DisinfectionTa
 /** Opens Settings, where the connection is: for the connection line under the readings, and Right Now. */
 internal val LocalOpenSettings = staticCompositionLocalOf<(() -> Unit)?> { null }
 
-/** Pages over the main (tabbed) page. Each keeps STOP on screen. */
+/** Pages over the main (tabbed) page show STOP while the robot moves or navigates. */
 /** Where every page's first thing starts, under the top of the app: Right Now's card, and the rest to match. */
 internal val PAGE_TOP = 16.dp
 
@@ -411,7 +411,7 @@ private fun MainPage(
                     module = DockItem(R.drawable.ic_tab_map, "Map", "Open the map and drive the robot") { onMapOpenChange(true) },
                     start = listOf(tabItem(Tab.TASKS)),
                     end = listOf(tabItem(Tab.SETTINGS)),
-                    stop = stop,
+                    stop = stop.takeIf { tab != Tab.SETTINGS || state.busy || !state.still },
                 )
             }
         },
@@ -866,7 +866,7 @@ private fun RowScope.PadNote(state: RemoteState, height: Dp) {
  * DISINFECTION on its own (or the task under way above it), a row
  * each for Routines and Disinfection Points (their own pages). The UV lamps switch sits directly
  * above GO TO CHARGER (UNDOCK while docked) at the bottom, over the nav bar.
- * The middle controls sit at the bottom, leaving room for Right Now to grow above them.
+ * The middle controls are centered between Right Now and the UV/charger group.
  * They still scroll on a small screen or with a task card.
  */
 @Composable
@@ -890,9 +890,8 @@ private fun TasksTab(state: RemoteState, actions: RemoteActions, onOpenPoints: (
         Box(Modifier.padding(start = 16.dp, end = 16.dp, top = PAGE_TOP, bottom = 4.dp)) {
             RightNowCard(state, onOpenReport, actions.onRetryAgent, onPair = { pairing = true; actions.onAskPairCode() })
         }
-        // Anchor the controls above the UV/charger group. Changes to Right Now consume
-        // the space above them instead of pushing the controls down; short screens still scroll.
-        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
+        // Share the spare space above and below the controls; short screens still scroll.
+        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             Column(
                 Modifier
                     .fillMaxWidth()
@@ -1075,7 +1074,7 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () ->
                 StatusHeader(state, actions.onDismissAlert, readings = false)
             }
         },
-        bottomBar = { StopBar(actions.onStop) },
+        bottomBar = { AnimatedVisibility(state.busy || !state.still) { StopBar(actions.onStop) } },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
         Column(
@@ -1656,7 +1655,7 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
                 StatusHeader(state, actions.onDismissAlert, readings = false)
             }
         },
-        bottomBar = { StopBar(actions.onStop) },
+        bottomBar = { AnimatedVisibility(state.busy || !state.still) { StopBar(actions.onStop) } },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
         Column(
@@ -2328,7 +2327,7 @@ private fun SubPage(
                 StatusHeader(state, actions.onDismissAlert, readings = false)
             }
         },
-        bottomBar = { StopBar(actions.onStop) },
+        bottomBar = { AnimatedVisibility(state.busy || !state.still) { StopBar(actions.onStop) } },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
         content(

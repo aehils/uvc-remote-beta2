@@ -94,7 +94,7 @@ internal class DockStop(val moving: Boolean, val onStop: () -> Unit)
  * narrower than [STOP_MIN_WIDTH].
  */
 @Composable
-internal fun NavDock(module: DockItem, start: List<DockItem>, end: List<DockItem>, stop: DockStop) {
+internal fun NavDock(module: DockItem, start: List<DockItem>, end: List<DockItem>, stop: DockStop?) {
     Surface(color = MaterialTheme.colorScheme.background) {
         BoxWithConstraints(
             Modifier
@@ -189,9 +189,9 @@ internal fun JoinedDock(
 
 /** The bar's buttons, STOP in the middle. */
 @Composable
-private fun RowScope.BarButtons(start: List<DockItem>, stop: DockStop, end: List<DockItem>, widths: DockWidths) {
+private fun RowScope.BarButtons(start: List<DockItem>, stop: DockStop?, end: List<DockItem>, widths: DockWidths) {
     start.forEach { DockButton(it, Modifier.weight(1f)) }
-    StopKey(stop, Modifier.width(widths.stop))
+    if (stop != null) StopKey(stop, Modifier.width(widths.stop))
     end.forEach { DockButton(it, Modifier.weight(1f)) }
 }
 
