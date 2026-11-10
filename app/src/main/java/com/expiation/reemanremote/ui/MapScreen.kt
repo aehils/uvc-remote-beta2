@@ -938,7 +938,7 @@ internal fun MapsPage(
                 StatusHeader(state, actions.onDismissAlert, readings = false)
             }
         },
-        bottomBar = { StopBar(actions.onStop) },
+        bottomBar = { AnimatedVisibility(state.busy || !state.still) { StopBar(actions.onStop) } },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
         Column(
