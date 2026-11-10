@@ -404,12 +404,8 @@ internal fun RoutinesPage(state: RemoteState, actions: RemoteActions, onEditTask
             Column {
                 TopAppBar(
                     expandedHeight = PAGE_BAR_HEIGHT,
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
-                        }
-                    },
-                    title = { Text("Routines", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
+                    navigationIcon = { PageNav(onBack) },
+                    title = { PageTitle("Routines") },
                     actions = { TextButton(onClick = onOpenHistory) { Text("History") } },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 )
@@ -773,12 +769,8 @@ internal fun HistoryPage(state: RemoteState, actions: RemoteActions, history: Li
             Column {
                 TopAppBar(
                     expandedHeight = PAGE_BAR_HEIGHT,
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
-                        }
-                    },
-                    title = { Text("Routine history", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
+                    navigationIcon = { PageNav(onBack) },
+                    title = { PageTitle("Routine history") },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 )
                 StatusHeader(state, actions.onDismissAlert, readings = false)
@@ -856,18 +848,8 @@ internal fun TaskEditorPage(
             Column {
                 TopAppBar(
                     expandedHeight = PAGE_BAR_HEIGHT,
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
-                        }
-                    },
-                    title = {
-                        Text(
-                            if (original == null) "New routine" else "Edit routine",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    },
+                    navigationIcon = { PageNav(onBack) },
+                    title = { PageTitle(if (original == null) "New routine" else "Edit routine") },
                     actions = {
                         TextButton(
                             onClick = {

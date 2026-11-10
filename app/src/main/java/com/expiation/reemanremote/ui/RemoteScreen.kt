@@ -248,7 +248,15 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions, due: DisinfectionTa
             tab = Tab.SETTINGS
         }
     }
-    CompositionLocalProvider(LocalOpenSettings provides openSettings) {
+    // Home, on every page's bar: the Tasks tab, with the map closed.
+    val goHome: () -> Unit = remember {
+        {
+            page = Page.MAIN
+            mapOpen = false
+            tab = Tab.TASKS
+        }
+    }
+    CompositionLocalProvider(LocalOpenSettings provides openSettings, LocalGoHome provides goHome) {
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
             AnimatedVisibility(state.demo) { DemoStrip() }
             Box(Modifier.weight(1f)) {
@@ -334,6 +342,40 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions, due: DisinfectionTa
 
 /** Opens Settings, where the connection is: for the connection line under the readings, and Right Now. */
 internal val LocalOpenSettings = staticCompositionLocalOf<(() -> Unit)?> { null }
+
+/** Goes to the Tasks tab from any page: Home on every page's bar ([PageNav]). */
+internal val LocalGoHome = staticCompositionLocalOf<(() -> Unit)?> { null }
+
+/** A page's way out, at the left of its bar: back one page, then home. */
+@Composable
+internal fun PageNav(onBack: () -> Unit) {
+    Row {
+        IconButton(onClick = onBack) {
+            Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
+        }
+        LocalGoHome.current?.let { goHome ->
+            IconButton(onClick = goHome) {
+                Icon(painterResource(R.drawable.ic_home), contentDescription = "Home")
+            }
+        }
+    }
+}
+
+/** A page's title on one line: steps the size down until it fits beside Back, Home and the bar's buttons. */
+@Composable
+internal fun PageTitle(text: String) {
+    val base = MaterialTheme.typography.titleLarge
+    var scale by remember(text) { mutableStateOf(1f) }
+    Text(
+        text,
+        style = base.copy(fontSize = base.fontSize * scale, lineHeight = base.lineHeight * scale),
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1,
+        softWrap = false,
+        overflow = if (scale > 0.75f) TextOverflow.Clip else TextOverflow.Ellipsis,
+        onTextLayout = { if (it.hasVisualOverflow && scale > 0.75f) scale -= 0.05f },
+    )
+}
 
 /** Pages over the main (tabbed) page show STOP while the robot moves or navigates. */
 /** Where every page's first thing starts, under the top of the app: Right Now's card, and the rest to match. */
@@ -1059,12 +1101,8 @@ private fun PointsPage(state: RemoteState, actions: RemoteActions, onBack: () ->
             Column {
                 TopAppBar(
                     expandedHeight = PAGE_BAR_HEIGHT,
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
-                        }
-                    },
-                    title = { Text("Disinfection Points", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
+                    navigationIcon = { PageNav(onBack) },
+                    title = { PageTitle("Disinfection Points") },
                     actions = {
                         TextButton(
                             onClick = actions.onLoadPoints,
@@ -1646,12 +1684,8 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
             Column {
                 TopAppBar(
                     expandedHeight = PAGE_BAR_HEIGHT,
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
-                        }
-                    },
-                    title = { Text("DEMO controls", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
+                    navigationIcon = { PageNav(onBack) },
+                    title = { PageTitle("DEMO controls") },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 )
                 StatusHeader(state, actions.onDismissAlert, readings = false)
@@ -2320,12 +2354,8 @@ private fun SubPage(
             Column {
                 TopAppBar(
                     expandedHeight = PAGE_BAR_HEIGHT,
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
-                        }
-                    },
-                    title = { Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
+                    navigationIcon = { PageNav(onBack) },
+                    title = { PageTitle(title) },
                     actions = barActions,
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 )
