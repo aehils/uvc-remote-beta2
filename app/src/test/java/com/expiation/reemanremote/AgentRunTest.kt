@@ -454,6 +454,37 @@ class AgentRunTest {
     }
 
     @Test
+    fun aRoutineOnTheRobotHoldsTheMapThePointsAndTheDpadUntilPaused() = runTest {
+        val c = ready()
+        c.loadPoints()
+        waitFor(c) { it.points is Points.Loaded }
+        val (a, b) = firstPoints(c, 2)
+        c.demoToggleRoutinesOnRobot()
+        waitFor(c, maxMs = 1_000) { it.agent?.status?.routinesUnlocked == true }
+        c.saveTask(DisinfectionTask("", "Ward", listOf(TaskStop(a, 1), TaskStop(b, 1)), delaySeconds = 15, whenDone = WhenDone.STAY))
+        c.startTask(c.state.value.tasks.single().id)
+        // The DEMO robot doesn't drive: still, lamps off, on its way. Not a pause.
+        waitFor(c) { it.taskOnRobot && it.taskRun?.stage == TaskStage.Travelling && it.still && !it.busy }
+        val s = c.state.value
+        assertTrue("the old interlock alone would let it drive", s.canDrive)
+        assertFalse(s.canDriveByHand)
+        assertFalse(s.canChangeMap)
+        assertFalse(s.canAddPoint)
+        c.drive(Move.FORWARD)
+        assertEquals(StepPhase.Idle, c.state.value.phase)
+        c.startMapping(extend = false)
+        assertEquals(DriveController.ROUTINE_ON_MAP, c.state.value.mapMessage)
+        // Paused on the robot: the d-pad is free again, the map still the routine's.
+        c.pauseTask()
+        waitFor(c, maxMs = 2_000) { it.taskRun?.stage == TaskStage.Paused }
+        assertTrue(c.state.value.canDriveByHand)
+        assertFalse(c.state.value.canChangeMap)
+        c.endTaskNow()
+        waitFor(c, maxMs = 3_000) { it.taskRun == null && !it.lampsOffOwed && !it.busy && it.still }
+        assertTrue(c.state.value.canChangeMap)
+    }
+
+    @Test
     fun withRoutinesLockedOnTheRobotThePhoneRunsThemAsBefore() = runTest {
         val c = ready()
         c.loadPoints()

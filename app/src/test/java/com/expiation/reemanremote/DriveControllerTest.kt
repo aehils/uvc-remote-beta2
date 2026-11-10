@@ -1505,6 +1505,44 @@ class DriveControllerTest {
     }
 
     @Test
+    fun aRoutineHoldsTheMapThePointsAndTheDpadUntilPaused() = runTest {
+        val c = withTask(TaskStop("Bed 1", 1), TaskStop("Bed 2", 1))
+        c.demoBlockNextStep()
+        c.startTask("t")
+        // Retrying: the robot still, lamps off, the next trip due any moment. Not a pause.
+        runTaskBlocked(c) { it.taskRun?.stage is TaskStage.Retrying && it.still && !it.busy }
+        val s = c.state.value
+        assertTrue("the old interlock alone would let it drive", s.canDrive)
+        assertFalse(s.canDriveByHand)
+        assertFalse(s.canHold(Move.FORWARD))
+        assertFalse(s.canChangeMap)
+        assertFalse(s.canStartMapping)
+        assertFalse(s.canAddPoint)
+        assertFalse(s.canMark)
+        // The controller refuses too, not only the buttons.
+        c.drive(Move.FORWARD)
+        assertEquals(StepPhase.Idle, c.state.value.phase)
+        c.startMapping(extend = false)
+        assertEquals(DriveController.ROUTINE_ON_MAP, c.state.value.mapMessage)
+        assertFalse(c.state.value.mapping)
+        val before = (c.state.value.points as Points.Loaded).list.size
+        c.addPointHere("Doorway")
+        assertEquals(DriveController.ROUTINE_ON_MAP, c.state.value.pointMessage)
+        advanceTimeBy(2_000)
+        assertEquals(before, (c.state.value.points as Points.Loaded).list.size)
+        // Paused: the d-pad is free again; the map stays the routine's until it ends.
+        c.pauseTask()
+        waitFor(c) { it.taskRun?.stage == TaskStage.Paused && it.still && !it.busy }
+        assertTrue(c.state.value.canDriveByHand)
+        assertFalse(c.state.value.canChangeMap)
+        assertFalse(c.state.value.canAddPoint)
+        c.endTaskNow()
+        waitFor(c) { it.taskRun == null && it.still && !it.busy && !it.lampsOffOwed }
+        assertTrue(c.state.value.canChangeMap)
+        assertTrue(c.state.value.canAddPoint)
+    }
+
+    @Test
     fun aPointThatCantBeReachedIsTriedAgainThenLeftOutAndReported() = runTest {
         val c = withTask(TaskStop("Bed 1", 1), TaskStop("Bed 2", 1))
         c.demoBlockNextStep()

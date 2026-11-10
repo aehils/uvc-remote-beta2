@@ -361,8 +361,14 @@ data class RemoteState(
     /** Carrying on after a pause takes what any trip takes. */
     val canResumeTask: Boolean get() = taskRun?.stage == TaskStage.Paused && canTravel
 
-    /** Saving the robot's spot as a point: connected, standing still, on a map, and the existing names known. */
-    val canAddPoint: Boolean get() = connected && !busy && still && !mapping && points is Points.Loaded && !addingPoint
+    /**
+     * A routine is under way (this phone's, or one the robot runs): the map, its points and the
+     * d-pad are its, until it ends. Paused, the d-pad is free again, as it was before.
+     */
+    val routineHoldsDrive: Boolean get() = taskRun.let { it != null && it.stage != TaskStage.Paused }
+
+    /** Saving the robot's spot as a point: connected, standing still, on a map, the existing names known, and no routine under way. */
+    val canAddPoint: Boolean get() = connected && !busy && still && !mapping && points is Points.Loaded && !addingPoint && taskRun == null
 
     /**
      * The drive interlock: connected, e-stop known and released, no step running, robot still,
@@ -379,14 +385,15 @@ data class RemoteState(
         if (canDriveByHand) return true
         val p = phase
         return p is StepPhase.Stepping && p.step.held != null &&
-            estop == EStop.RELEASED && uv == null && !lampsOffOwed
+            estop == EStop.RELEASED && uv == null && !lampsOffOwed && !routineHoldsDrive
     }
 
     /**
-     * The d-pad: the drive interlock, and off the charging pile. Docked, UNDOCK goes first, so
-     * the robot never pulls away with charging still on.
+     * The d-pad: the drive interlock, off the charging pile, and no routine under way unless it
+     * is paused (its next trip could start at any moment). Docked, UNDOCK goes first, so the robot
+     * never pulls away with charging still on.
      */
-    val canDriveByHand: Boolean get() = canDrive && !docked
+    val canDriveByHand: Boolean get() = canDrive && !docked && !routineHoldsDrive
 
     /** Starting UV disinfection takes the same interlock as a trip, and the Robot Controller saying yes. */
     val canDisinfect: Boolean get() = canNavigate && uvProblem == null
@@ -444,16 +451,17 @@ data class RemoteState(
         ?: if (route.stops.isEmpty()) "No points are saved on this robot's map yet." else null
 
     /**
-     * Map commands (mode, save, switch, position): connected, nothing running, the robot standing
-     * still, the lamps off, and one command at a time. None of them moves the robot.
+     * Map commands (mode, save, switch, position): connected, nothing running, no routine under
+     * way (it runs on this map), the robot standing still, the lamps off, and one command at a
+     * time. None of them moves the robot.
      */
-    val canChangeMap: Boolean get() = connected && !busy && still && uv == null && !lampsOffOwed && mapStep == null
+    val canChangeMap: Boolean get() = connected && !busy && still && uv == null && !lampsOffOwed && mapStep == null && taskRun == null
 
     /**
      * Marking a point, the charging pile or a wall on the map: connected, the robot still, nothing
      * else on its way. While mapping they wait in the app until the map is saved.
      */
-    val canMark: Boolean get() = connected && !busy && still && !addingPoint && mapStep == null &&
+    val canMark: Boolean get() = connected && !busy && still && !addingPoint && mapStep == null && taskRun == null &&
         (mapping || points is Points.Loaded)
 
     /** Starting a map, switching maps and setting the position: not while a scan is in progress. */
@@ -1643,6 +1651,7 @@ class DriveController(
         val problem = when {
             s.addingPoint -> return
             !s.connected -> "Not connected to the robot."
+            s.taskRun != null -> ROUTINE_ON_MAP
             s.busy || !s.still -> "Wait for the robot to stand still."
             s.mapStep != null -> "Wait for \"${s.mapStep}\" to finish."
             !s.mapping && loaded == null -> "Load the points first."
@@ -3604,6 +3613,7 @@ class DriveController(
         return when {
             s.mapStep != null -> "Wait for \"${s.mapStep}\" to finish."
             !s.connected -> "Connect to the robot first."
+            s.taskRun != null -> ROUTINE_ON_MAP
             s.busy || !s.still -> "Wait for the robot to stand still."
             s.uv != null || s.lampsOffOwed -> "Switch the UV lamps off first."
             mapping == true && !s.mapping -> "The robot isn't mapping."
@@ -3971,6 +3981,7 @@ class DriveController(
         const val AGENT_MIN_COUNTDOWN_MS = 5_000L   // the shortest countdown it accepts: the UV switch's
         const val AGENT_OVERRUN_MS = 15_000L        // lamps seen on this long past their time: the phone ends it
         const val CANT_REACH_AGENT = "Can't reach the Robot Controller · UV unavailable"
+        const val ROUTINE_ON_MAP = "End the routine first: it runs on this map."
         const val CONNECTING_AGENT = "Connecting to Robot Controller"
         const val PAIR_FIRST = "Pair this phone with the robot first: Settings, Pair with this robot. UV unavailable"
         const val AGENT_NOT_ANSWERING = "Can't reach the Robot Controller"
