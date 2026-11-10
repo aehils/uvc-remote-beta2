@@ -16,19 +16,28 @@ class FakeAgent(
         data object Off : Lamp
         data class Countdown(val endsAt: Long, val leftMs: Long) : Lamp
         data class On(val endsAt: Long) : Lamp
-        data class Person(val leftMs: Long, val clearAt: Long) : Lamp
+        /** [held]: held at the end of a countdown, on once quiet; else after the lamps were on, a short warning first. */
+        data class Person(val leftMs: Long, val clearAt: Long, val held: Boolean) : Lamp
     }
 
     private var lamp: Lamp = Lamp.Off
     private var controller: String? = null
-    private var countdownMs = 0L
     private var leaseAt = 0L
     private var lastOffReason: String? = null
     private var mask = 0
     private var maskUntil = 0L
     private var lastSeenAt: Long? = null
+    private var seenInRunAt: Long? = null // the sensor is on only from the countdown to the end of a run
     private val decided = LinkedHashMap<String, Pair<Int, String>>()
     private var voiceVolume = 60
+    private var lowBattery = 25
+
+    /** The head unit's Wi-Fi is weak (DEMO controls): -78 dBm on 5 GHz. */
+    var weakWifi = false
+
+    /** The robot is about to set off for its charger by itself (DEMO controls). */
+    var chargeWarning = false
+
 
     /** How many times the voice test was asked for and allowed: the DEMO robot has no voice. */
     var voiceTests = 0; private set
@@ -63,7 +72,8 @@ class FakeAgent(
                 if (lamp != Lamp.Off && str(json, "controller") == controller) { leaseAt = now; 200 to OK } else 409 to NOT_OK
             "POST ${RobotAgent.SETTINGS_PATH}" -> {
                 num(json, "voiceVolume")?.let { voiceVolume = it.toInt().coerceIn(RobotAgent.VOICE_FLOOR, 100) }
-                200 to """{"ok":true,"reasons":[],"voiceVolume":$voiceVolume}"""
+                num(json, "lowBattery")?.let { lowBattery = it.toInt().coerceIn(LOW_BATTERY_FLOOR, 70) }
+                200 to """{"ok":true,"reasons":[],"lowBattery":$lowBattery,"voiceVolume":$voiceVolume}"""
             }
             "POST ${RobotAgent.VOICE_TEST_PATH}" ->
                 if (lamp != Lamp.Off) 409 to """{"ok":false,"reasons":["Not while the lamps are running"]}"""
@@ -76,16 +86,20 @@ class FakeAgent(
         }
     }
 
-    /** Someone walks past the front dome. Lamps off; back after a quiet spell and a new countdown. */
+    /**
+     * Someone walks past the front dome (spec R9). In a countdown: it runs on, and at its end the
+     * lamps wait for [QUIET_MS] with nothing moving. Lamps on: off at once, back after [CLEAR_MS]
+     * quiet and a [RESUME_WARNING_MS] warning countdown. Never the full countdown again.
+     */
     fun personSeen(now: Long) {
         advance(now)
         mask = FRONT
         maskUntil = now + MASK_MS
         lastSeenAt = now
         when (val l = lamp) {
-            is Lamp.Countdown -> lamp = Lamp.Person(l.leftMs, now + CLEAR_MS)
-            is Lamp.On -> { setLamps(false); lamp = Lamp.Person((l.endsAt - now).coerceAtLeast(0), now + CLEAR_MS) }
-            is Lamp.Person -> lamp = l.copy(clearAt = now + CLEAR_MS)
+            is Lamp.Countdown -> seenInRunAt = now
+            is Lamp.On -> { setLamps(false); seenInRunAt = now; lamp = Lamp.Person((l.endsAt - now).coerceAtLeast(0), now + CLEAR_MS, held = false) }
+            is Lamp.Person -> { seenInRunAt = now; lamp = l.copy(clearAt = now + if (l.held) QUIET_MS else CLEAR_MS) }
             Lamp.Off -> {}
         }
     }
@@ -96,6 +110,9 @@ class FakeAgent(
         down = false
         mask = 0
         lastSeenAt = null
+        seenInRunAt = null
+        weakWifi = false
+        chargeWarning = false
         decided.clear()
     }
 
@@ -112,8 +129,8 @@ class FakeAgent(
         }
         val reply = if (reasons.isEmpty()) {
             controller = str(json, "controller")
-            countdownMs = cd
             leaseAt = now
+            seenInRunAt = null
             lamp = Lamp.Countdown(now + cd, forMs)
             200 to """{"ok":true,"requestId":"$id","reasons":[]}"""
         } else {
@@ -146,9 +163,16 @@ class FakeAgent(
             estop() -> return off("Emergency stop pressed")
         }
         when (val l = lamp) {
-            is Lamp.Countdown -> if (now >= l.endsAt) { setLamps(true); lamp = Lamp.On(now + l.leftMs) }
+            is Lamp.Countdown -> if (now >= l.endsAt) {
+                val seen = seenInRunAt
+                if (seen != null && now - seen < QUIET_MS) lamp = Lamp.Person(l.leftMs, seen + QUIET_MS, held = true)
+                else { setLamps(true); lamp = Lamp.On(now + l.leftMs) }
+            }
             is Lamp.On -> if (now >= l.endsAt) off(RobotAgent.TIME_UP)
-            is Lamp.Person -> if (now >= l.clearAt) lamp = Lamp.Countdown(now + countdownMs, l.leftMs)
+            is Lamp.Person -> if (now >= l.clearAt) {
+                if (l.held) { setLamps(true); lamp = Lamp.On(now + l.leftMs) }
+                else lamp = Lamp.Countdown(now + RESUME_WARNING_MS, l.leftMs)
+            }
             Lamp.Off -> {}
         }
     }
@@ -175,6 +199,9 @@ class FakeAgent(
             """"robot":{"estop":${estop()},"moving":false,"battery":null,"charging":null},""" +
             """"ros":{"serial":true,"hostname":"${FakeRobot.HOSTNAME}"},"controller":${q(controller)},""" +
             """"voice":{"volume":$voiceVolume,"floor":${RobotAgent.VOICE_FLOOR}},""" +
+            """"wifi":{"state":"idle","rssi":${if (weakWifi) -78 else -52},"mhz":5180,"weak":$weakWifi},""" +
+            """"charge":{"state":"${if (chargeWarning) "warning" else "ok"}","reason":${q(if (chargeWarning) "Battery low: going to charge" else null)},""" +
+            """"lastResult":null,"warningMs":${if (chargeWarning) 30_000 else "null"},"lowBattery":$lowBattery,"unlocked":true},""" +
             """"faults":[${listOfNotNull("\"ESTOP\"".takeIf { estop() }, "\"PERSON\"".takeIf { person }).joinToString(",")}]}"""
     }
 
@@ -185,7 +212,10 @@ class FakeAgent(
         const val OK = """{"ok":true}"""
         const val NOT_OK = """{"ok":false}"""
         const val LEASE_MS = 5_000L
-        const val CLEAR_MS = 15_000L
+        const val CLEAR_MS = 15_000L          // quiet before the lamps come back (Tuning.sensorHoldMs)
+        const val QUIET_MS = 10_000L          // quiet at the end of a countdown (Tuning.countdownQuietMs)
+        const val RESUME_WARNING_MS = 10_000L // the warning before they come back (Tuning.resumeWarningMs)
+        const val LOW_BATTERY_FLOOR = 20
         const val MASK_MS = 1_500L
         const val MAX_MS = 30 * 60_000L
         const val FRONT = 0x04

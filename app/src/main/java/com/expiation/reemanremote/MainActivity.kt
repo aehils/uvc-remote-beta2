@@ -68,6 +68,8 @@ class MainActivity : ComponentActivity() {
             onDemoBlock = c::demoBlockNextStep,
             onDemoPerson = c::demoPersonInTheWay,
             onDemoAgentDown = c::demoToggleAgent,
+            onDemoWeakWifi = c::demoToggleWeakWifi,
+            onDemoChargeWarning = c::demoToggleChargeWarning,
             onDemoMovement = c::demoMovementNearRobot,
             onDemoChargeOnItsOwn = c::demoChargeOnItsOwn,
             onDemoBattery = c::demoDrainBattery,

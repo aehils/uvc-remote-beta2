@@ -286,12 +286,89 @@ class AgentRunTest {
         assertEquals("Front", RobotAgent.domes(seen.domes))
         assertTrue("left ${seen.leftMs}", seen.leftMs in 48_000..51_000)
         assertTrue(log(c), logged(c, "movement detected (Front)"))
-        // A quiet 15 s, then the full countdown again, then the rest of the time.
-        waitFor(c, maxMs = 20_000) { it.uv is Uv.Countdown }
-        waitFor(c, maxMs = 20_000) { it.uv is Uv.On }
+        assertFalse("after the lamps were on: a spoken warning comes first", seen.warned)
+        assertEquals("Front · A spoken warning comes first", rightNow(c.state.value).detail)
+        // R9: a quiet 15 s, then a short warning (10 s, not the full 15 s countdown), then the rest.
+        val quiet = waitFor(c, maxMs = 20_000) { it.uv is Uv.Countdown }
+        assertTrue("quiet $quiet", quiet in 13_000..16_500)
+        val warning = waitFor(c, maxMs = 20_000) { it.uv is Uv.On }
+        assertTrue("warning $warning", warning in 9_000..11_000)
         assertTrue(lit(c))
         waitFor(c, maxMs = 60_000) { it.uv == null }
         assertTrue(log(c), logged(c, "done: UV lamps off"))
+    }
+
+    @Test
+    fun movementInTheCountdownHoldsTheLampsUntilItIsQuietWithoutANewCountdown() = runTest {
+        val c = ready() // 15 s countdown, 1 min of lamps
+        c.startDisinfection()
+        waitFor(c) { it.uv is Uv.Countdown && it.uvByAgent }
+        advanceTimeBy(10_000)
+        c.demoMovementNearRobot() // 5 s before the end: nothing restarts
+        advanceTimeBy(1_000)
+        assertTrue("still the same countdown", c.state.value.uv is Uv.Countdown)
+        // The countdown runs out with movement under 10 s ago: held, lamps off.
+        waitFor(c, maxMs = 6_000) { it.uv is Uv.PersonSeen }
+        assertFalse(lit(c))
+        val held = c.state.value.uv as Uv.PersonSeen
+        assertTrue(held.warned)
+        // The dome's bit has faded by now (it shows for 1.5 s), so only the rule.
+        assertEquals("UV starts when nothing moves", rightNow(c.state.value).detail)
+        // 10 s after the movement, straight on: no warning countdown.
+        waitFor(c, maxMs = 8_000) { it.uv !is Uv.PersonSeen }
+        assertTrue(c.state.value.uv is Uv.On)
+        assertTrue(lit(c))
+    }
+
+    // ---- E10, E12: the head unit's Wi-Fi, the low-battery level, auto-charge.
+
+    @Test
+    fun aWeakHeadUnitWifiShowsOnRightNow() = runTest {
+        val c = ready()
+        waitFor(c) { it.agent?.status?.wifi != null }
+        assertFalse(c.state.value.agent!!.status!!.wifi!!.weak)
+        assertTrue(rightNow(c.state.value).headline.startsWith("Ready"))
+        c.demoToggleWeakWifi()
+        waitFor(c, maxMs = 1_000) { it.agent?.status?.wifi?.weak == true }
+        val now = rightNow(c.state.value)
+        assertEquals("Robot's Wi-Fi is weak", now.headline)
+        assertEquals("Head unit at -78 dBm. It may drop off here.", now.detail)
+        assertEquals("-78 dBm · 5 GHz · weak", RobotAgent.wifiText(c.state.value.agent!!.status!!.wifi!!))
+        c.demoToggleWeakWifi()
+        waitFor(c, maxMs = 1_000) { it.agent?.status?.wifi?.weak == false }
+    }
+
+    @Test
+    fun aChangedLowBatteryLevelGoesToTheRobotEvenIfItIsAwayAtTheTime() = runTest {
+        val c = ready()
+        fun onRobot() = agentState(c).charge?.lowBattery
+        assertEquals(25, onRobot())
+        // Read back at start: not sent, so another phone's level stands.
+        c.setLowBattery(50, fromUser = false)
+        advanceTimeBy(2_000)
+        assertEquals(25, onRobot())
+        c.setLowBattery(40)
+        waitFor(c, maxMs = 2_000) { onRobot() == 40 }
+        assertTrue(log(c), logged(c, "Low battery level on the robot: 40%"))
+        // Changed while the Robot Controller is down: owed, and sent once it answers again.
+        c.demoToggleAgent()
+        waitFor(c, maxMs = 6_000) { it.agent?.reachable == false }
+        c.setLowBattery(35)
+        advanceTimeBy(10_000)
+        c.demoToggleAgent()
+        waitFor(c, maxMs = 10_000) { onRobot() == 35 }
+    }
+
+    @Test
+    fun theRobotGoingToChargeByItselfShowsOnRightNow() = runTest {
+        val c = ready()
+        waitFor(c) { it.agent?.status?.charge != null }
+        assertNull(RobotAgent.chargeText(c.state.value.agent!!.status!!.charge!!))
+        c.demoToggleChargeWarning()
+        waitFor(c, maxMs = 1_000) { it.agent?.status?.charge?.leaving == true }
+        val now = rightNow(c.state.value)
+        assertEquals("About to go to charge", now.headline)
+        assertEquals("Battery low: going to charge", now.detail)
     }
 
     @Test

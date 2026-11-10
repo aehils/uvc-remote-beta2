@@ -182,6 +182,8 @@ data class RemoteActions(
     val onDemoBlock: () -> Unit = {},
     val onDemoPerson: () -> Unit = {},
     val onDemoAgentDown: () -> Unit = {},
+    val onDemoWeakWifi: () -> Unit = {},
+    val onDemoChargeWarning: () -> Unit = {},
     val onDemoMovement: () -> Unit = {},
     val onDemoChargeOnItsOwn: () -> Unit = {},
     val onDemoBattery: () -> Unit = {},
@@ -250,7 +252,7 @@ fun RemoteScreen(state: RemoteState, actions: RemoteActions, due: DisinfectionTa
                         DemoControlsPage(state, demoStatus, actions, onBack = { page = Page.MAIN })
                     page == Page.POINTS -> PointsPage(state, actions, onBack = { page = Page.MAIN })
                     page == Page.ACTIVITY -> SubPage(
-                        "Activity log", state, actions, onBack = { page = Page.MAIN }, readings = false,
+                        "Activity log", state, actions, onBack = { page = Page.MAIN },
                         barActions = { ActivityLogActions(state) },
                     ) {
                         ActivityLog(state.log, it)
@@ -1244,7 +1246,7 @@ private fun UvRunCard(state: RemoteState, actions: RemoteActions) {
             is Uv.PersonSeen -> {
                 Text("UV paused · movement detected", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = status.danger)
                 Text(
-                    listOfNotNull(RobotAgent.domes(uv.domes).ifEmpty { null }, "$left of UV left", "a new countdown comes first").joinToString(" · "),
+                    listOfNotNull(RobotAgent.domes(uv.domes).ifEmpty { null }, "$left of UV left", if (uv.warned) "UV starts when nothing moves" else "a spoken warning comes first").joinToString(" · "),
                     style = MaterialTheme.typography.bodyMedium,
                     color = status.danger,
                 )
@@ -1659,6 +1661,8 @@ private fun DemoControlsPage(state: RemoteState, demo: DemoStatus, actions: Remo
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 DemoToggle("Robot Controller down", "It stops answering, as if it had crashed. UV is refused.", demo.agentDown, actions.onDemoAgentDown, enabled = agent.inApp)
+                DemoToggle("Weak robot Wi-Fi", "The head unit reports -78 dBm. Right Now warns.", demo.agentWifiWeak, actions.onDemoWeakWifi, enabled = agent.inApp)
+                DemoToggle("About to charge", "The Robot Controller is about to send the robot to its charger.", demo.agentChargeWarning, actions.onDemoChargeWarning, enabled = agent.inApp)
                 OutlinedButton(
                     actions.onDemoMovement,
                     Modifier.fillMaxWidth(),
@@ -2250,7 +2254,10 @@ private fun AddressDialog(current: String, onDismiss: () -> Unit, onConnect: (St
     )
 }
 
-/** A page opened from Settings. Like the other pages, it keeps STOP on screen, and [readings] the robot's readings. */
+/**
+ * A page opened from Settings. Like the other pages, it keeps STOP on screen. No readings strip
+ * (e-stop badge, speed): Robot information has the same facts in its own rows.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SubPage(
@@ -2258,7 +2265,6 @@ private fun SubPage(
     state: RemoteState,
     actions: RemoteActions,
     onBack: () -> Unit,
-    readings: Boolean = true,
     barActions: @Composable RowScope.() -> Unit = {},
     content: @Composable (Modifier) -> Unit,
 ) {
@@ -2277,7 +2283,7 @@ private fun SubPage(
                     actions = barActions,
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 )
-                StatusHeader(state, actions.onDismissAlert, readings = readings)
+                StatusHeader(state, actions.onDismissAlert, readings = false)
             }
         },
         bottomBar = { StopBar(actions.onStop) },
@@ -2312,6 +2318,12 @@ private fun RobotInfo(state: RemoteState, modifier: Modifier) {
         InfoSection("Power") {
             InfoRow("Battery", state.battery?.let { "$it%" } ?: "—", mono = true)
             InfoRow("On the charger", if (state.docked) "Yes" else "No")
+            // The Robot Controller sends it to charge (R14): "—" until it has answered, no row from one without it.
+            state.agent?.let { a ->
+                val st = a.status
+                if (st == null) InfoRow("Auto-charge", "—")
+                else st.charge?.let { InfoRow("Auto-charge", RobotAgent.chargeText(it) ?: "Not needed") }
+            }
             InfoRow(
                 "E-stop",
                 when (state.estop) {
@@ -2353,6 +2365,8 @@ private fun AgentInfoSection(agent: AgentView, demo: Boolean) {
         )
         InfoRow("Version", agent.info?.let { "${it.version} · API ${it.api}" } ?: "—", mono = true)
         if (!agent.inApp && (!demo || agent.address != null)) InfoRow("Address", agent.address ?: "—", mono = true)
+        // "—" until it has answered; no row from an agent that answers without it (before E10).
+        if (s == null) InfoRow("Head unit Wi-Fi", "—") else s.wifi?.let { InfoRow("Head unit Wi-Fi", RobotAgent.wifiText(it), mono = true) }
         InfoRow("Lamps", s?.let { if (it.unlocked) "Unlocked" else "Locked" } ?: "—")
         InfoRow(
             "Person sensor",

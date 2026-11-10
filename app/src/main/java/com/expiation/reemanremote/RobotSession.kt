@@ -94,7 +94,7 @@ class RobotSession private constructor(private val app: Application) {
         controller.setUvSettings(
             UvSettings(prefs.getInt(KEY_UV_MINUTES, defaults.minutes), prefs.getInt(KEY_UV_DELAY, defaults.delaySeconds))
         )
-        controller.setLowBattery(prefs.getInt(KEY_LOW_BATTERY, DriveController.DEFAULT_LOW_BATTERY))
+        controller.setLowBattery(prefs.getInt(KEY_LOW_BATTERY, DriveController.DEFAULT_LOW_BATTERY), fromUser = false)
         prefs.getFloat(KEY_RUNNING_SPEED, 0f).takeIf { it > 0f }?.let { controller.setRunningSpeed(it.toDouble()) }
         controller.setTasks(DisinfectionTask.listFromJson(prefs.getString(KEY_TASKS, null)))
         RoutineAlarms.schedule(app, controller.state.value.tasks)

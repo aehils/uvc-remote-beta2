@@ -84,6 +84,9 @@ object RobotAgent {
         val robot = o.optJSONObject("robot") ?: JSONObject()
         val faults = o.optJSONArray("faults")
         val voice = o.optJSONObject("voice") ?: JSONObject()
+        // An agent from before E10 has no "weak" in "wifi" (or no "wifi"): nothing to show.
+        val wifi = o.optJSONObject("wifi")?.takeIf { it.has("weak") }
+        val charge = o.optJSONObject("charge")
         AgentStatus(
             api = o.optInt("api", 0),
             lamp = AgentLamp.of(lamp.getString("state")),
@@ -103,6 +106,8 @@ object RobotAgent {
             faults = if (faults == null) emptyList() else (0 until faults.length()).map { faults.getString(it) },
             voiceVolume = voice.optIntOrNull("volume"),
             voiceFloor = voice.optIntOrNull("floor"),
+            wifi = wifi?.let { HeadWifi(it.optIntOrNull("rssi"), it.optIntOrNull("mhz"), it.optBoolean("weak", false)) },
+            charge = charge?.optStringOrNull("state")?.let { AgentCharge(it, charge.optStringOrNull("reason"), charge.optIntOrNull("lowBattery")) },
         )
     }.getOrNull()
 
@@ -120,6 +125,28 @@ object RobotAgent {
     /** POST /v1/settings with only the voice's volume; [controller] so it's allowed during this phone's routine. */
     fun voiceVolumeJson(percent: Int, controller: String): String =
         JSONObject().put("voiceVolume", percent).put("controller", controller).toString()
+
+    /** POST /v1/settings with only the low-battery level (R14: the robot goes to charge at it). */
+    fun lowBatteryJson(percent: Int, controller: String): String =
+        JSONObject().put("lowBattery", percent).put("controller", controller).toString()
+
+    /** The level the agent settled on (it floors it), from a /v1/settings reply. */
+    fun parseLowBattery(body: String): Int? = runCatching { JSONObject(body).getInt("lowBattery") }.getOrNull()
+
+    /** The robot's auto-charge (R14), in words, or null when there's nothing to say. */
+    fun chargeText(c: AgentCharge): String? = when (c.state) {
+        "ok" -> null
+        "going" -> "Going to charge"
+        "locked" -> "Locked on this robot"
+        "snoozed" -> "Snoozed"
+        else -> c.reason ?: c.state
+    }
+
+    /** The head unit's signal: "-77 dBm · 5 GHz", "Unknown" when it can't read it. */
+    fun wifiText(w: HeadWifi): String {
+        val band = w.mhz?.let { if (it >= 5_000) "5 GHz" else "2.4 GHz" }
+        return listOfNotNull(w.rssi?.let { "$it dBm" }, band, "weak".takeIf { w.weak }).joinToString(" · ").ifEmpty { "Unknown" }
+    }
 
     /** The volume the agent settled on (it floors it), from a /v1/settings reply. */
     fun parseVoiceVolume(body: String): Int? = runCatching { JSONObject(body).getInt("voiceVolume") }.getOrNull()
@@ -152,7 +179,7 @@ data class AgentInfo(val api: Int, val version: String, val host: String?, val l
 enum class AgentLamp {
     OFF, COUNTDOWN, ON,
 
-    /** Something moved: lamps off until all is clear, then a full countdown again. */
+    /** Something moved: lamps held off until all is quiet (spec R9), then on, or after a short spoken warning. */
     PERSON;
 
     companion object {
@@ -189,7 +216,25 @@ data class AgentStatus(
     /** The spoken warnings' loudness, percent, and the agent's floor under it. Null from an agent without the setting. */
     val voiceVolume: Int? = null,
     val voiceFloor: Int? = null,
+    /** The head unit's Wi-Fi signal (E10); null from an agent that doesn't report it. */
+    val wifi: HeadWifi? = null,
+    /** The robot's auto-charge (R14); null from an agent without it. */
+    val charge: AgentCharge? = null,
 )
+
+/**
+ * `wifi` in /v1/state: the head unit's signal. [rssi] in dBm, null when unknown; [weak] as the agent judges it.
+ */
+data class HeadWifi(val rssi: Int?, val mhz: Int?, val weak: Boolean)
+
+/**
+ * `charge` in /v1/state. [state]: `ok`, `needed`, `locked`, `warning` (about to set off), `going`,
+ * `failed`, `snoozed`. [reason] fit to show; [lowBattery] the level it goes at.
+ */
+data class AgentCharge(val state: String, val reason: String?, val lowBattery: Int?) {
+    /** The robot is about to drive to its charger by itself, or is on its way. */
+    val leaving: Boolean get() = state == "warning" || state == "going"
+}
 
 /**
  * The Robot Controller as the screens see it (see [RemoteState.agent]). Null there only before

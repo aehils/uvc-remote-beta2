@@ -199,11 +199,13 @@ sealed interface Uv {
     data class On(override val point: String?, val since: Long, val until: Long) : Uv
 
     /**
-     * The robot's safety app saw movement (see [RobotAgent]): lamps off, [leftMs] of lamp time
-     * still to run. It carries on by itself after a quiet spell and a full countdown. [domes]:
-     * the sensor's bits that saw it.
+     * The Robot Controller saw movement (see [RobotAgent]): lamps off, [leftMs] of lamp time
+     * still to run. It carries on by itself (spec R9): [warned], held at the end of a countdown,
+     * the lamps come on once nothing has moved for a while; else, after the lamps were on, a
+     * short spoken warning comes first. The full countdown never starts again. [domes]: the
+     * sensor's bits that saw it.
      */
-    data class PersonSeen(override val point: String?, val leftMs: Long, val domes: Int) : Uv
+    data class PersonSeen(override val point: String?, val leftMs: Long, val domes: Int, val warned: Boolean = false) : Uv
 }
 
 data class DemoStatus(
@@ -217,6 +219,10 @@ data class DemoStatus(
     val uvOn: Boolean,
     /** The DEMO robot's Robot Controller has stopped answering. */
     val agentDown: Boolean = false,
+    /** Its head unit's Wi-Fi is weak. */
+    val agentWifiWeak: Boolean = false,
+    /** It is about to send the robot to charge. */
+    val agentChargeWarning: Boolean = false,
 )
 
 /** Everything the screen shows. Immutable; a new one is published on every change. */
@@ -573,6 +579,9 @@ class DriveController(
     private var uv: Uv? = null
     private var uvSettings = UvSettings()
     private var lowBattery = DEFAULT_LOW_BATTERY
+    private var lowBatteryOwed = false // changed here, not yet taken by the Robot Controller
+    private var lowBatterySending = false
+    private var lowBatterySentAt = Long.MIN_VALUE / 2
     private var runningSpeed: Double? = null
     private var runningSpeedOwed = false
     private var runningSpeedSentAt = Long.MIN_VALUE / 2
@@ -2236,7 +2245,10 @@ class DriveController(
         while (isActive) {
             val started = now()
             maybeFindAgent()
-            agentTarget?.let { readAgent(it) }
+            agentTarget?.let {
+                readAgent(it)
+                sendLowBattery(it)
+            }
             delay((AGENT_POLL_MS - (now() - started)).coerceAtLeast(0))
         }
     }
@@ -2397,7 +2409,12 @@ class DriveController(
                     log("UV paused$where: movement detected" + RobotAgent.domes(run.domes).let { if (it.isEmpty()) "" else " ($it)" })
                     taskRun?.takeIf { it.stage == TaskStage.Disinfecting }?.let { taskRun = it.copy(personPauses = it.personPauses + 1) }
                 }
-                uv = Uv.PersonSeen(point, left, run.domes)
+                // Held as a countdown ran out, or after the lamps were on: the robot's sign says which.
+                val warned = when (val was = uv) {
+                    is Uv.PersonSeen -> was.warned
+                    else -> was is Uv.Countdown
+                }
+                uv = Uv.PersonSeen(point, left, run.domes, warned)
             }
             AgentLamp.OFF -> Unit
         }
@@ -2614,11 +2631,43 @@ class DriveController(
         }
     }
 
-    /** Takes effect from the next time the battery is checked. */
-    fun setLowBattery(percent: Int) {
+    /**
+     * Takes effect from the next time the battery is checked. [fromUser]: also sent to the robot's
+     * Robot Controller (R14: it sends the robot to charge at this level when idle), as soon as it
+     * answers; not the level read back when the app starts, so another phone's change stands.
+     */
+    fun setLowBattery(percent: Int, fromUser: Boolean = true) {
         lowBattery = percent.coerceIn(MIN_LOW_BATTERY, MAX_LOW_BATTERY)
         log("Low battery level: $lowBattery%")
+        if (fromUser) lowBatteryOwed = true
         publish()
+    }
+
+    /** An owed low-battery level to the Robot Controller: one try at a time, again after [SETTING_RETRY_MS] if it didn't answer. */
+    private fun sendLowBattery(t: AgentTarget) {
+        val at = now()
+        if (!lowBatteryOwed || lowBatterySending || !agentReachable || at - lowBatterySentAt < SETTING_RETRY_MS) return
+        lowBatterySending = true
+        lowBatterySentAt = at
+        val level = lowBattery
+        scope.launch {
+            val r = agentLock.withLock { t.api.post(RobotAgent.SETTINGS_PATH, RobotAgent.lowBatteryJson(level, phoneId)) }
+            lowBatterySending = false
+            val set = if (r.ok) RobotAgent.parseLowBattery(r.body) else null
+            when {
+                set != null -> {
+                    if (lowBattery == level) lowBatteryOwed = false
+                    log("Low battery level on the robot: $set%")
+                }
+                r.httpCode in 400..499 -> {
+                    if (r.httpCode == 401) keepToken(t, null)
+                    lowBatteryOwed = false
+                    log("Low battery level refused by the robot: " + RobotAgent.parseReasons(r.body).joinToString("; "))
+                }
+                else -> logDetail("low battery level not sent yet: ${r.error}")
+            }
+            publish()
+        }
     }
 
     /**
@@ -3499,6 +3548,20 @@ class DriveController(
         publish()
     }
 
+    fun demoToggleWeakWifi() {
+        val a = demoRobot.agent ?: return
+        a.weakWifi = !a.weakWifi
+        log(if (a.weakWifi) "Simulated weak Wi-Fi on the robot's head unit" else "Simulated head-unit Wi-Fi back to strong")
+        publish()
+    }
+
+    fun demoToggleChargeWarning() {
+        val a = demoRobot.agent ?: return
+        a.chargeWarning = !a.chargeWarning
+        log(if (a.chargeWarning) "Simulated: the robot is about to go to charge" else "Simulated: auto-charge not needed")
+        publish()
+    }
+
     fun demoMovementNearRobot() {
         demoRobot.personNearRobot()
         log("Simulated movement near the robot")
@@ -3581,6 +3644,7 @@ class DriveController(
         demoStatus = if (demo) DemoStatus(
             demoRobot.isEstopPressed, demoRobot.isOffline, demoRobot.isBlockNextPending,
             demoRobot.isNavigating, demoRobot.isBusy, demoRobot.isUvOn, demoRobot.isAgentDown,
+            demoRobot.agent?.weakWifi == true, demoRobot.agent?.chargeWarning == true,
         ) else null,
         log = cachedLog ?: logLines.toList().also { cachedLog = it },
         mode = mode,
@@ -3743,6 +3807,7 @@ class DriveController(
         const val AGENT_LEASE_MS = 2_000L           // renewed this often; it gives up on the phone after 5 s
         const val AGENT_LOST_MS = 3_000L            // no answer this long: the run ends here too
         const val AGENT_SEARCH_MS = 10_000L         // looked for this often while it doesn't answer
+        const val SETTING_RETRY_MS = 5_000L         // a setting it didn't answer is sent again after this
         const val AGENT_CONNECT_MS = 10_000L        // "Connecting" this long without an answer, then Retry
         const val AGENT_ON_TRIES = 3                // ON asked again (same requestId) when it doesn't answer
         const val AGENT_MIN_COUNTDOWN_MS = 5_000L   // the shortest countdown it accepts: the UV switch's

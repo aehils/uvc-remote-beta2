@@ -117,6 +117,8 @@ internal fun rightNow(state: RemoteState): Now {
     val link = state.link
     val report = state.taskReport
     val agent = state.agent
+    val said = agent?.takeIf { it.reachable }?.status
+    val charge = said?.charge
     return when {
         !state.connected -> Now(
             Tone.OFFLINE,
@@ -139,7 +141,8 @@ internal fun rightNow(state: RemoteState): Now {
         uv is Uv.PersonSeen -> Now(
             Tone.DANGER,
             "UV paused · movement detected",
-            listOfNotNull(RobotAgent.domes(uv.domes).ifEmpty { null }, "A new countdown comes first").joinToString(" · "),
+            // The robot's own sign, word for word (spec R9): no new full countdown either way.
+            listOfNotNull(RobotAgent.domes(uv.domes).ifEmpty { null }, if (uv.warned) "UV starts when nothing moves" else "A spoken warning comes first").joinToString(" · "),
         )
         state.lampsOffOwed -> Now(Tone.DANGER, "UV lamps may still be on", "Stay out of the room. Check the phone is on the robot's Wi-Fi: the app keeps sending OFF.")
         run != null -> {
@@ -158,11 +161,19 @@ internal fun rightNow(state: RemoteState): Now {
         step?.label?.startsWith("Go to charger") == true -> Now(Tone.BUSY, "Going to the charger", "It docks by itself when it gets there.")
         goal != null -> Now(Tone.BUSY, "On the way to ${goal.name}", null)
         step != null -> Now(Tone.BUSY, "Moving", step.label)
+        // R14: the Robot Controller sends it to charge by itself, after a warning.
+        charge?.state == "going" -> Now(Tone.BUSY, "Going to charge", charge.reason?.takeIf { it != "Going to charge" } ?: "Sent by the robot.")
+        charge?.state == "warning" -> Now(Tone.BUSY, "About to go to charge", charge.reason)
         !state.still -> Now(Tone.BUSY, "Moving", "Not on a command from this app.")
         // No UV without the Robot Controller: say so before anything that invites a start.
         agent != null && !agent.reachable ->
             if (agent.connecting) Now(Tone.BUSY, DriveController.CONNECTING_AGENT, null)
             else Now(Tone.BUSY, "Can't reach the Robot Controller", "UV unavailable.", retry = true)
+        // E10: a weak head unit drops off the network while the navigation computer stays on.
+        said?.wifi?.weak == true -> Now(
+            Tone.BUSY, "Robot's Wi-Fi is weak",
+            (said.wifi.rssi?.let { "Head unit at $it dBm. " } ?: "") + "It may drop off here.",
+        )
         report != null -> Now(
             if (report.good) Tone.READY else Tone.BUSY,
             report.title,

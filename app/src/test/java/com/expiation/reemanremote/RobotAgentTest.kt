@@ -114,4 +114,33 @@ class RobotAgentTest {
         assertEquals(30, RobotAgent.parseVoiceVolume("""{"ok":true,"reasons":[],"voiceVolume":30}"""))
         assertNull(RobotAgent.parseVoiceVolume("""{"ok":false}"""))
     }
+
+    @Test
+    fun headUnitWifiOnlyFromAnAgentThatReportsIt() {
+        val base = """{"api":1,"lamp":{"state":"off"},"faults":[]"""
+        assertNull("no wifi at all", RobotAgent.parseState("$base}")!!.wifi)
+        assertNull("brief C's setup fields only", RobotAgent.parseState("""$base,"wifi":{"state":"idle","headOk":null}}""")!!.wifi)
+        val w = RobotAgent.parseState("""$base,"wifi":{"state":"idle","rssi":-77,"mhz":5180,"weak":true}}""")!!.wifi!!
+        assertEquals(HeadWifi(-77, 5180, true), w)
+        assertEquals("-77 dBm · 5 GHz · weak", RobotAgent.wifiText(w))
+        val unknown = RobotAgent.parseState("""$base,"wifi":{"rssi":null,"mhz":null,"weak":false}}""")!!.wifi!!
+        assertEquals("Unknown", RobotAgent.wifiText(unknown))
+        assertEquals("2.4 GHz", RobotAgent.wifiText(HeadWifi(null, 2437, false)))
+    }
+
+    @Test
+    fun chargeStateInWords() {
+        val base = """{"api":1,"lamp":{"state":"off"},"faults":[]"""
+        assertNull(RobotAgent.parseState("$base}")!!.charge)
+        val c = RobotAgent.parseState("""$base,"charge":{"state":"failed","reason":"No charging pile on the map","lowBattery":30}}""")!!.charge!!
+        assertEquals(AgentCharge("failed", "No charging pile on the map", 30), c)
+        assertEquals("No charging pile on the map", RobotAgent.chargeText(c))
+        assertNull(RobotAgent.chargeText(c.copy(state = "ok")))
+        assertEquals("Going to charge", RobotAgent.chargeText(c.copy(state = "going")))
+        assertTrue(c.copy(state = "warning").leaving)
+        assertEquals(40, RobotAgent.parseLowBattery("""{"ok":true,"lowBattery":40,"voiceVolume":60}"""))
+        val sent = org.json.JSONObject(RobotAgent.lowBatteryJson(40, "p"))
+        assertEquals(40, sent.getInt("lowBattery"))
+        assertEquals("p", sent.getString("controller"))
+    }
 }
