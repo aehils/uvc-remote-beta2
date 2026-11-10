@@ -49,6 +49,27 @@ class AgentRunTest {
     private fun lit(c: DriveController) = c.demoRobot.isUvOn
 
     @Test
+    fun reconnectingIsNeutralAndOffersAutomaticRecoveryGuidance() = runTest {
+        val base = ready().state.value
+        val agent = base.agent!!.copy(reachable = false, connecting = true, offline = false)
+        val state = base.copy(agent = agent)
+        val now = rightNow(state)
+        assertEquals(Tone.OFFLINE, now.tone)
+        assertEquals("Connecting to Robot Controller", now.headline)
+        assertEquals("Retrying automatically. Wait a moment.", now.detail)
+        assertFalse(now.retry)
+        assertTrue(agent.connectionHelp!!.contains("wait a moment"))
+        val offline = agent.copy(connecting = false, offline = true)
+        val lost = rightNow(state.copy(agent = offline))
+        assertTrue(lost.retry)
+        assertEquals(Tone.OFFLINE, lost.tone)
+        assertFalse(lost.detail!!.contains("UV unavailable"))
+        assertTrue(offline.connectionHelp!!.contains("same Wi-Fi"))
+        assertTrue(offline.connectionHelp!!.contains("Retry"))
+        assertEquals(Tone.DANGER, rightNow(state.copy(lampsOffOwed = true)).tone)
+    }
+
+    @Test
     fun aRunCountsDownLightsAndEndsOnTheAgentsTimer() = runTest {
         val c = ready()
         assertNotNull(c.state.value.agent)
@@ -185,7 +206,8 @@ class AgentRunTest {
         neverLit(robot, 30_000)
         rightNow(c.state.value).let { now ->
             assertEquals("Can't reach Robot Controller", now.headline)
-            assertNull("no \"UV unavailable\" line", now.detail)
+            assertEquals("Check the robot screen and Wi-Fi, then tap Retry.", now.detail)
+            assertEquals(Tone.OFFLINE, now.tone)
             assertTrue(now.retry)
         }
         assertNull(c.state.value.uv)
@@ -343,7 +365,7 @@ class AgentRunTest {
         val now = rightNow(c.state.value)
         assertTrue(now.headline.startsWith("Ready"))
         assertEquals(Tone.READY, now.tone)
-        assertEquals("Wi-Fi is weak", now.note)
+        assertEquals("Weak Wi-Fi · move closer to the router", now.note)
         assertEquals("-78 dBm · 5 GHz · weak", RobotAgent.wifiText(c.state.value.agent!!.status!!.wifi!!))
         c.demoToggleWeakWifi()
         waitFor(c, maxMs = 1_000) { it.agent?.status?.wifi?.weak == false }

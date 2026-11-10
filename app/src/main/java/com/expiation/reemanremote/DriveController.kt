@@ -4183,12 +4183,12 @@ class DriveController(
         const val AGENT_ON_TRIES = 3                // ON asked again (same requestId) when it doesn't answer
         const val AGENT_MIN_COUNTDOWN_MS = 5_000L   // the shortest countdown it accepts: the UV switch's
         const val AGENT_OVERRUN_MS = 15_000L        // lamps seen on this long past their time: the phone ends it
-        const val CANT_REACH_AGENT = "Can't reach the Robot Controller · UV unavailable"
+        const val CANT_REACH_AGENT = "Can't reach the Robot Controller. Check the robot screen and both Wi-Fi connections; the phone will keep trying."
         const val ROUTINE_ON_MAP = "End the routine first: it runs on this map."
-        const val CONNECTING_AGENT = "Connecting to Robot Controller"
-        const val PAIR_FIRST = "Pair this phone with the robot first: Settings, Pair with this robot. UV unavailable"
+        const val CONNECTING_AGENT = "Connecting to Robot Controller. Retrying automatically; wait a moment."
+        const val PAIR_FIRST = "Pair this phone with the robot first: Settings, Pair with this robot."
         const val AGENT_NOT_ANSWERING = "Can't reach the Robot Controller"
-        const val AGENT_WRONG_VERSION = "Update this app: the Robot Controller is a different version. UV unavailable"
+        const val AGENT_WRONG_VERSION = "The phone and Robot apps are incompatible. Install the latest update on both devices."
         private const val LOST_AGENT = "lost the Robot Controller"
         private const val IN_APP = "in the app"
         // ---- Disinfection tasks (see startTask). The robot's own head-unit app, always running,

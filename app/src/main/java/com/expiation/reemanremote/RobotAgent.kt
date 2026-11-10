@@ -380,6 +380,15 @@ data class AgentView(
     /** Where pairing is up to (see [DriveController.askPairCode]). */
     val pairStep: PairStep = PairStep.Idle,
 ) {
+    /** Recovery guidance uses known state; an unreachable controller has no confirmed root cause. */
+    val connectionHelp: String? get() = when {
+        !reachable && offline -> "Open Robot on the robot's screen and check that the phone and robot use the same Wi-Fi. Then tap Retry on Tasks. If it still cannot connect, ask the network administrator to check communication between devices."
+        !reachable -> "The phone is reconnecting automatically. If the robot has just started or updated, wait a moment."
+        info?.api?.let { it != RobotAgent.API } == true || status?.api?.let { it != RobotAgent.API } == true -> DriveController.AGENT_WRONG_VERSION
+        needsPairing -> "In Settings, tap Pair with this robot and enter the code shown on the robot's screen."
+        else -> null
+    }
+
     /** It wants a token and this phone has none: UV and settings would be refused. */
     val needsPairing: Boolean get() = info?.pairingRequired == true && !paired
 }
